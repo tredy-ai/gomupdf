@@ -77,10 +77,29 @@ gomupdf links against the MuPDF C library via cgo, so a **C toolchain** and
 
 | Platform | Install MuPDF |
 |---|---|
+| Alpine (3.22, the tested target) | `apk add build-base pkgconf mupdf-dev` |
 | macOS (Homebrew) | `brew install mupdf` |
 | Debian / Ubuntu | `sudo apt-get install libmupdf-dev mupdf-tools` |
 | Fedora / RHEL | `sudo dnf install mupdf-devel` |
 | Arch | `sudo pacman -S libmupdf` |
+
+**Alpine / musl.** This fork is built and tested on Alpine 3.22 with its
+packaged MuPDF 1.25.6 (MuPDF 1.25 or newer is required). On linux the link
+flags come from `pkg-config --libs mupdf`, so nothing else needs configuring:
+
+```sh
+apk add build-base pkgconf mupdf-dev
+go build ./...
+```
+
+- MuPDF links **dynamically** on Alpine (`mupdf-dev` ships `libmupdf.so` and no
+  static archive), so runtime images must install `mupdf-libs`, which pulls in
+  MuPDF's shared dependencies (freetype, harfbuzz, jbig2dec, openjpeg, ...).
+- A binary built on Alpine is a musl binary: it only runs on a musl runtime,
+  so use an Alpine runtime image of the same release as the build image.
+- For a MuPDF built from source with its bundled third-party code (a
+  `libmupdf-third` next to `libmupdf`), build with `-tags mupdf_bundled`, which
+  links `-lmupdf -lmupdf-third -lm` instead of using pkg-config.
 
 <details>
 <summary><b>From source / custom prefix / Windows / troubleshooting</b></summary>
@@ -92,10 +111,11 @@ git clone --recursive https://github.com/ArtifexSoftware/mupdf.git
 cd mupdf && make HAVE_X11=no HAVE_GLUT=no prefix=/usr/local install
 ```
 
-**Custom install location.** The default cgo flags (in `mupdf.go`) target
-`/opt/homebrew` on darwin and the system paths on linux, linking `-lmupdf`
-(plus `-lmupdf-third` on linux). If MuPDF lives elsewhere, supplement via
-environment variables instead of editing source:
+**Custom install location.** The default cgo flags (`cgo_darwin.go`,
+`cgo_linux.go`, `cgo_linux_bundled.go`) target `/opt/homebrew` on darwin and
+pkg-config on linux (the `mupdf_bundled` tag links `-lmupdf -lmupdf-third -lm`
+from the system paths). If MuPDF lives elsewhere, set `PKG_CONFIG_PATH` or
+supplement via environment variables instead of editing source:
 
 ```sh
 export CGO_CFLAGS="-I/your/prefix/include"

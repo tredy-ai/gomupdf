@@ -3,10 +3,6 @@
 package gomupdf
 
 /*
-#cgo darwin CFLAGS: -I/opt/homebrew/include
-#cgo darwin LDFLAGS: -L/opt/homebrew/lib -lmupdf
-#cgo linux CFLAGS: -I/usr/include -I/usr/local/include
-#cgo linux LDFLAGS: -lmupdf -lmupdf-third
 
 #include <mupdf/fitz.h>
 #include <stdlib.h>

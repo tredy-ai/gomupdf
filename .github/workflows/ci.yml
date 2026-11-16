@@ -10,38 +10,24 @@ jobs:
   test:
     name: build · vet · test · coverage
     runs-on: ubuntu-latest
+    # Alpine 3.22 userland (MuPDF 1.25.6 from apk, musl). Alpine's own `go`
+    # package (1.24) is older than go.mod's `go 1.25`, so use the official Go
+    # image built on Alpine 3.22.
+    container: golang:1.25-alpine3.22
     steps:
+      - name: Install build dependencies
+        # git for actions/checkout; bash, curl and gnupg for codecov-action,
+        # which runs its uploader with them. build-base = gcc + musl-dev.
+        run: apk add --no-cache build-base pkgconf mupdf-dev git bash curl gnupg
+
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install MuPDF (system package)
+      - name: MuPDF version
         run: |
-          sudo apt-get update
-          # libmupdf-dev provides the headers and the static libmupdf.a. Debian
-          # unbundles MuPDF's third-party deps, so they are installed separately
-          # and linked explicitly below (there is no libmupdf-third on Debian).
-          sudo apt-get install -y --no-install-recommends \
-            libmupdf-dev \
-            libfreetype-dev libharfbuzz-dev libjbig2dec0-dev \
-            libopenjp2-7-dev libjpeg-dev libgumbo-dev libmujs-dev zlib1g-dev
-          echo "--- installed MuPDF artifacts ---"
-          dpkg -L libmupdf-dev | grep -E '\.(a|so|pc|h)$' | head -n 20 || true
-
-      - name: Configure cgo link flags
-        run: |
-          # The binding's in-source linux flags are `-lmupdf -lmupdf-third`, but
-          # Debian ships no libmupdf-third. Provide an empty stub so that flag
-          # resolves, then link MuPDF's third-party deps from the system.
-          mkdir -p "$HOME/stublib"
-          ar crs "$HOME/stublib/libmupdf-third.a"
-          echo "LIBRARY_PATH=$HOME/stublib" >> "$GITHUB_ENV"
-          echo "CGO_LDFLAGS=-lfreetype -lharfbuzz -ljbig2dec -lopenjp2 -ljpeg -lgumbo -lmujs -lz -lm" >> "$GITHUB_ENV"
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: false # no module dependencies, so nothing to cache
+          apk info mupdf-dev
+          pkg-config --modversion mupdf || true
+          pkg-config --libs mupdf
 
       - name: Verify formatting
         run: |
