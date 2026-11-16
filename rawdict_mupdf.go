@@ -9,21 +9,30 @@ package gomupdf
 #include <string.h>
 #include <stdio.h>
 
+// Floats are printed with %.9g so that every float32 MuPDF holds round-trips.
+// fz_write_printf is not libc printf: its %g already prints the shortest
+// string that round-trips the float and ignores the precision, so %.9g and %g
+// print the same bytes on MuPDF 1.25.6. The .9 states the requirement.
+
 static void gomupdf_rawdict_block(fz_context *ctx, fz_output *out, fz_stext_block *block) {
-    fz_write_printf(ctx, out, "B %g %g %g %g\n",
+    fz_write_printf(ctx, out, "B %.9g %.9g %.9g %.9g\n",
         block->bbox.x0, block->bbox.y0, block->bbox.x1, block->bbox.y1);
 }
 
 static void gomupdf_rawdict_line(fz_context *ctx, fz_output *out, fz_stext_line *line) {
-    fz_write_printf(ctx, out, "L %g %g %g %g\n",
-        line->bbox.x0, line->bbox.y0, line->bbox.x1, line->bbox.y1);
+    fz_write_printf(ctx, out, "L %.9g %.9g %.9g %.9g %.9g %.9g %d\n",
+        line->bbox.x0, line->bbox.y0, line->bbox.x1, line->bbox.y1,
+        line->dir.x, line->dir.y, line->wmode);
 }
 
-// gomupdf_rawdict walks the stext tree emitting one record per line:
-//   B x0 y0 x1 y1          – block start (text blocks only)
-//   L x0 y0 x1 y1          – line start
-//   C rune ox oy x0 y0 x1 y1 size fontname  – character (fontname has no spaces;
-//                                              "-" when the font has no name)
+// gomupdf_rawdict walks the stext tree emitting one record per line, fields
+// separated by single spaces:
+//   B x0 y0 x1 y1                      – block start (text blocks only)
+//   L x0 y0 x1 y1 dirx diry wmode      – line start
+//   C rune ox oy x0 y0 x1 y1 ulx uly urx ury llx lly lrx lry size fontname
+//                                      – character: bbox, then quad, then size;
+//                                        fontname has no spaces and is "-"
+//                                        when the font has no name
 // flags are fz_stext_options flags. With clip_enabled, only characters whose
 // bbox intersects the clip rect are written (as gomupdf_page_text_opts does),
 // and a block or line is written only if one of its characters is.
@@ -67,10 +76,13 @@ static char *gomupdf_rawdict(fz_context *ctx, fz_document *doc, int pageno,
                     const char *fname = "";
                     if (ch->font)
                         fname = fz_font_name(ctx, ch->font);
-                    fz_write_printf(ctx, out, "C %d %g %g %g %g %g %g %g ",
+                    fz_quad q = ch->quad;
+                    fz_write_printf(ctx, out, "C %d %.9g %.9g %.9g %.9g %.9g %.9g "
+                        "%.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g ",
                         ch->c,
                         ch->origin.x, ch->origin.y,
                         r.x0, r.y0, r.x1, r.y1,
+                        q.ul.x, q.ul.y, q.ur.x, q.ur.y, q.ll.x, q.ll.y, q.lr.x, q.lr.y,
                         ch->size);
                     // An unnamed font is "-", so the field count stays fixed.
                     if (!*fname)

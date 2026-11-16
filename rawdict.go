@@ -10,17 +10,31 @@ import (
 	"github.com/tredy-ai/gomupdf/geometry"
 )
 
-// Char is a single extracted glyph with its geometry.
+// Char is a single extracted glyph with its geometry. Coordinates are in page
+// space (PDF points, y down, page rotation applied), the space AddRedaction
+// takes. Each is the shortest decimal for MuPDF's float32 value, so
+// float32(v) recovers that value exactly.
 type Char struct {
 	Rune   rune           // the Unicode code point; U+FFFD if MuPDF reported an invalid one
 	Origin geometry.Point // glyph origin (baseline start), PDF points
-	BBox   geometry.Rect  // glyph bounding box, PDF points
+	BBox   geometry.Rect  // glyph bounding box, PDF points: the bounds of Quad
+
+	// Quad is the glyph's quad as MuPDF reports it; UL→UR runs along the
+	// baseline direction. Unlike BBox it stays tight on rotated or skewed
+	// text. New in the tredy-ai fork.
+	Quad geometry.Quad
 }
 
 // TextLine is a line of characters within a block.
 type TextLine struct {
 	BBox  geometry.Rect
 	Chars []Char
+
+	// Dir is the unit direction of the line's baseline in page space, so
+	// (1, 0) for ordinary horizontal text. WMode is 0 for horizontal and 1
+	// for vertical writing. Both new in the tredy-ai fork.
+	Dir   geometry.Point
+	WMode int
 }
 
 // TextSpan groups consecutive chars sharing font and size (PyMuPDF span).
@@ -78,21 +92,24 @@ func parseRawDict(s string) ([]RawBlock, []charMeta, error) {
 		fail := func(why string) ([]RawBlock, []charMeta, error) {
 			return nil, nil, fmt.Errorf("gomupdf: rawdict line %d: %s: %q", n+1, why, line)
 		}
+		// want is the field count; f[lo:hi] are the float fields.
 		typ, _, _ := strings.Cut(line, " ")
-		want := 5 // B|L x0 y0 x1 y1
-		if typ == "C" {
-			want = 10 // C rune ox oy x0 y0 x1 y1 size fontname
-		} else if typ != "B" && typ != "L" {
+		var want, lo, hi int
+		switch typ {
+		case "B": // B x0 y0 x1 y1
+			want, lo, hi = 5, 1, 5
+		case "L": // L x0 y0 x1 y1 dirx diry wmode
+			want, lo, hi = 8, 1, 7
+		case "C": // C rune ox oy x0 y0 x1 y1 ulx uly urx ury llx lly lrx lry size fontname
+			want, lo, hi = 18, 2, 17
+		default:
 			return fail("unknown record type")
 		}
 		f := strings.SplitN(line, " ", want)
 		if len(f) < want {
 			return fail("too few fields")
 		}
-		nums := f[1:]
-		if typ == "C" {
-			nums = f[2:9]
-		}
+		nums := f[lo:hi]
 		v := make([]float64, len(nums))
 		for i, x := range nums {
 			var err error
@@ -109,7 +126,15 @@ func parseRawDict(s string) ([]RawBlock, []charMeta, error) {
 			if curBlock == nil {
 				return fail("L record outside a block")
 			}
-			curBlock.Lines = append(curBlock.Lines, TextLine{BBox: geometry.Rect{X0: v[0], Y0: v[1], X1: v[2], Y1: v[3]}})
+			wmode, err := strconv.Atoi(f[7])
+			if err != nil {
+				return fail("bad wmode " + strconv.Quote(f[7]))
+			}
+			curBlock.Lines = append(curBlock.Lines, TextLine{
+				BBox:  geometry.Rect{X0: v[0], Y0: v[1], X1: v[2], Y1: v[3]},
+				Dir:   geometry.Point{X: v[4], Y: v[5]},
+				WMode: wmode,
+			})
 			curLine = &curBlock.Lines[len(curBlock.Lines)-1]
 		case "C":
 			if curLine == nil {
@@ -127,12 +152,18 @@ func parseRawDict(s string) ([]RawBlock, []charMeta, error) {
 				Rune:   r,
 				Origin: geometry.Point{X: v[0], Y: v[1]},
 				BBox:   geometry.Rect{X0: v[2], Y0: v[3], X1: v[4], Y1: v[5]},
+				Quad: geometry.Quad{
+					UL: geometry.Point{X: v[6], Y: v[7]},
+					UR: geometry.Point{X: v[8], Y: v[9]},
+					LL: geometry.Point{X: v[10], Y: v[11]},
+					LR: geometry.Point{X: v[12], Y: v[13]},
+				},
 			})
-			font := f[9]
+			font := f[17]
 			if font == "-" {
 				font = ""
 			}
-			metas = append(metas, charMeta{font: font, size: v[6]})
+			metas = append(metas, charMeta{font: font, size: v[14]})
 		}
 	}
 	return blocks, metas, nil

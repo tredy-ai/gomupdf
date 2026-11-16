@@ -3,6 +3,7 @@ package gomupdf
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 
@@ -58,7 +59,9 @@ func pageChars(blocks []RawBlock) string {
 }
 
 func TestParseRawDictEmptyFontName(t *testing.T) {
-	blocks, metas, err := parseRawDict("B 0 0 10 10\nL 0 0 10 10\nC 72 1 9 1 1 6 10 12 -\nC 105 6 9 6 1 9 10 12 Helvetica\n")
+	blocks, metas, err := parseRawDict("B 0 0 10 10\nL 0 0 10 10 1 0 0\n" +
+		"C 72 1 9 1 1 6 10 1 1 6 1 1 10 6 10 12 -\n" +
+		"C 105 6 9 6 1 9 10 6 1 9 1 6 10 9 10 12 Helvetica\n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,9 +73,30 @@ func TestParseRawDictEmptyFontName(t *testing.T) {
 	}
 }
 
+func TestParseRawDictFields(t *testing.T) {
+	blocks, _, err := parseRawDict("B 0 0 10 10\nL 0 1 10 9 .6 -.8 1\n" +
+		"C 72 1 2 3 4 5 6 11 12 13 14 15 16 17 18 12 F\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := blocks[0].Lines[0]
+	if l.BBox != (geometry.Rect{X0: 0, Y0: 1, X1: 10, Y1: 9}) || l.Dir != (geometry.Point{X: .6, Y: -.8}) || l.WMode != 1 {
+		t.Errorf("line = %+v", l)
+	}
+	want := Char{
+		Rune:   'H',
+		Origin: geometry.Point{X: 1, Y: 2},
+		BBox:   geometry.Rect{X0: 3, Y0: 4, X1: 5, Y1: 6},
+		Quad:   geometry.Quad{UL: geometry.Point{X: 11, Y: 12}, UR: geometry.Point{X: 13, Y: 14}, LL: geometry.Point{X: 15, Y: 16}, LR: geometry.Point{X: 17, Y: 18}},
+	}
+	if l.Chars[0] != want {
+		t.Errorf("char = %+v, want %+v", l.Chars[0], want)
+	}
+}
+
 func TestParseRawDictInvalidCodePoint(t *testing.T) {
 	for _, cp := range []string{"-1", "55296", "57343", "1114112"} { // negative, D800, DFFF, 0x110000
-		blocks, _, err := parseRawDict("B 0 0 1 1\nL 0 0 1 1\nC " + cp + " 0 0 0 0 1 1 12 F\n")
+		blocks, _, err := parseRawDict("B 0 0 1 1\nL 0 0 1 1 1 0 0\nC " + cp + " 0 0 0 0 1 1 0 0 1 0 0 1 1 1 12 F\n")
 		if err != nil {
 			t.Fatalf("cp %s: %v", cp, err)
 		}
@@ -87,11 +111,14 @@ func TestParseRawDictMalformed(t *testing.T) {
 		{"B 0 0 1\n", "line 1: too few fields"},
 		{"B 0 0 1 x\n", "line 1: bad number"},
 		{"B 0 0 1 1 2\n", "line 1: bad number"},
-		{"B 0 0 1 1\nL 0 0 1 1\nC 72 0 0 0 0 1 1 12\n", "line 3: too few fields"},
-		{"B 0 0 1 1\nL 0 0 1 1\nC x 0 0 0 0 1 1 12 F\n", "line 3: bad code point"},
+		{"B 0 0 1 1\nL 0 0 1 1\n", "line 2: too few fields"},
+		{"B 0 0 1 1\nL 0 0 1 1 1 0 h\n", "line 2: bad wmode"},
+		{"B 0 0 1 1\nL 0 0 1 1 1 0 0\nC 72 0 0 0 0 1 1 0 0 1 0 0 1 1 1 12\n", "line 3: too few fields"},
+		{"B 0 0 1 1\nL 0 0 1 1 1 0 0\nC 72 0 0 0 0 1 1 12 F\n", "line 3: too few fields"}, // pre-quad format
+		{"B 0 0 1 1\nL 0 0 1 1 1 0 0\nC x 0 0 0 0 1 1 0 0 1 0 0 1 1 1 12 F\n", "line 3: bad code point"},
 		{"X 1 2 3 4\n", "line 1: unknown record type"},
-		{"L 0 0 1 1\n", "line 1: L record outside a block"},
-		{"B 0 0 1 1\nC 72 0 0 0 0 1 1 12 F\n", "line 2: C record outside a line"},
+		{"L 0 0 1 1 1 0 0\n", "line 1: L record outside a block"},
+		{"B 0 0 1 1\nC 72 0 0 0 0 1 1 0 0 1 0 0 1 1 1 12 F\n", "line 2: C record outside a line"},
 	} {
 		_, _, err := parseRawDict(tc.in)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -259,6 +286,143 @@ func TestRawDictWithOptionsClip(t *testing.T) {
 		if got.String() != want {
 			t.Errorf("clip %v: RawDictWithOptions chars\n%q\nExtractText\n%q", clip, got.String(), want)
 		}
+	}
+}
+
+// checkQuads checks that every line runs along want (within 1e-3) and every
+// char's quad does too (UL→UR), with bounds exactly equal to its BBox.
+func checkQuads(t *testing.T, blocks []RawBlock, want geometry.Point) []Char {
+	t.Helper()
+	near := func(x, y float64) bool { return math.Abs(x-want.X) <= 1e-3 && math.Abs(y-want.Y) <= 1e-3 }
+	var chars []Char
+	for _, b := range blocks {
+		for _, l := range b.Lines {
+			if !near(l.Dir.X, l.Dir.Y) || l.WMode != 0 {
+				t.Errorf("line Dir %v WMode %d, want Dir %v WMode 0", l.Dir, l.WMode, want)
+			}
+			for _, c := range l.Chars {
+				q := c.Quad
+				if q.Rect() != c.BBox {
+					t.Errorf("%q: quad bounds %v != BBox %v", c.Rune, q.Rect(), c.BBox)
+				}
+				dx, dy := q.UR.X-q.UL.X, q.UR.Y-q.UL.Y
+				if n := math.Hypot(dx, dy); n == 0 || !near(dx/n, dy/n) {
+					t.Errorf("%q: quad %v baseline not along %v", c.Rune, q, want)
+				}
+				chars = append(chars, c)
+			}
+		}
+	}
+	if len(chars) == 0 {
+		t.Fatal("no chars")
+	}
+	return chars
+}
+
+func TestRawDictQuadsHorizontal(t *testing.T) {
+	d := onePagePDF(t, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+		"BT /F1 12 Tf 20 100 Td (Hello) Tj ET")
+	defer d.Close()
+	p, _ := d.LoadPage(0)
+	blocks, err := p.RawDict()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range checkQuads(t, blocks, geometry.Point{X: 1, Y: 0}) {
+		if !c.Quad.IsRectangular() || c.Quad != c.BBox.Quad() {
+			t.Errorf("%q: quad %v is not the rectangle %v", c.Rune, c.Quad, c.BBox)
+		}
+	}
+}
+
+// Text drawn at 30° counter-clockwise in PDF space runs at -30° in MuPDF's
+// y-down page space.
+func TestRawDictQuads30Degrees(t *testing.T) {
+	d := onePagePDF(t, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+		"BT /F1 12 Tf 0.8660254 0.5 -0.5 0.8660254 50 50 Tm (Hello) Tj ET")
+	defer d.Close()
+	p, _ := d.LoadPage(0)
+	blocks, err := p.RawDictWithOptions(TextOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := geometry.Point{X: math.Cos(math.Pi / 6), Y: -math.Sin(math.Pi / 6)}
+	chars := checkQuads(t, blocks, want)
+	if pageChars(blocks) != "Hello" {
+		t.Errorf("chars = %q", pageChars(blocks))
+	}
+	for _, c := range chars {
+		if c.Quad.IsRectangular() {
+			t.Errorf("%q: quad %v is axis-aligned", c.Rune, c.Quad)
+		}
+	}
+}
+
+// On a /Rotate 90 page, horizontal text runs top to bottom in page space. A
+// 90° quad is still an axis-aligned rectangle, but its corners are rotated:
+// it is not BBox.Quad().
+func TestRawDictQuadsRotate90(t *testing.T) {
+	src, err := NewPDF()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := src.NewPage(300, 200); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := src.LoadPage(0)
+	if _, err := p.InsertTextbox(geometry.Rect{X0: 20, Y0: 20, X1: 280, Y1: 180}, "Hello", 12); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.SetRotation(90); err != nil {
+		t.Fatal(err)
+	}
+	data, err := src.SaveBytes(false)
+	src.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := OpenStream(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	p, _ = d.LoadPage(0)
+	bound, err := p.Bound()
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocks, err := p.RawDict()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pageChars(blocks) != "Hello" {
+		t.Errorf("chars = %q", pageChars(blocks))
+	}
+	for _, c := range checkQuads(t, blocks, geometry.Point{X: 0, Y: 1}) {
+		if c.Quad == c.BBox.Quad() {
+			t.Errorf("%q: quad %v is unrotated", c.Rune, c.Quad)
+		}
+		if !bound.ContainsRect(c.BBox) {
+			t.Errorf("%q: BBox %v outside page %v", c.Rune, c.BBox, bound)
+		}
+	}
+}
+
+// Coordinates must round-trip the float32 values MuPDF holds; 6 significant
+// digits would print 12345.678 as 12345.7.
+func TestRawDictCoordinatePrecision(t *testing.T) {
+	d := onePagePDF(t, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+		"BT /F1 12 Tf 12345.678 100 Td (H) Tj ET")
+	defer d.Close()
+	p, _ := d.LoadPage(0)
+	blocks, err := p.RawDict()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := blocks[0].Lines[0].Chars[0]
+	want := float32(12345.678)
+	if float32(c.Origin.X) != want || float32(c.Quad.UL.X) != want || float32(c.BBox.X0) != want {
+		t.Errorf("origin %v quad %v bbox %v, want x = float32 %v", c.Origin, c.Quad, c.BBox, want)
 	}
 }
 
