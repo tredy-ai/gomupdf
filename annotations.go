@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/srijanmukherjee/gomupdf/geometry"
+	"github.com/tredy-ai/gomupdf/geometry"
 )
 
 // Annotation describes an annotation present on a page.

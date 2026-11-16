@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/srijanmukherjee/gomupdf/geometry"
+	"github.com/tredy-ai/gomupdf/geometry"
 )
 
 func TestNewPDFSaveRoundTrip(t *testing.T) {

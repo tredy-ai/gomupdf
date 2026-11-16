@@ -6,7 +6,7 @@ import (
 	"io"
 	"iter"
 
-	"github.com/srijanmukherjee/gomupdf"
+	"github.com/tredy-ai/gomupdf"
 )
 
 // ErrPassword is returned by Open when a document is encrypted and the supplied

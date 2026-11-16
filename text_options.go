@@ -3,7 +3,7 @@ package gomupdf
 import (
 	"errors"
 
-	"github.com/srijanmukherjee/gomupdf/geometry"
+	"github.com/tredy-ai/gomupdf/geometry"
 )
 
 // TextOptions controls how text is extracted from a page.

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/srijanmukherjee/gomupdf/geometry"
+	"github.com/tredy-ai/gomupdf/geometry"
 )
 
 // newRedactDoc creates a fresh PDF with one 400×400-point page containing the

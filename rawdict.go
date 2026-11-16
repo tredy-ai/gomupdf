@@ -6,7 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/srijanmukherjee/gomupdf/geometry"
+	"github.com/tredy-ai/gomupdf/geometry"
 )
 
 // Char is a single extracted glyph with its geometry.

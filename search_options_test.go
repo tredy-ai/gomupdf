@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/srijanmukherjee/gomupdf/geometry"
+	"github.com/tredy-ai/gomupdf/geometry"
 )
 
 // needle is a word we know exists in small-table.pdf (from fixtures_test.go

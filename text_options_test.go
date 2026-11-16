@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/srijanmukherjee/gomupdf/geometry"
+	"github.com/tredy-ai/gomupdf/geometry"
 )
 
 // TestExtractTextDefault verifies that ExtractText with default (zero-value)

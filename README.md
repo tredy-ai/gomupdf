@@ -8,13 +8,16 @@ A focused [cgo](https://pkg.go.dev/cmd/cgo) binding over the battle-tested
 [MuPDF](https://mupdf.com/core) C core — text extraction, table detection,
 rendering, and full document assembly, behind a small, Go-shaped API.
 
-[![CI](https://github.com/srijanmukherjee/gomupdf/actions/workflows/ci.yml/badge.svg)](https://github.com/srijanmukherjee/gomupdf/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/srijanmukherjee/gomupdf/graph/badge.svg)](https://codecov.io/gh/srijanmukherjee/gomupdf)
-[![Go Reference](https://pkg.go.dev/badge/github.com/srijanmukherjee/gomupdf.svg)](https://pkg.go.dev/github.com/srijanmukherjee/gomupdf)
-[![Go Report Card](https://goreportcard.com/badge/github.com/srijanmukherjee/gomupdf)](https://goreportcard.com/report/github.com/srijanmukherjee/gomupdf)
+[![CI](https://github.com/tredy-ai/gomupdf/actions/workflows/ci.yml/badge.svg)](https://github.com/tredy-ai/gomupdf/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/tredy-ai/gomupdf/graph/badge.svg)](https://codecov.io/gh/tredy-ai/gomupdf)
+[![Go Reference](https://pkg.go.dev/badge/github.com/tredy-ai/gomupdf.svg)](https://pkg.go.dev/github.com/tredy-ai/gomupdf)
+[![Go Report Card](https://goreportcard.com/badge/github.com/tredy-ai/gomupdf)](https://goreportcard.com/report/github.com/tredy-ai/gomupdf)
 [![Built with Claude Code](https://img.shields.io/badge/Built%20with-Claude%20Code-D97757?logo=anthropic&logoColor=white)](https://claude.com/claude-code)
 
 </div>
+
+> Fork of [srijanmukherjee/gomupdf](https://github.com/srijanmukherjee/gomupdf), maintained by Tredy.
+> See [FORK.md](FORK.md) for the base version, the patch list and the upstream policy.
 
 ```go
 doc, _ := gomupdf.Open("invoice.pdf")
@@ -63,7 +66,7 @@ _ = pm.SavePNG("page.png")      // …and save it as an image
 ## Install
 
 ```sh
-go get github.com/srijanmukherjee/gomupdf
+go get github.com/tredy-ai/gomupdf
 ```
 
 ### Requirements
@@ -119,7 +122,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/srijanmukherjee/gomupdf"
+	"github.com/tredy-ai/gomupdf"
 )
 
 func main() {
@@ -345,7 +348,7 @@ _ = doc.SaveIncremental("out.pdf")
 | Write content | `page.InsertText` · `page.InsertImage` · `page.AddRectAnnot` |
 | Save | `doc.SaveBytes` · `doc.EzSave` · `doc.SaveWithOptions` · `doc.SaveIncremental` |
 
-Full reference: **[pkg.go.dev/github.com/srijanmukherjee/gomupdf](https://pkg.go.dev/github.com/srijanmukherjee/gomupdf)**
+Full reference: **[pkg.go.dev/github.com/tredy-ai/gomupdf](https://pkg.go.dev/github.com/tredy-ai/gomupdf)**
 
 ## Feature support
 

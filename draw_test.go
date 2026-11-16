@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/srijanmukherjee/gomupdf/geometry"
+	"github.com/tredy-ai/gomupdf/geometry"
 )
 
 // newDrawPage is a helper that creates a fresh in-memory PDF with one 300×300

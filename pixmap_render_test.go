@@ -3,7 +3,7 @@ package gomupdf
 import (
 	"testing"
 
-	"github.com/srijanmukherjee/gomupdf/geometry"
+	"github.com/tredy-ai/gomupdf/geometry"
 )
 
 // TestPixmapDPI verifies that rendering at 144 DPI produces roughly double the

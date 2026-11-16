@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/srijanmukherjee/gomupdf/geometry"
+	"github.com/tredy-ai/gomupdf/geometry"
 )
 
 // TOCEntry is one table-of-contents item: a heading level, its title, and the

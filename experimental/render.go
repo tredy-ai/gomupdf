@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/srijanmukherjee/gomupdf"
+	"github.com/tredy-ai/gomupdf"
 )
 
 // RenderOption configures rasterization.

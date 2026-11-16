@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/srijanmukherjee/gomupdf/geometry"
+	"github.com/tredy-ai/gomupdf/geometry"
 )
 
 // Page geometry: rotation and the /MediaBox and /CropBox page boxes.

@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/srijanmukherjee/gomupdf/geometry"
+	"github.com/tredy-ai/gomupdf/geometry"
 )
 
 // Search finds all occurrences of needle on the page and returns their hit

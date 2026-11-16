@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/srijanmukherjee/gomupdf/geometry"
+	"github.com/tredy-ai/gomupdf/geometry"
 )
 
 // Widget is a form field shown on a page.

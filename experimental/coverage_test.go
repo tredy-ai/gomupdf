@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/srijanmukherjee/gomupdf"
-	exp "github.com/srijanmukherjee/gomupdf/experimental"
+	"github.com/tredy-ai/gomupdf"
+	exp "github.com/tredy-ai/gomupdf/experimental"
 )
 
 const imgSample = "../testdata/resources/image-file1.pdf"

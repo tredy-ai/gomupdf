@@ -3,7 +3,7 @@ package gomupdf
 import (
 	"testing"
 
-	"github.com/srijanmukherjee/gomupdf/geometry"
+	"github.com/tredy-ai/gomupdf/geometry"
 )
 
 // helper: reopen PDF from bytes

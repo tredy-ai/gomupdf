@@ -3,7 +3,7 @@ package gomupdf
 import (
 	"testing"
 
-	"github.com/srijanmukherjee/gomupdf/geometry"
+	"github.com/tredy-ai/gomupdf/geometry"
 )
 
 // newShapeTestPage creates a fresh 400x400 PDF and returns the doc and page 0.

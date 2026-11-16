@@ -4,7 +4,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/srijanmukherjee/gomupdf"
+	"github.com/tredy-ai/gomupdf"
 )
 
 // Page is a positioned-text view of one PDF page. It loads the page's words

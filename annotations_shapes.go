@@ -3,7 +3,7 @@ package gomupdf
 import (
 	"errors"
 
-	"github.com/srijanmukherjee/gomupdf/geometry"
+	"github.com/tredy-ai/gomupdf/geometry"
 )
 
 // AnnotStyle holds shared styling options for shape and text annotations.

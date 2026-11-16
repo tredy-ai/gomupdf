@@ -1,6 +1,6 @@
 package experimental
 
-import "github.com/srijanmukherjee/gomupdf"
+import "github.com/tredy-ai/gomupdf"
 
 // Table is a detected table tagged with its source page. It embeds
 // gomupdf.Table, so Rows, ColX, RowY, NumRows() and NumCols() are available

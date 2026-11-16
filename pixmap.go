@@ -6,7 +6,7 @@ import (
 	"image/png"
 	"os"
 
-	"github.com/srijanmukherjee/gomupdf/geometry"
+	"github.com/tredy-ai/gomupdf/geometry"
 )
 
 // PixmapOptions controls rendering.

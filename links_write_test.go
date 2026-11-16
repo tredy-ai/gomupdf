@@ -3,7 +3,7 @@ package gomupdf
 import (
 	"testing"
 
-	"github.com/srijanmukherjee/gomupdf/geometry"
+	"github.com/tredy-ai/gomupdf/geometry"
 )
 
 // newTwoPageDoc is a test helper that creates a fresh PDF with two 400×400 pages.

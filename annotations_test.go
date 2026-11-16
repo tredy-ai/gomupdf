@@ -3,7 +3,7 @@ package gomupdf
 import (
 	"testing"
 
-	"github.com/srijanmukherjee/gomupdf/geometry"
+	"github.com/tredy-ai/gomupdf/geometry"
 )
 
 // TestAnnotationsEmptyPage verifies that a page with no annotations returns

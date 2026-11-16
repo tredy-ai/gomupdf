@@ -3,7 +3,7 @@ package gomupdf
 import (
 	"errors"
 
-	"github.com/srijanmukherjee/gomupdf/geometry"
+	"github.com/tredy-ai/gomupdf/geometry"
 )
 
 // InsertLink adds a clickable link over rect that opens an external URI.

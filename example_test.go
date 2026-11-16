@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/srijanmukherjee/gomupdf"
+	"github.com/tredy-ai/gomupdf"
 )
 
 // Open a PDF and print the reading-order text of every page.

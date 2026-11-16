@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	exp "github.com/srijanmukherjee/gomupdf/experimental"
+	exp "github.com/tredy-ai/gomupdf/experimental"
 )
 
 const sample = "../testdata/resources/small-table.pdf"

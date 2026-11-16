@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/srijanmukherjee/gomupdf/geometry"
+	"github.com/tredy-ai/gomupdf/geometry"
 )
 
 func approx(a, b, eps float64) bool { return math.Abs(a-b) <= eps }

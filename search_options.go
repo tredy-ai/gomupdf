@@ -1,6 +1,6 @@
 package gomupdf
 
-import "github.com/srijanmukherjee/gomupdf/geometry"
+import "github.com/tredy-ai/gomupdf/geometry"
 
 // SearchOptions refines a page search.
 type SearchOptions struct {

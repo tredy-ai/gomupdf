@@ -12,8 +12,8 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 
-	"github.com/srijanmukherjee/gomupdf"
-	"github.com/srijanmukherjee/gomupdf/geometry"
+	"github.com/tredy-ai/gomupdf"
+	"github.com/tredy-ai/gomupdf/geometry"
 )
 
 // NewDoc creates a new, empty PDF document ready for AppendPDF / AppendImage.

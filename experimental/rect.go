@@ -18,8 +18,8 @@
 package experimental
 
 import (
-	"github.com/srijanmukherjee/gomupdf"
-	"github.com/srijanmukherjee/gomupdf/geometry"
+	"github.com/tredy-ai/gomupdf"
+	"github.com/tredy-ai/gomupdf/geometry"
 )
 
 // Rect is an axis-aligned rectangle in PDF points. Origin is top-left and y
