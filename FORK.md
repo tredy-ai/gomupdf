@@ -41,7 +41,8 @@ None yet.
 
 ## Known limitations
 
-None yet.
+- Encrypted saves (`SaveEncryptedBytes`, `SaveOptions.Encrypt`) and incremental
+  saves stay buffered in memory; only plain `SaveWithOptions` streams to disk.
 
 ## Staying current with upstream
 

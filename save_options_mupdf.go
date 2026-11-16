@@ -10,6 +10,55 @@ package gomupdf
 #include <string.h>
 #include <stdio.h>
 
+// Fill pdf_write_options from the Go-side SaveOptions. Shared by the buffered
+// and the path save so the two cannot drift.
+static void gomupdf_fill_write_opts(pdf_write_options *opts,
+        int garbage, int deflate, int deflate_images, int deflate_fonts,
+        int clean, int linear, int ascii, int pretty,
+        int encrypt, const char *upwd, const char *opwd, int permissions) {
+    memset(opts, 0, sizeof(*opts));
+    if (garbage < 0) garbage = 0;
+    if (garbage > 4) garbage = 4;
+    opts->do_garbage = garbage;
+    opts->do_compress = deflate ? 1 : 0;
+    opts->do_compress_images = deflate_images ? 1 : 0;
+    opts->do_compress_fonts = deflate_fonts ? 1 : 0;
+    opts->do_clean = clean ? 1 : 0;
+    opts->do_sanitize = clean ? 1 : 0;
+    opts->do_linear = linear ? 1 : 0;
+    opts->do_ascii = ascii ? 1 : 0;
+    opts->do_pretty = pretty ? 1 : 0;
+    if (encrypt) {
+        opts->do_encrypt = PDF_ENCRYPT_AES_256;
+        opts->permissions = permissions;
+        snprintf(opts->upwd_utf8, sizeof(opts->upwd_utf8), "%s", upwd ? upwd : "");
+        snprintf(opts->opwd_utf8, sizeof(opts->opwd_utf8), "%s", opwd ? opwd : "");
+    }
+}
+
+// Save a non-incremental document straight to a file. Returns 0 on success.
+static int gomupdf_save_path(
+        fz_context *ctx, fz_document *doc, const char *path,
+        int garbage, int deflate, int deflate_images, int deflate_fonts,
+        int clean, int linear, int ascii, int pretty,
+        int encrypt, const char *upwd, const char *opwd, int permissions,
+        char *err, int errlen) {
+    pdf_document *pdf = pdf_specifics(ctx, doc);
+    if (!pdf) { snprintf(err, errlen, "not a PDF document"); return -1; }
+    fz_try(ctx) {
+        pdf_write_options opts;
+        gomupdf_fill_write_opts(&opts, garbage, deflate, deflate_images, deflate_fonts,
+                                clean, linear, ascii, pretty,
+                                encrypt, upwd, opwd, permissions);
+        pdf_save_document(ctx, pdf, path, &opts);
+    }
+    fz_catch(ctx) {
+        snprintf(err, errlen, "%s", fz_caught_message(ctx));
+        return -1;
+    }
+    return 0;
+}
+
 // Serialize a document with explicit pdf_write_options. For an incremental
 // save (incremental != 0), origdata/origlen must hold the original file bytes;
 // they are written first and the update section is appended after them.
@@ -29,24 +78,9 @@ static unsigned char *gomupdf_save_opts(
     fz_var(out);
     fz_try(ctx) {
         pdf_write_options opts;
-        memset(&opts, 0, sizeof(opts));
-        if (garbage < 0) garbage = 0;
-        if (garbage > 4) garbage = 4;
-        opts.do_garbage = garbage;
-        opts.do_compress = deflate ? 1 : 0;
-        opts.do_compress_images = deflate_images ? 1 : 0;
-        opts.do_compress_fonts = deflate_fonts ? 1 : 0;
-        opts.do_clean = clean ? 1 : 0;
-        opts.do_sanitize = clean ? 1 : 0;
-        opts.do_linear = linear ? 1 : 0;
-        opts.do_ascii = ascii ? 1 : 0;
-        opts.do_pretty = pretty ? 1 : 0;
-        if (encrypt) {
-            opts.do_encrypt = PDF_ENCRYPT_AES_256;
-            opts.permissions = permissions;
-            snprintf(opts.upwd_utf8, sizeof(opts.upwd_utf8), "%s", upwd ? upwd : "");
-            snprintf(opts.opwd_utf8, sizeof(opts.opwd_utf8), "%s", opwd ? opwd : "");
-        }
+        gomupdf_fill_write_opts(&opts, garbage, deflate, deflate_images, deflate_fonts,
+                                clean, linear, ascii, pretty,
+                                encrypt, upwd, opwd, permissions);
         buf = fz_new_buffer(ctx, origlen ? origlen + 4096 : 4096);
         if (incremental) {
             if (!pdf_can_be_saved_incrementally(ctx, pdf))
@@ -164,6 +198,28 @@ func (d *mupdfDoc) save(opts SaveOptions, orig []byte) ([]byte, error) {
 	}
 	defer C.free(unsafe.Pointer(ptr))
 	return C.GoBytes(unsafe.Pointer(ptr), outLen), nil
+}
+
+func (d *mupdfDoc) savePath(path string, opts SaveOptions) error {
+	if d.doc == nil {
+		return errors.New("gomupdf: document closed")
+	}
+	cp := C.CString(path)
+	defer C.free(unsafe.Pointer(cp))
+	cu := C.CString(opts.UserPassword)
+	defer C.free(unsafe.Pointer(cu))
+	co := C.CString(opts.OwnerPassword)
+	defer C.free(unsafe.Pointer(co))
+	errBuf := (*C.char)(C.malloc(errBufLen))
+	defer C.free(unsafe.Pointer(errBuf))
+	if C.gomupdf_save_path(d.ctx, d.doc, cp,
+		C.int(opts.Garbage), cbint(opts.Deflate), cbint(opts.DeflateImages), cbint(opts.DeflateFonts),
+		cbint(opts.Clean), cbint(opts.Linear), cbint(opts.ASCII), cbint(opts.Pretty),
+		cbint(opts.Encrypt), cu, co, C.int(opts.Permissions),
+		errBuf, errBufLen) != 0 {
+		return errors.New("gomupdf: save: " + C.GoString(errBuf))
+	}
+	return nil
 }
 
 func (d *mupdfDoc) saveEncrypted(userPwd, ownerPwd string) ([]byte, error) {

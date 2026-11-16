@@ -260,6 +260,9 @@ func (d *Document) SaveBytes(garbage bool) ([]byte, error) {
 
 // Save writes the document to a PDF file.
 func (d *Document) Save(path string, garbage bool) error {
+	if err := d.checkNotSource(path); err != nil {
+		return err
+	}
 	data, err := d.SaveBytes(garbage)
 	if err != nil {
 		return err
@@ -267,7 +270,8 @@ func (d *Document) Save(path string, garbage bool) error {
 	return os.WriteFile(path, data, 0o644)
 }
 
-// SaveEncryptedBytes serializes the document with AES-256 encryption. userPwd
+// SaveEncryptedBytes serializes the document with AES-256 encryption. Encrypted
+// saves are buffered: the whole output is built in memory. userPwd
 // is required to open; ownerPwd grants full permissions (may be "").
 func (d *Document) SaveEncryptedBytes(userPwd, ownerPwd string) ([]byte, error) {
 	d.mu.Lock()

@@ -57,6 +57,9 @@ type docBackend interface {
 
 	// --- whole-document serialization -------------------------------------
 	save(opts SaveOptions, orig []byte) ([]byte, error)
+	// savePath streams a non-incremental save to the file at path.
+	savePath(path string, opts SaveOptions) error
+	// saveEncrypted is buffered: the whole output is built in memory.
 	saveEncrypted(userPwd, ownerPwd string) ([]byte, error)
 	convertToPDF() ([]byte, error)
 
