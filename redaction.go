@@ -2,6 +2,8 @@ package gomupdf
 
 import (
 	"errors"
+	"fmt"
+	"math"
 
 	"github.com/tredy-ai/gomupdf/geometry"
 )
@@ -74,6 +76,56 @@ func (p *Page) AddRedaction(rect geometry.Rect, opts RedactOptions) error {
 		return errors.New("gomupdf: document closed")
 	}
 	return d.b.addRedaction(p.Number, [4]float64{rect.X0, rect.Y0, rect.X1, rect.Y1})
+}
+
+// AddRedactionQuads marks the area covered by quads for redaction: one
+// redaction annotation whose /QuadPoints are the quads. MuPDF sets its /Rect
+// to the union of the quads' bounds plus 1pt for the annotation's outline.
+// Quads are in page space, like AddRedaction's rect and RawDict's Char.Quad.
+// Nothing is removed until ApplyRedactions is called.
+//
+// New relative to upstream.
+//
+// Precision on MuPDF 1.25.6: ApplyRedactions draws the black box over each
+// quad's own shape, but it removes a glyph when the glyph's axis-aligned
+// bounding box, shrunk by 10% on each side, overlaps the axis-aligned bounds of
+// any quad. Images and line art are matched against, and image pixels blanked
+// over, each quad's bounds too. So each quad removes content exactly as
+// AddRedaction of its bounds would. On rotated or
+// skewed text, redacting the quads of a word's characters still removes
+// neighbouring characters whose bounding boxes overlap theirs, and those
+// characters disappear outside the drawn box. What quads add over one rect
+// around the whole word is that content inside that rect but outside every
+// quad's bounds is kept.
+//
+// An empty slice or a non-finite coordinate (after conversion to float32)
+// returns an error: MuPDF treats a NaN quad as empty and would silently redact
+// nothing. Zero-area quads are accepted; MuPDF still removes glyphs they touch.
+func (p *Page) AddRedactionQuads(quads []geometry.Quad, opts RedactOptions) error {
+	if len(quads) == 0 {
+		return errors.New("gomupdf: AddRedactionQuads: no quads")
+	}
+	flat := make([]float32, 0, len(quads)*8)
+	for _, q := range quads {
+		for _, pt := range [4]geometry.Point{q.UL, q.UR, q.LL, q.LR} {
+			x, y := float32(pt.X), float32(pt.Y)
+			if !isFinite32(x) || !isFinite32(y) {
+				return fmt.Errorf("gomupdf: AddRedactionQuads: non-finite coordinate in quad %v", q)
+			}
+			flat = append(flat, x, y)
+		}
+	}
+	d := p.doc
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.b == nil {
+		return errors.New("gomupdf: document closed")
+	}
+	return d.b.addRedactionQuads(p.Number, flat)
+}
+
+func isFinite32(f float32) bool {
+	return !math.IsNaN(float64(f)) && !math.IsInf(float64(f), 0)
 }
 
 // ApplyRedactions permanently removes the content under every redaction

@@ -135,6 +135,7 @@ type docBackend interface {
 
 	// --- per-page redaction & widgets -------------------------------------
 	addRedaction(pageNo int, rect [4]float64) error
+	addRedactionQuads(pageNo int, quads []float32) error // 8 floats per quad: ul ur ll lr
 	applyRedactions(pageNo int, opts ApplyOptions) (int, error)
 	widgetsRaw(pageNo int) (string, error)
 	setTextField(pageNo, index int, value string) error

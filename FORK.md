@@ -69,6 +69,12 @@ n, err := page.ApplyRedactions(gomupdf.ApplyOptions{Images: gomupdf.ImageRemove}
 
 - Encrypted saves (`SaveEncryptedBytes`, `SaveOptions.Encrypt`) and incremental
   saves stay buffered in memory; only plain `SaveWithOptions` streams to disk.
+- `AddRedactionQuads` is no more precise than rects for removing content on
+  MuPDF 1.25.6: a glyph is removed when its axis-aligned bbox (shrunk 10% per
+  side) overlaps any quad's axis-aligned bounds. On rotated text, redacting a
+  word's character quads still removes the neighbouring characters, outside the
+  drawn box, which does follow the quads. Quads only spare content in the
+  corners of the word's bounding rect.
 
 ## Staying current with upstream
 

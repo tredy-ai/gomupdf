@@ -37,6 +37,41 @@ static int gomupdf_add_redaction(fz_context *ctx, fz_document *doc, int pageno,
     return 0;
 }
 
+// fz_quad is read straight from the caller's flat float array.
+_Static_assert(sizeof(fz_quad) == 8 * sizeof(float), "fz_quad is not 8 packed floats");
+
+// gomupdf_add_redaction_quads creates one redaction annotation with /QuadPoints
+// set to the n quads (page space, ul ur ll lr each). pdf_set_annot_quad_points
+// does not touch /Rect; pdf_update_annot synthesises the appearance and sets
+// /Rect to the union of the quads' bounds, each expanded by its 1pt outline.
+// It overwrites any /Rect set before it, so none is set here.
+static int gomupdf_add_redaction_quads(fz_context *ctx, fz_document *doc, int pageno,
+                                       const float *quads, int n,
+                                       char *err, int errlen) {
+    pdf_document *pdf = pdf_specifics(ctx, doc);
+    if (!pdf) { snprintf(err, errlen, "not a PDF document"); return -1; }
+    const fz_quad *qv = (const fz_quad *)quads;
+    pdf_page *page = NULL;
+    pdf_annot *annot = NULL;
+    fz_var(page);
+    fz_var(annot);
+    fz_try(ctx) {
+        page = pdf_load_page(ctx, pdf, pageno);
+        annot = pdf_create_annot(ctx, page, PDF_ANNOT_REDACT);
+        pdf_set_annot_quad_points(ctx, annot, n, qv);
+        pdf_update_annot(ctx, annot);
+    }
+    fz_always(ctx) {
+        if (annot) pdf_drop_annot(ctx, annot);
+        fz_drop_page(ctx, (fz_page *)page);
+    }
+    fz_catch(ctx) {
+        snprintf(err, errlen, "%s", fz_caught_message(ctx));
+        return -1;
+    }
+    return 0;
+}
+
 // gomupdf_apply_redactions applies every redaction annotation on the page.
 // image_method, line_art and text carry the Go-side enum values (see
 // ApplyOptions); each is mapped to its PDF_REDACT_* constant by name, and an
@@ -110,6 +145,23 @@ func (d *mupdfDoc) addRedaction(pageNo int, rect [4]float64) error {
 		C.float(rect[0]), C.float(rect[1]), C.float(rect[2]), C.float(rect[3]),
 		errBuf, errBufLen) != 0 {
 		return errors.New("gomupdf: add redaction: " + C.GoString(errBuf))
+	}
+	return nil
+}
+
+func (d *mupdfDoc) addRedactionQuads(pageNo int, quads []float32) error {
+	if d.doc == nil {
+		return errors.New("gomupdf: document closed")
+	}
+	if len(quads) == 0 || len(quads)%8 != 0 {
+		return errors.New("gomupdf: add redaction quads: want 8 floats per quad")
+	}
+	errBuf := (*C.char)(C.malloc(errBufLen))
+	defer C.free(unsafe.Pointer(errBuf))
+	if C.gomupdf_add_redaction_quads(d.ctx, d.doc, C.int(pageNo),
+		(*C.float)(unsafe.Pointer(&quads[0])), C.int(len(quads)/8),
+		errBuf, errBufLen) != 0 {
+		return errors.New("gomupdf: add redaction quads: " + C.GoString(errBuf))
 	}
 	return nil
 }
