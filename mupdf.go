@@ -41,6 +41,7 @@ type Document struct {
 	locked    bool   // encrypted and not yet authenticated
 	encrypted bool   // whether the PDF was password-protected at open
 	path      string // file the document was opened from by Open; "" otherwise
+	badScrub  bool   // a Scrub failed on the document; see Scrub
 }
 
 // Open opens a PDF document from a file path.

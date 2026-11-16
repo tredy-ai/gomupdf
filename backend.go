@@ -141,6 +141,11 @@ type docBackend interface {
 	setTextField(pageNo, index int, value string) error
 	setCheckbox(pageNo, index int, checked bool) error
 	addTextField(pageNo int, name string, rect [4]float64, value string) error
+
+	// --- document scrub ---------------------------------------------------
+	scrub(opts ScrubOptions) error
+	// hiddenContentRaw returns the HiddenContent counts in field order.
+	hiddenContentRaw() ([]int, error)
 }
 
 // fontBackend is a loaded font for measuring text.
