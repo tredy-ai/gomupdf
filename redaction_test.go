@@ -74,7 +74,7 @@ func TestApplyRedactionsRemovesText(t *testing.T) {
 		t.Fatalf("AddRedaction: %v", err)
 	}
 
-	n, err := p.ApplyRedactions()
+	n, err := p.ApplyRedactions(ApplyOptions{})
 	if err != nil {
 		t.Fatalf("ApplyRedactions: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestApplyRedactionsCount(t *testing.T) {
 		}
 	}
 
-	n, err := p.ApplyRedactions()
+	n, err := p.ApplyRedactions(ApplyOptions{})
 	if err != nil {
 		t.Fatalf("ApplyRedactions: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestApplyRedactionsZero(t *testing.T) {
 	d, p := newRedactDoc(t)
 	defer d.Close()
 
-	n, err := p.ApplyRedactions()
+	n, err := p.ApplyRedactions(ApplyOptions{})
 	if err != nil {
 		t.Fatalf("ApplyRedactions on clean page: %v", err)
 	}
@@ -156,26 +156,7 @@ func TestRedactionClosedDocument(t *testing.T) {
 	if err := p.AddRedaction(secretRect, RedactOptions{}); err == nil {
 		t.Error("AddRedaction: expected error on closed document, got nil")
 	}
-	if _, err := p.ApplyRedactions(); err == nil {
+	if _, err := p.ApplyRedactions(ApplyOptions{}); err == nil {
 		t.Error("ApplyRedactions: expected error on closed document, got nil")
-	}
-}
-
-// TestAddRedactionWithFill verifies that a custom fill colour is accepted
-// without error (visual output not verified in unit tests).
-func TestAddRedactionWithFill(t *testing.T) {
-	d, p := newRedactDoc(t)
-	defer d.Close()
-
-	blue := [3]float64{0, 0, 1}
-	if err := p.AddRedaction(secretRect, RedactOptions{Fill: &blue}); err != nil {
-		t.Fatalf("AddRedaction with fill: %v", err)
-	}
-	n, err := p.ApplyRedactions()
-	if err != nil {
-		t.Fatalf("ApplyRedactions: %v", err)
-	}
-	if n != 1 {
-		t.Errorf("expected 1, got %d", n)
 	}
 }

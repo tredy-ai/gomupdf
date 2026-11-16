@@ -37,7 +37,33 @@ breaks an existing API.
 
 ## Migration notes
 
-None yet.
+### Commit 9: `ApplyRedactions` takes `ApplyOptions`
+
+MuPDF applies redaction options per page at apply time, so they moved from
+`RedactOptions` to a new argument of `ApplyRedactions`.
+
+```go
+// before
+page.AddRedaction(rect, gomupdf.RedactOptions{RemoveImages: true})
+n, err := page.ApplyRedactions()
+
+// after
+page.AddRedaction(rect, gomupdf.RedactOptions{})
+n, err := page.ApplyRedactions(gomupdf.ApplyOptions{Images: gomupdf.ImageRemove})
+```
+
+- `RedactOptions.RemoveImages` is gone. Use `ApplyOptions.Images`:
+  `ImageRemove` drops overlapping images whole (what upstream always did
+  regardless of the field), `ImagePixels` (the zero value) blanks only the
+  covered pixels, `ImageNone` leaves images alone.
+- `RedactOptions.Fill` is gone. MuPDF's black box is always black and ignores the
+  annotation's colour (re-checked on MuPDF 1.25.6), so the field never did
+  anything. `ApplyOptions.NoBox` suppresses the box.
+- The zero `ApplyOptions` now draws the box (upstream drew none), removes text,
+  and leaves line art alone. `LineArt` and `Text` select the other MuPDF modes;
+  `TextNone` is insecure.
+- `RedactOptions` has no fields now but is kept as the parameter type of
+  `AddRedaction`.
 
 ## Known limitations
 

@@ -12,7 +12,7 @@ package gomupdf
 
 static int gomupdf_add_redaction(fz_context *ctx, fz_document *doc, int pageno,
                                  float x0, float y0, float x1, float y1,
-                                 float *fill, char *err, int errlen) {
+                                 char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) { snprintf(err, errlen, "not a PDF document"); return -1; }
     pdf_page *page = NULL;
@@ -24,9 +24,6 @@ static int gomupdf_add_redaction(fz_context *ctx, fz_document *doc, int pageno,
         annot = pdf_create_annot(ctx, page, PDF_ANNOT_REDACT);
         fz_rect r = fz_make_rect(x0, y0, x1, y1);
         pdf_set_annot_rect(ctx, annot, r);
-        if (fill) {
-            pdf_set_annot_color(ctx, annot, 3, fill);
-        }
         pdf_update_annot(ctx, annot);
     }
     fz_always(ctx) {
@@ -40,10 +37,36 @@ static int gomupdf_add_redaction(fz_context *ctx, fz_document *doc, int pageno,
     return 0;
 }
 
+// gomupdf_apply_redactions applies every redaction annotation on the page.
+// image_method, line_art and text carry the Go-side enum values (see
+// ApplyOptions); each is mapped to its PDF_REDACT_* constant by name, and an
+// unknown value is an error. black_boxes is MuPDF's flag (non-zero = draw).
 static int gomupdf_apply_redactions(fz_context *ctx, fz_document *doc, int pageno,
-                                    int image_method, char *err, int errlen) {
+                                    int black_boxes, int image_method,
+                                    int line_art, int text,
+                                    char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) { snprintf(err, errlen, "not a PDF document"); return -1; }
+    pdf_redact_options opts;
+    memset(&opts, 0, sizeof(opts));
+    opts.black_boxes = black_boxes ? 1 : 0;
+    switch (image_method) {
+    case 0: opts.image_method = PDF_REDACT_IMAGE_PIXELS; break;
+    case 1: opts.image_method = PDF_REDACT_IMAGE_NONE; break;
+    case 2: opts.image_method = PDF_REDACT_IMAGE_REMOVE; break;
+    default: snprintf(err, errlen, "invalid image method %d", image_method); return -1;
+    }
+    switch (line_art) {
+    case 0: opts.line_art = PDF_REDACT_LINE_ART_NONE; break;
+    case 1: opts.line_art = PDF_REDACT_LINE_ART_REMOVE_IF_COVERED; break;
+    case 2: opts.line_art = PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED; break;
+    default: snprintf(err, errlen, "invalid line art method %d", line_art); return -1;
+    }
+    switch (text) {
+    case 0: opts.text = PDF_REDACT_TEXT_REMOVE; break;
+    case 1: opts.text = PDF_REDACT_TEXT_NONE; break;
+    default: snprintf(err, errlen, "invalid text method %d", text); return -1;
+    }
     pdf_page *page = NULL;
     int count = 0;
     fz_var(page);
@@ -56,9 +79,6 @@ static int gomupdf_apply_redactions(fz_context *ctx, fz_document *doc, int pagen
             }
         }
         if (count > 0) {
-            pdf_redact_options opts;
-            memset(&opts, 0, sizeof(opts));
-            opts.image_method = image_method;
             pdf_redact_page(ctx, pdf, page, &opts);
         }
     }
@@ -76,38 +96,44 @@ import "C"
 
 import (
 	"errors"
+	"fmt"
 	"unsafe"
 )
 
-func (d *mupdfDoc) addRedaction(pageNo int, rect [4]float64, fill *[3]float64) error {
+func (d *mupdfDoc) addRedaction(pageNo int, rect [4]float64) error {
 	if d.doc == nil {
 		return errors.New("gomupdf: document closed")
 	}
-	f := [3]float64{0, 0, 0}
-	if fill != nil {
-		f = *fill
-	}
-	cfill := [3]C.float{C.float(f[0]), C.float(f[1]), C.float(f[2])}
 	errBuf := (*C.char)(C.malloc(errBufLen))
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_add_redaction(d.ctx, d.doc, C.int(pageNo),
 		C.float(rect[0]), C.float(rect[1]), C.float(rect[2]), C.float(rect[3]),
-		(*C.float)(unsafe.Pointer(&cfill[0])),
 		errBuf, errBufLen) != 0 {
 		return errors.New("gomupdf: add redaction: " + C.GoString(errBuf))
 	}
 	return nil
 }
 
-func (d *mupdfDoc) applyRedactions(pageNo int) (int, error) {
+func (d *mupdfDoc) applyRedactions(pageNo int, opts ApplyOptions) (int, error) {
 	if d.doc == nil {
 		return 0, errors.New("gomupdf: document closed")
 	}
-	// PDF_REDACT_IMAGE_REMOVE = 1.
-	const imageMethodRemove = C.int(1)
+	// Range-check in Go: C.int would silently truncate 1<<32+1 to a valid value.
+	if opts.Images < ImagePixels || opts.Images > ImageRemove ||
+		opts.LineArt < LineArtNone || opts.LineArt > LineArtRemoveIfTouched ||
+		opts.Text < TextRemove || opts.Text > TextNone {
+		return 0, fmt.Errorf("gomupdf: apply redactions: invalid method (images %d, line art %d, text %d)",
+			opts.Images, opts.LineArt, opts.Text)
+	}
+	// NoBox is inverted relative to MuPDF's black_boxes.
+	boxes := C.int(1)
+	if opts.NoBox {
+		boxes = 0
+	}
 	errBuf := (*C.char)(C.malloc(errBufLen))
 	defer C.free(unsafe.Pointer(errBuf))
-	n := C.gomupdf_apply_redactions(d.ctx, d.doc, C.int(pageNo), imageMethodRemove, errBuf, errBufLen)
+	n := C.gomupdf_apply_redactions(d.ctx, d.doc, C.int(pageNo), boxes,
+		C.int(opts.Images), C.int(opts.LineArt), C.int(opts.Text), errBuf, errBufLen)
 	if n < 0 {
 		return 0, errors.New("gomupdf: apply redactions: " + C.GoString(errBuf))
 	}

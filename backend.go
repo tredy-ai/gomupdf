@@ -134,8 +134,8 @@ type docBackend interface {
 	addTextNote(pageNo int, at [2]float64, text string) error
 
 	// --- per-page redaction & widgets -------------------------------------
-	addRedaction(pageNo int, rect [4]float64, fill *[3]float64) error
-	applyRedactions(pageNo int) (int, error)
+	addRedaction(pageNo int, rect [4]float64) error
+	applyRedactions(pageNo int, opts ApplyOptions) (int, error)
 	widgetsRaw(pageNo int) (string, error)
 	setTextField(pageNo, index int, value string) error
 	setCheckbox(pageNo, index int, checked bool) error
