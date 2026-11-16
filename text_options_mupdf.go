@@ -43,7 +43,7 @@ static char *gomupdf_page_text_opts(fz_context *ctx, fz_document *doc, int pagen
                     for (fz_stext_char *ch = line->first_char; ch; ch = ch->next) {
                         fz_rect cr = fz_rect_from_quad(ch->quad);
                         fz_rect inter = fz_intersect_rect(cr, clip);
-                        if (!fz_is_empty_rect(inter)) {
+                        if (fz_is_valid_rect(inter)) {
                             fz_write_rune(ctx, out, ch->c);
                             wrote = 1;
                         }
@@ -59,10 +59,9 @@ static char *gomupdf_page_text_opts(fz_context *ctx, fz_document *doc, int pagen
         unsigned char *data = NULL;
         size_t n = fz_buffer_storage(ctx, buf, &data);
         result = (char *)malloc(n + 1);
-        if (result) {
-            memcpy(result, data, n);
-            result[n] = '\0';
-        }
+        if (!result) fz_throw(ctx, FZ_ERROR_SYSTEM, "out of memory");
+        memcpy(result, data, n);
+        result[n] = '\0';
     }
     fz_always(ctx) {
         fz_drop_output(ctx, out);
@@ -90,41 +89,12 @@ func (d *mupdfDoc) extractTextRaw(pageNo int, opts TextOptions) (string, error) 
 		return "", errors.New("gomupdf: document closed")
 	}
 
-	var flags C.int
-	if opts.PreserveLigatures {
-		flags |= C.FZ_STEXT_PRESERVE_LIGATURES
-	}
-	if opts.PreserveWhitespace {
-		flags |= C.FZ_STEXT_PRESERVE_WHITESPACE
-	}
-	if opts.PreserveImages {
-		flags |= C.FZ_STEXT_PRESERVE_IMAGES
-	}
-	if opts.InhibitSpaces {
-		flags |= C.FZ_STEXT_INHIBIT_SPACES
-	}
-	if opts.Dehyphenate {
-		flags |= C.FZ_STEXT_DEHYPHENATE
-	}
-
 	errBuf := (*C.char)(C.malloc(errBufLen))
 	defer C.free(unsafe.Pointer(errBuf))
 
-	var (
-		clipEnabled C.int
-		cx0, cy0    C.float
-		cx1, cy1    C.float
-	)
-	if opts.Clip != nil {
-		clipEnabled = 1
-		cx0 = C.float(opts.Clip.X0)
-		cy0 = C.float(opts.Clip.Y0)
-		cx1 = C.float(opts.Clip.X1)
-		cy1 = C.float(opts.Clip.Y1)
-	}
-
+	clipEnabled, cx0, cy0, cx1, cy1 := stextClip(opts)
 	cstr := C.gomupdf_page_text_opts(d.ctx, d.doc, C.int(pageNo),
-		flags, clipEnabled, cx0, cy0, cx1, cy1,
+		stextFlags(opts), clipEnabled, cx0, cy0, cx1, cy1,
 		errBuf, errBufLen)
 	if cstr == nil {
 		return "", errors.New("gomupdf: extract text: " + C.GoString(errBuf))

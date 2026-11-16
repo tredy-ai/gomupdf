@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/tredy-ai/gomupdf/geometry"
 )
 
 // buildPDF assembles a PDF from objects numbered 1..n (object 1 must be the
@@ -122,6 +124,144 @@ func TestRawDictEmptyFontName(t *testing.T) {
 }
 
 // TestRawDictBlocksExist verifies that RawDict returns at least one block with lines and chars.
+func rawDictOpts(t *testing.T, p *Page, opts TextOptions) []RawBlock {
+	t.Helper()
+	blocks, err := p.RawDictWithOptions(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return blocks
+}
+
+// Zero-width glyphs (Widths all 0, with Tc spacing) have an empty-area quad;
+// a Clip covering the page must still keep them, in RawDict and ExtractText.
+func TestClipKeepsZeroWidthGlyphs(t *testing.T) {
+	d := onePagePDF(t, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 0 /LastChar 255 /Widths ["+strings.Repeat("0 ", 256)+"] >>",
+		"BT /F1 12 Tf 8 Tc 20 100 Td (SECRET) Tj ET")
+	defer d.Close()
+	p, _ := d.LoadPage(0)
+	b, err := p.Bound()
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := TextOptions{Clip: &b}
+	if got := strings.ReplaceAll(pageChars(rawDictOpts(t, p, opts)), " ", ""); got != "SECRET" {
+		t.Errorf("RawDictWithOptions clip: chars = %q, want SECRET", got)
+	}
+	txt, err := p.ExtractText(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.ReplaceAll(strings.TrimSpace(txt), " ", ""); got != "SECRET" {
+		t.Errorf("ExtractText clip: %q, want SECRET", txt)
+	}
+}
+
+// Code 1 is re-encoded to the glyph name /fi, which MuPDF maps to U+FB01. The
+// base-14 Times-Roman MuPDF substitutes has that glyph (non-zero advance).
+func TestRawDictWithOptionsLigature(t *testing.T) {
+	f, err := NewFont("Times-Roman")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Advance(0xFB01, 1) <= 0 {
+		t.Fatal("Times-Roman has no U+FB01 glyph; the fixture would not test ligatures")
+	}
+	f.Close()
+	d := onePagePDF(t,
+		"<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman /Encoding << /Type /Encoding /BaseEncoding /WinAnsiEncoding /Differences [1 /fi] >> >>",
+		"BT /F1 12 Tf 20 100 Td (\\001nd) Tj ET")
+	defer d.Close()
+	p, _ := d.LoadPage(0)
+	if got := pageChars(rawDictOpts(t, p, TextOptions{PreserveLigatures: true})); got != "ﬁnd" {
+		t.Errorf("PreserveLigatures: chars = %q, want %q", got, "ﬁnd")
+	}
+	if got := pageChars(rawDictOpts(t, p, TextOptions{})); got != "find" {
+		t.Errorf("default: chars = %q, want %q", got, "find")
+	}
+}
+
+func TestRawDictWithOptionsDehyphenate(t *testing.T) {
+	d := onePagePDF(t, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+		"BT /F1 12 Tf 20 150 Td (Some exam-) Tj 0 -14 Td (ple text here) Tj ET")
+	defer d.Close()
+	p, _ := d.LoadPage(0)
+	if got := pageChars(rawDictOpts(t, p, TextOptions{})); got != "Some exam-ple text here" {
+		t.Errorf("default: chars = %q", got)
+	}
+	if got := pageChars(rawDictOpts(t, p, TextOptions{Dehyphenate: true})); got != "Some example text here" {
+		t.Errorf("Dehyphenate: chars = %q", got)
+	}
+}
+
+func TestRawDictWithOptionsAccurateBBoxes(t *testing.T) {
+	d := onePagePDF(t, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+		"BT /F1 12 Tf 20 100 Td (Hello) Tj ET")
+	defer d.Close()
+	p, _ := d.LoadPage(0)
+	plain := rawDictOpts(t, p, TextOptions{})
+	accurate := rawDictOpts(t, p, TextOptions{AccurateBBoxes: true})
+	if pageChars(plain) != "Hello" || pageChars(accurate) != "Hello" {
+		t.Fatalf("chars = %q / %q", pageChars(plain), pageChars(accurate))
+	}
+	// The font-metric bbox is the same height for every glyph; the outline
+	// bbox of 'e' is shorter than that of 'H'.
+	pc, ac := plain[0].Lines[0].Chars, accurate[0].Lines[0].Chars
+	if pc[0].BBox.Height() != pc[1].BBox.Height() {
+		t.Errorf("default: H and e heights differ: %v %v", pc[0].BBox, pc[1].BBox)
+	}
+	if ac[1].BBox.Height() >= ac[0].BBox.Height() {
+		t.Errorf("AccurateBBoxes: e height %v not below H height %v", ac[1].BBox, ac[0].BBox)
+	}
+}
+
+// Clip keeps exactly the characters ExtractText keeps under the same Clip.
+func TestRawDictWithOptionsClip(t *testing.T) {
+	d := openFixture(t, "small-table.pdf")
+	defer d.Close()
+	p, _ := d.LoadPage(0)
+	b, err := p.Bound()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, clip := range []geometry.Rect{
+		{X0: b.X0, Y0: b.Y0, X1: b.X1, Y1: (b.Y0 + b.Y1) / 2},
+		{X0: b.X0, Y0: b.Y0, X1: (b.X0 + b.X1) / 3, Y1: b.Y1},
+		{X0: -20, Y0: -20, X1: -10, Y1: -10}, // off the page: nothing
+	} {
+		opts := TextOptions{Clip: &clip}
+		want, err := p.ExtractText(opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (want == "") != (i == 2) {
+			t.Fatalf("clip %v: ExtractText = %q; fixture no longer fits the test", clip, want)
+		}
+		var got strings.Builder
+		blocks := rawDictOpts(t, p, opts)
+		for _, bl := range blocks {
+			if len(bl.Lines) == 0 {
+				t.Errorf("clip %v: empty block returned", clip)
+			}
+			for _, l := range bl.Lines {
+				if len(l.Chars) == 0 {
+					t.Errorf("clip %v: empty line returned", clip)
+				}
+				for _, ch := range l.Chars {
+					if !ch.BBox.Intersects(clip) {
+						t.Errorf("clip %v: char %q bbox %v outside", clip, ch.Rune, ch.BBox)
+					}
+					got.WriteRune(ch.Rune)
+				}
+				got.WriteByte('\n')
+			}
+		}
+		if got.String() != want {
+			t.Errorf("clip %v: RawDictWithOptions chars\n%q\nExtractText\n%q", clip, got.String(), want)
+		}
+	}
+}
+
 func TestRawDictBlocksExist(t *testing.T) {
 	d := openFixture(t, "small-table.pdf")
 	defer d.Close()

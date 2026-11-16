@@ -39,14 +39,14 @@ type RawBlock struct {
 }
 
 // rawDictC returns the backend's raw text output.
-func (p *Page) rawDictC() (string, error) {
+func (p *Page) rawDictC(opts TextOptions) (string, error) {
 	d := p.doc
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.b == nil {
 		return "", errors.New("gomupdf: document closed")
 	}
-	return d.b.rawDictRaw(p.Number)
+	return d.b.rawDictRaw(p.Number, opts)
 }
 
 // charMeta is a character's font and size, which Dict groups spans by.
@@ -171,12 +171,26 @@ func buildSpans(raw []RawBlock, metas []charMeta) []RawBlock {
 }
 
 // RawDict returns the page's text blocks down to per-character geometry.
+// It is RawDictWithOptions(TextOptions{}).
 //
 // Changed from upstream: a character whose font has no name is returned
 // (upstream dropped it), an invalid code point becomes U+FFFD, and output the
 // parser cannot read is an error instead of being skipped line by line.
 func (p *Page) RawDict() ([]RawBlock, error) {
-	s, err := p.rawDictC()
+	return p.RawDictWithOptions(TextOptions{})
+}
+
+// RawDictWithOptions is RawDict with explicit structured-text options, which
+// map to the same MuPDF flags as for ExtractText. Callers that map text
+// offsets to geometry should pin their options and keep them fixed.
+//
+// opts.Clip is honored as ExtractText honors it: only characters whose bbox
+// intersects Clip are returned, and blocks and lines left with no characters
+// are omitted. Block and line bboxes are MuPDF's, not trimmed to Clip.
+//
+// New in the tredy-ai fork.
+func (p *Page) RawDictWithOptions(opts TextOptions) ([]RawBlock, error) {
+	s, err := p.rawDictC(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -189,7 +203,7 @@ func (p *Page) RawDict() ([]RawBlock, error) {
 // Changed from upstream: as for RawDict, no character is dropped; a font with
 // no name gives a span with Font "", and unreadable output is an error.
 func (p *Page) Dict() ([]RawBlock, error) {
-	s, err := p.rawDictC()
+	s, err := p.rawDictC(TextOptions{})
 	if err != nil {
 		return nil, err
 	}

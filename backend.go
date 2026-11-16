@@ -89,7 +89,7 @@ type docBackend interface {
 	extractTextRaw(pageNo int, opts TextOptions) (string, error)
 	wordsRaw(pageNo int) (string, error)
 	structuredJSON(pageNo int) (string, error)
-	rawDictRaw(pageNo int) (string, error)
+	rawDictRaw(pageNo int, opts TextOptions) (string, error)
 	htmlRaw(pageNo int) (string, error)
 	xhtmlRaw(pageNo int) (string, error)
 	xmlRaw(pageNo int) (string, error)
