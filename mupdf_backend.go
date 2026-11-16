@@ -60,6 +60,25 @@ static fz_document *gomupdf_open_magic(fz_context *ctx, const unsigned char *dat
     return doc;
 }
 
+// Open a document from a file path; MuPDF reads the file lazily.
+static fz_document *gomupdf_open_path(fz_context *ctx, const char *path,
+                                      char *err, int errlen) {
+    fz_document *doc = NULL;
+    fz_var(doc);
+    fz_try(ctx) {
+        doc = fz_open_document(ctx, path);
+        // Open is PDF-only (like OpenStream); text, HTML and the rest go through OpenAny.
+        if (!pdf_specifics(ctx, doc))
+            fz_throw(ctx, FZ_ERROR_GENERIC, "not a PDF document");
+    }
+    fz_catch(ctx) {
+        fz_drop_document(ctx, doc);
+        snprintf(err, errlen, "%s", fz_caught_message(ctx));
+        return NULL;
+    }
+    return doc;
+}
+
 static int gomupdf_needs_password(fz_context *ctx, fz_document *doc) {
     int r = 0;
     fz_try(ctx) { r = fz_needs_password(ctx, doc); }
@@ -183,6 +202,24 @@ func (mupdfDriver) open(data []byte, magic string) (docBackend, bool, error) {
 	}
 	needsPass := C.gomupdf_needs_password(ctx, doc) != 0
 	return &mupdfDoc{ctx: ctx, doc: doc, data: cdata, dataLen: len(data)}, needsPass, nil
+}
+
+func (mupdfDriver) openPath(path string) (docBackend, bool, error) {
+	ctx := C.gomupdf_new_context()
+	if ctx == nil {
+		return nil, false, errors.New("gomupdf: failed to create context")
+	}
+	cpath := C.CString(path)
+	defer C.free(unsafe.Pointer(cpath))
+	errBuf := (*C.char)(C.malloc(errBufLen))
+	defer C.free(unsafe.Pointer(errBuf))
+	doc := C.gomupdf_open_path(ctx, cpath, errBuf, errBufLen)
+	if doc == nil {
+		C.fz_drop_context(ctx)
+		return nil, false, errors.New("gomupdf: open failed: " + C.GoString(errBuf))
+	}
+	needsPass := C.gomupdf_needs_password(ctx, doc) != 0
+	return &mupdfDoc{ctx: ctx, doc: doc}, needsPass, nil
 }
 
 func (mupdfDriver) newPDF() (docBackend, error) {

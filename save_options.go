@@ -34,7 +34,7 @@ type SaveOptions struct {
 	Permissions   int    // permission bitmask; -1 grants all
 
 	// Incremental appends changes to the original bytes instead of rewriting
-	// the whole file. Valid only for documents opened from a file or stream;
+	// the whole file. Valid only for documents opened with OpenStream;
 	// incompatible with Garbage, Linear, and Encrypt.
 	Incremental bool
 }
@@ -71,7 +71,7 @@ func (d *Document) EzSave(path string) error {
 }
 
 // SaveIncremental appends pending changes to path using an incremental update.
-// The document must have been opened from a file or stream. It is shorthand for
+// The document must have been opened with OpenStream. It is shorthand for
 // SaveWithOptions with Incremental set.
 //
 // Incremental save of an in-memory document requires a reasonably recent MuPDF;

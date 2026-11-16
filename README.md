@@ -331,7 +331,7 @@ data, _ = doc.SaveBytesWithOptions(gomupdf.SaveOptions{
 })
 data, _ = doc.SaveEncryptedBytes("user", "owner")  // shorthand
 
-// Incremental update (file/stream-opened docs): appends changes after the
+// Incremental update (stream-opened docs; needs OpenStream): appends changes after the
 // original bytes instead of rewriting the whole file.
 _ = doc.SaveIncremental("out.pdf")
 ```
@@ -417,8 +417,9 @@ concurrent use; all of its methods are serialized internally by a mutex. To
 process documents in parallel, **open one `Document` per goroutine**.
 
 - Always `Close()` a document when done — the finalizer is only a backstop.
-- The in-memory bytes backing a streamed/opened document are held for its
-  lifetime (MuPDF reads from them lazily).
+- Bytes backing an `OpenStream` document are held in memory for its lifetime;
+  `Open` reads the file lazily and keeps it open until `Close`. Either way
+  MuPDF reads on demand.
 - C resources are released deterministically in helper functions, so a Go-side
   mistake cannot leak the underlying objects.
 

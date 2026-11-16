@@ -136,7 +136,7 @@ func (d *mupdfDoc) save(opts SaveOptions, orig []byte) ([]byte, error) {
 		return nil, errors.New("gomupdf: document closed")
 	}
 	if opts.Incremental && (d.data == nil || d.dataLen == 0) {
-		return nil, errors.New("gomupdf: incremental save requires a document opened from a file or stream")
+		return nil, errors.New("gomupdf: incremental save needs a document opened with OpenStream")
 	}
 	cu := C.CString(opts.UserPassword)
 	defer C.free(unsafe.Pointer(cu))

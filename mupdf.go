@@ -38,17 +38,32 @@ import (
 type Document struct {
 	mu        sync.Mutex
 	b         docBackend
-	locked    bool // encrypted and not yet authenticated
-	encrypted bool // whether the PDF was password-protected at open
+	locked    bool   // encrypted and not yet authenticated
+	encrypted bool   // whether the PDF was password-protected at open
+	path      string // file the document was opened from by Open; "" otherwise
 }
 
 // Open opens a PDF document from a file path.
+//
+// Unlike upstream, Open does not read the file into memory: MuPDF keeps the
+// file open and reads it on demand until Close. The file MUST NOT be modified
+// while the Document is open (unlinking it is fine on Linux). Because there is
+// no in-memory original, an incremental save needs a document opened with
+// OpenStream.
 func Open(filename string) (*Document, error) {
-	data, err := os.ReadFile(filename)
+	if defaultDriver == nil {
+		return nil, errNoBackend
+	}
+	if strings.IndexByte(filename, 0) >= 0 {
+		return nil, errors.New("gomupdf: path contains a NUL byte")
+	}
+	b, needsPass, err := defaultDriver.openPath(filename)
 	if err != nil {
 		return nil, err
 	}
-	return OpenStream(data)
+	d := &Document{b: b, locked: needsPass, encrypted: needsPass, path: filename}
+	runtime.SetFinalizer(d, (*Document).Close)
+	return d, nil
 }
 
 // OpenStream opens a PDF from in-memory bytes. It does
@@ -70,7 +85,7 @@ func OpenStream(pdf []byte) (*Document, error) {
 	return d, nil
 }
 
-// OpenWithPassword opens a file and authenticates in one step, returning an
+// OpenWithPassword opens a file by path, like Open, and authenticates in one step, returning an
 // error if the password is wrong (QoL over Open + Authenticate).
 func OpenWithPassword(filename, password string) (*Document, error) {
 	d, err := Open(filename)

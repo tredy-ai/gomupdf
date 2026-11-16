@@ -38,6 +38,9 @@ type driver interface {
 	// extension, or mime type; "" or ".pdf" means PDF). needsPass reports
 	// whether the opened document is password-locked.
 	open(data []byte, magic string) (doc docBackend, needsPass bool, err error)
+	// openPath opens a document from a file path without reading it into
+	// memory; the backend keeps the file open until close.
+	openPath(path string) (doc docBackend, needsPass bool, err error)
 	// newPDF creates a new, empty PDF document.
 	newPDF() (docBackend, error)
 	// newFont loads one of the 14 standard PDF fonts by name.
