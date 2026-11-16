@@ -18,6 +18,10 @@ package gomupdf
 #include <string.h>
 #include <stdint.h>
 
+#if FZ_VERSION_MAJOR < 1 || (FZ_VERSION_MAJOR == 1 && FZ_VERSION_MINOR < 25)
+#error "gomupdf (tredy-ai) requires MuPDF >= 1.25"
+#endif
+
 // Create a context with document handlers registered. Returns NULL on failure.
 static fz_context *gomupdf_new_context(void) {
     fz_context *ctx = fz_new_context(NULL, NULL, FZ_STORE_DEFAULT);
