@@ -12,7 +12,8 @@ package gomupdf
 // gomupdf_rawdict walks the stext tree emitting one record per line:
 //   B x0 y0 x1 y1          – block start (text blocks only)
 //   L x0 y0 x1 y1          – line start
-//   C rune ox oy x0 y0 x1 y1 size fontname  – character (fontname has no spaces)
+//   C rune ox oy x0 y0 x1 y1 size fontname  – character (fontname has no spaces;
+//                                              "-" when the font has no name)
 static char *gomupdf_rawdict(fz_context *ctx, fz_document *doc, int pageno,
                              char *err, int errlen) {
     fz_page *page = NULL;
@@ -49,6 +50,9 @@ static char *gomupdf_rawdict(fz_context *ctx, fz_document *doc, int pageno,
                         ch->origin.x, ch->origin.y,
                         r.x0, r.y0, r.x1, r.y1,
                         ch->size);
+                    // An unnamed font is "-", so the field count stays fixed.
+                    if (!*fname)
+                        fz_write_byte(ctx, out, '-');
                     for (const char *p = fname; *p; p++) {
                         char c2 = (*p == ' ' || *p == '\t' || *p == '\n') ? '_' : *p;
                         fz_write_byte(ctx, out, (unsigned char)c2);

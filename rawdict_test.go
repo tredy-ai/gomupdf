@@ -1,9 +1,125 @@
 package gomupdf
 
 import (
+	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 )
+
+// buildPDF assembles a PDF from objects numbered 1..n (object 1 must be the
+// catalog), with a correct xref table. For fixtures the package cannot write.
+func buildPDF(objs ...string) []byte {
+	var b bytes.Buffer
+	b.WriteString("%PDF-1.7\n")
+	offs := make([]int, len(objs))
+	for i, o := range objs {
+		offs[i] = b.Len()
+		fmt.Fprintf(&b, "%d 0 obj\n%s\nendobj\n", i+1, o)
+	}
+	xref := b.Len()
+	fmt.Fprintf(&b, "xref\n0 %d\n0000000000 65535 f \n", len(objs)+1)
+	for _, o := range offs {
+		fmt.Fprintf(&b, "%010d 00000 n \n", o)
+	}
+	fmt.Fprintf(&b, "trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n", len(objs)+1, xref)
+	return b.Bytes()
+}
+
+// onePagePDF returns a one-page 300x200 PDF whose /F1 is font and whose
+// content stream is content.
+func onePagePDF(t *testing.T, font, content string) *Document {
+	t.Helper()
+	d, err := OpenStream(buildPDF(
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+		font,
+		fmt.Sprintf("<< /Length %d >>\nstream\n%s\nendstream", len(content), content),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+func pageChars(blocks []RawBlock) string {
+	var sb strings.Builder
+	for _, b := range blocks {
+		for _, l := range b.Lines {
+			for _, ch := range l.Chars {
+				sb.WriteRune(ch.Rune)
+			}
+		}
+	}
+	return sb.String()
+}
+
+func TestParseRawDictEmptyFontName(t *testing.T) {
+	blocks, metas, err := parseRawDict("B 0 0 10 10\nL 0 0 10 10\nC 72 1 9 1 1 6 10 12 -\nC 105 6 9 6 1 9 10 12 Helvetica\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := pageChars(blocks); got != "Hi" {
+		t.Errorf("chars = %q, want %q", got, "Hi")
+	}
+	if metas[0].font != "" || metas[1].font != "Helvetica" || metas[0].size != 12 {
+		t.Errorf("metas = %+v", metas)
+	}
+}
+
+func TestParseRawDictInvalidCodePoint(t *testing.T) {
+	for _, cp := range []string{"-1", "55296", "57343", "1114112"} { // negative, D800, DFFF, 0x110000
+		blocks, _, err := parseRawDict("B 0 0 1 1\nL 0 0 1 1\nC " + cp + " 0 0 0 0 1 1 12 F\n")
+		if err != nil {
+			t.Fatalf("cp %s: %v", cp, err)
+		}
+		if got := blocks[0].Lines[0].Chars[0].Rune; got != '�' {
+			t.Errorf("cp %s: rune = %U, want U+FFFD", cp, got)
+		}
+	}
+}
+
+func TestParseRawDictMalformed(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"B 0 0 1\n", "line 1: too few fields"},
+		{"B 0 0 1 x\n", "line 1: bad number"},
+		{"B 0 0 1 1 2\n", "line 1: bad number"},
+		{"B 0 0 1 1\nL 0 0 1 1\nC 72 0 0 0 0 1 1 12\n", "line 3: too few fields"},
+		{"B 0 0 1 1\nL 0 0 1 1\nC x 0 0 0 0 1 1 12 F\n", "line 3: bad code point"},
+		{"X 1 2 3 4\n", "line 1: unknown record type"},
+		{"L 0 0 1 1\n", "line 1: L record outside a block"},
+		{"B 0 0 1 1\nC 72 0 0 0 0 1 1 12 F\n", "line 2: C record outside a line"},
+	} {
+		_, _, err := parseRawDict(tc.in)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("parseRawDict(%q) err = %v, want %q", tc.in, err, tc.want)
+		}
+	}
+}
+
+// A font with an empty /BaseFont has an empty fz_font_name. Upstream emitted
+// no name field for it and the parser silently dropped every such character.
+func TestRawDictEmptyFontName(t *testing.T) {
+	d := onePagePDF(t, "<< /Type /Font /Subtype /Type1 /BaseFont / >>",
+		"BT /F1 12 Tf 20 100 Td (Hello) Tj ET")
+	defer d.Close()
+	p, _ := d.LoadPage(0)
+	blocks, err := p.RawDict()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := pageChars(blocks); got != "Hello" {
+		t.Errorf("RawDict chars = %q, want %q", got, "Hello")
+	}
+	blocks, err = p.Dict()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 1 || len(blocks[0].Spans) != 1 || blocks[0].Spans[0].Text != "Hello" || blocks[0].Spans[0].Font != "" {
+		t.Errorf("Dict = %+v, want one span \"Hello\" with Font \"\"", blocks)
+	}
+}
 
 // TestRawDictBlocksExist verifies that RawDict returns at least one block with lines and chars.
 func TestRawDictBlocksExist(t *testing.T) {
