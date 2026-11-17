@@ -37,24 +37,21 @@ static int gomupdf_layer_dict(fz_context *ctx, pdf_obj *ref) {
 // the descriptor but leaves doc->ocg pointing at it (MuPDF 1.25.6 and
 // 1.26.11 alike; MuPDF's own callers clear the pointer after it), and
 // pdf_drop_document drops it again, so the pointer is cleared here, whether
-// or not the edits succeeded. Every object is loaded first, as Scrub does,
-// so an xref repair happens before the sweep.
+// or not the edits succeeded. The caller has loaded every object first (the
+// Go side's stabilise, as every mutator does), so an xref repair happened
+// before, and an entry that holds no object after that (free, or a member of
+// an object stream that does not parse) holds nothing to destroy and is
+// skipped rather than parsed again.
 static int gomupdf_show_all_layers(fz_context *ctx, fz_document *doc, char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) { snprintf(err, errlen, "not a PDF document"); return -1; }
     int failed = 0;
     fz_try(ctx) {
-        for (int i = 1; i < pdf_xref_len(ctx, pdf); i++) {
-            fz_try(ctx) pdf_cache_object(ctx, pdf, i);
-            fz_catch(ctx) {
-                fz_rethrow_if(ctx, FZ_ERROR_SYSTEM);
-                fz_ignore_error(ctx);
-            }
-        }
         pdf_obj *root = pdf_dict_get(ctx, pdf_trailer(ctx, pdf), PDF_NAME(Root));
         if (pdf_dict_get(ctx, root, PDF_NAME(OCProperties))) pdf_dict_del(ctx, root, PDF_NAME(OCProperties));
         int n = pdf_xref_len(ctx, pdf);
         for (int i = 1; i < n; i++) {
+            if (!pdf_get_xref_entry_no_null(ctx, pdf, i)->obj) continue;
             pdf_obj *ref = pdf_new_indirect(ctx, pdf, i, 0), *empty = NULL;
             fz_var(empty);
             fz_try(ctx) {
@@ -96,6 +93,9 @@ import (
 
 func (d *mupdfDoc) showAllLayers() error {
 	if err := d.writable(); err != nil {
+		return err
+	}
+	if err := d.stabilise(); err != nil {
 		return err
 	}
 	errBuf := newErrBuf()

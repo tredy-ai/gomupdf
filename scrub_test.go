@@ -3540,3 +3540,77 @@ func TestScrubHideActionTarget(t *testing.T) {
 		}
 	}
 }
+
+// scrubSparseXRefPDF is scrubXRefStreamPDF with /Size size and a free entry
+// size-1: the entries between the xref stream and that one are listed in no
+// section.
+func scrubSparseXRefPDF(objs []string, size int) []byte {
+	pdf := scrubBuildPDF(objs, "")
+	pdf = pdf[:bytes.LastIndex(pdf, []byte("\nxref\n"))+1]
+	n := len(objs) + 1
+	var rows bytes.Buffer
+	rows.Write([]byte{0, 0, 0, 0, 0, 0xff, 0xff})
+	for i := range objs {
+		o := bytes.Index(pdf, fmt.Appendf(nil, "\n%d 0 obj\n", i+1)) + 1
+		rows.Write([]byte{1, byte(o >> 24), byte(o >> 16), byte(o >> 8), byte(o), 0, 0})
+	}
+	x := len(pdf)
+	rows.Write([]byte{1, byte(x >> 24), byte(x >> 16), byte(x >> 8), byte(x), 0, 0})
+	rows.Write([]byte{0, 0, 0, 0, 0, 0xff, 0xff})
+	b := bytes.NewBuffer(pdf)
+	fmt.Fprintf(b, "%d 0 obj\n<< /Type /XRef /Size %d /Index [0 %d %d 1] /W [1 4 2] /Root 1 0 R /Length %d >>\nstream\n",
+		n, size, n+1, size-1, rows.Len())
+	b.Write(rows.Bytes())
+	fmt.Fprintf(b, "\nendstream\nendobj\nstartxref\n%d\n%%%%EOF\n", x)
+	return b.Bytes()
+}
+
+// Entries that hold no object after Open loaded everything (100,000 members
+// of an object stream that does not parse, 155,000 entries no section
+// lists) are not parsed again by every step of the all-objects sweep:
+// HiddenContent, Scrub and ShowAllLayers each take well under a second.
+// (Reduced from pdf.js issue16091.pdf, whose /Size is 156,342 with a few
+// dozen objects.)
+func TestScrubUnloadableEntriesCost(t *testing.T) {
+	cases := map[string][]byte{
+		"broken object stream": brokenObjStmPDF(100000),
+		"sparse xref": scrubSparseXRefPDF([]string{
+			`<< /Type /Catalog /Pages 2 0 R >>`,
+			`<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+			`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>`,
+			"\nstream\nBT /F1 24 Tf 20 100 Td (Hello) Tj ET",
+			`<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>`,
+		}, 155000),
+	}
+	for name, pdf := range cases {
+		t.Run(name, func(t *testing.T) {
+			for _, step := range []struct {
+				name string
+				run  func(*Document) error
+			}{
+				{"HiddenContent", func(d *Document) error { _, err := d.HiddenContent(); return err }},
+				{"Scrub", func(d *Document) error { return d.Scrub(ScrubOptions{}) }},
+				{"ShowAllLayers", func(d *Document) error { return d.ShowAllLayers() }},
+			} {
+				d, err := OpenStream(pdf)
+				if err != nil {
+					t.Fatal(err)
+				}
+				start := time.Now()
+				err = step.run(d)
+				took := time.Since(start)
+				if err != nil {
+					t.Errorf("%s: %v", step.name, err)
+				}
+				t.Logf("%s: %v", step.name, took)
+				if took > 500*time.Millisecond {
+					t.Errorf("%s took %v", step.name, took)
+				}
+				if s := scrubText(t, d); !strings.Contains(s, "Hello") {
+					t.Errorf("%s: page text %q", step.name, s)
+				}
+				d.Close()
+			}
+		})
+	}
+}

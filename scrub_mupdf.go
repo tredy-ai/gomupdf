@@ -776,7 +776,29 @@ static void gomupdf_keep_pass(fz_context *ctx, pdf_document *pdf, gomupdf_marks 
 // way, without a repair (MuPDF repairs for a missing member only after the
 // stream parsed, and that try already happened), and fail or load later
 // where used.
+//
+// A repair rebuilds the xref and forgets the objects already loaded, so a
+// pass during which one happened is run again (there is no second repair).
+// Afterwards, an entry that holds no object (gomupdf_unloaded) is one that
+// cannot be loaded, or holds nothing: the sweeps skip it rather than parse
+// it again.
+static void gomupdf_load_pass(fz_context *ctx, pdf_document *pdf);
 static void gomupdf_load_all(fz_context *ctx, pdf_document *pdf) {
+    for (int pass = 0; pass < 2; pass++) {
+        int repaired = pdf->repair_attempted;
+        gomupdf_load_pass(ctx, pdf);
+        if (pdf->repair_attempted == repaired) return;
+    }
+}
+
+// gomupdf_unloaded reports whether xref entry i holds no object: a free or
+// missing entry, an object that is null, or one that failed to load in
+// gomupdf_load_all (a member of an object stream that does not parse, say).
+static int gomupdf_unloaded(fz_context *ctx, pdf_document *pdf, int i) {
+    return !pdf_get_xref_entry_no_null(ctx, pdf, i)->obj;
+}
+
+static void gomupdf_load_pass(fz_context *ctx, pdf_document *pdf) {
     unsigned char *bad = NULL; // bad[n]: object stream n failed
     int nbad = 0;
     fz_var(bad);
@@ -1541,12 +1563,16 @@ static void gomupdf_layers(fz_context *ctx, pdf_document *pdf, int i, pdf_obj *r
 // (gomupdf_layers) and fails closed (at least 1) on what it cannot vouch for.
 // A direct dictionary nested in an object is not visited, except where
 // gomupdf_layers looks. The caller has loaded every object first
-// (gomupdf_load_all), so no repair can happen during the sweep.
+// (gomupdf_load_all), so no repair can happen during the sweep, and an entry
+// that holds no object then (gomupdf_unloaded) is skipped: resolving it in
+// every step would parse it again each time (100,000 members of a broken
+// object stream took minutes).
 static void gomupdf_sweep(fz_context *ctx, pdf_document *pdf, gomupdf_marks *mk, int *out, int keep_annots,
                           int keep_fields) {
     int n = pdf_xref_len(ctx, pdf), floor = 0;
     fz_var(floor);
     for (int i = 1; i < n; i++) {
+        if (gomupdf_unloaded(ctx, pdf, i)) continue; // nothing to read; resolving it would parse it again
         unsigned int m = i < mk->len ? mk->m[i] : 0;
         pdf_obj *ref = pdf_new_indirect(ctx, pdf, i, 0), *af = NULL;
         fz_var(af);
