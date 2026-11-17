@@ -94,6 +94,7 @@ static unsigned char *gomupdf_save_opts(
         unsigned char *data = NULL;
         size_t n = fz_buffer_storage(ctx, buf, &data);
         result = (unsigned char *)malloc(n);
+        if (!result) fz_throw(ctx, FZ_ERROR_SYSTEM, "out of memory (%zu bytes)", (size_t)(n));
         if (result) { memcpy(result, data, n); *out_len = (int)n; }
     }
     fz_always(ctx) {
@@ -134,6 +135,7 @@ static unsigned char *gomupdf_save_encrypted(fz_context *ctx, fz_document *doc,
         unsigned char *data = NULL;
         size_t n = fz_buffer_storage(ctx, buf, &data);
         result = (unsigned char *)malloc(n);
+        if (!result) fz_throw(ctx, FZ_ERROR_SYSTEM, "out of memory (%zu bytes)", (size_t)(n));
         if (result) { memcpy(result, data, n); *out_len = (int)n; }
     }
     fz_always(ctx) {
@@ -180,7 +182,7 @@ func (d *mupdfDoc) save(opts SaveOptions, orig []byte) ([]byte, error) {
 	defer C.free(unsafe.Pointer(cu))
 	co := C.CString(opts.OwnerPassword)
 	defer C.free(unsafe.Pointer(co))
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 
 	var origPtr *C.uchar
@@ -198,7 +200,7 @@ func (d *mupdfDoc) save(opts SaveOptions, orig []byte) ([]byte, error) {
 		cbint(opts.Incremental), origPtr, origLen,
 		&outLen, errBuf, errBufLen)
 	if ptr == nil {
-		return nil, errors.New("gomupdf: save: " + C.GoString(errBuf))
+		return nil, errors.New("gomupdf: save: " + errText(errBuf))
 	}
 	defer C.free(unsafe.Pointer(ptr))
 	if err := d.saveRepaired(repaired); err != nil {
@@ -246,14 +248,14 @@ func (d *mupdfDoc) savePath(path string, opts SaveOptions) error {
 	defer C.free(unsafe.Pointer(cu))
 	co := C.CString(opts.OwnerPassword)
 	defer C.free(unsafe.Pointer(co))
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_save_path(d.ctx, d.doc, cp,
 		C.int(opts.Garbage), cbint(opts.Deflate), cbint(opts.DeflateImages), cbint(opts.DeflateFonts),
 		cbint(opts.Clean), cbint(opts.Linear), cbint(opts.ASCII), cbint(opts.Pretty),
 		cbint(opts.Encrypt), cu, co, C.int(opts.Permissions),
 		errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: save: " + C.GoString(errBuf))
+		return errors.New("gomupdf: save: " + errText(errBuf))
 	}
 	return d.saveRepaired(repaired)
 }
@@ -270,12 +272,12 @@ func (d *mupdfDoc) saveEncrypted(userPwd, ownerPwd string) ([]byte, error) {
 	defer C.free(unsafe.Pointer(cu))
 	co := C.CString(ownerPwd)
 	defer C.free(unsafe.Pointer(co))
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	var outLen C.int
 	ptr := C.gomupdf_save_encrypted(d.ctx, d.doc, cu, co, &outLen, errBuf, errBufLen)
 	if ptr == nil {
-		return nil, errors.New("gomupdf: save encrypted: " + C.GoString(errBuf))
+		return nil, errors.New("gomupdf: save encrypted: " + errText(errBuf))
 	}
 	defer C.free(unsafe.Pointer(ptr))
 	if err := d.saveRepaired(repaired); err != nil {

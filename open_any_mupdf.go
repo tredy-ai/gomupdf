@@ -65,6 +65,7 @@ static unsigned char *gomupdf_convert_to_pdf(fz_context *ctx, fz_document *src,
         unsigned char *data = NULL;
         size_t sz = fz_buffer_storage(ctx, outbuf, &data);
         result = (unsigned char *)malloc(sz);
+        if (!result) fz_throw(ctx, FZ_ERROR_SYSTEM, "out of memory (%zu bytes)", (size_t)(sz));
         if (result) { memcpy(result, data, sz); *out_len = (int)sz; }
     }
     fz_always(ctx) {
@@ -91,12 +92,12 @@ func (d *mupdfDoc) convertToPDF() ([]byte, error) {
 	if d.doc == nil {
 		return nil, errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	var outLen C.int
 	ptr := C.gomupdf_convert_to_pdf(d.ctx, d.doc, &outLen, errBuf, errBufLen)
 	if ptr == nil {
-		return nil, errors.New("gomupdf: convert to pdf: " + C.GoString(errBuf))
+		return nil, errors.New("gomupdf: convert to pdf: " + errText(errBuf))
 	}
 	defer C.free(unsafe.Pointer(ptr))
 	return C.GoBytes(unsafe.Pointer(ptr), outLen), nil

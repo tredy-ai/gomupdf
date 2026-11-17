@@ -39,6 +39,7 @@ static char *gomupdf_page_text(fz_context *ctx, fz_document *doc, int pageno,
         unsigned char *data = NULL;
         size_t n = fz_buffer_storage(ctx, buf, &data);
         result = (char *)malloc(n + 1);
+        if (!result) fz_throw(ctx, FZ_ERROR_SYSTEM, "out of memory (%zu bytes)", (size_t)(n + 1));
         if (result) {
             memcpy(result, data, n);
             result[n] = '\0';
@@ -134,6 +135,7 @@ static char *gomupdf_page_words(fz_context *ctx, fz_document *doc, int pageno,
         unsigned char *data = NULL;
         size_t n = fz_buffer_storage(ctx, buf, &data);
         result = (char *)malloc(n + 1);
+        if (!result) fz_throw(ctx, FZ_ERROR_SYSTEM, "out of memory (%zu bytes)", (size_t)(n + 1));
         if (result) { memcpy(result, data, n); result[n] = '\0'; }
     }
     fz_always(ctx) {
@@ -160,6 +162,7 @@ static char *gomupdf_page_bound(fz_context *ctx, fz_document *doc, int pageno,
         page = fz_load_page(ctx, doc, pageno);
         fz_rect r = fz_bound_page(ctx, page);
         result = (char *)malloc(128);
+        if (!result) fz_throw(ctx, FZ_ERROR_SYSTEM, "out of memory (%zu bytes)", (size_t)(128));
         if (result)
             snprintf(result, 128, "%g %g %g %g", r.x0, r.y0, r.x1, r.y1);
     }
@@ -207,6 +210,7 @@ static char *gomupdf_toc(fz_context *ctx, fz_document *doc, char *err, int errle
         unsigned char *data = NULL;
         size_t sz = fz_buffer_storage(ctx, buf, &data);
         result = (char *)malloc(sz + 1);
+        if (!result) fz_throw(ctx, FZ_ERROR_SYSTEM, "out of memory (%zu bytes)", (size_t)(sz + 1));
         if (result) { memcpy(result, data, sz); result[sz] = '\0'; }
     }
     fz_always(ctx) {
@@ -250,6 +254,7 @@ static char *gomupdf_links(fz_context *ctx, fz_document *doc, int pageno,
         unsigned char *data = NULL;
         size_t sz = fz_buffer_storage(ctx, buf, &data);
         result = (char *)malloc(sz + 1);
+        if (!result) fz_throw(ctx, FZ_ERROR_SYSTEM, "out of memory (%zu bytes)", (size_t)(sz + 1));
         if (result) { memcpy(result, data, sz); result[sz] = '\0'; }
     }
     fz_always(ctx) {
@@ -296,6 +301,7 @@ static char *gomupdf_search(fz_context *ctx, fz_document *doc, int pageno,
         unsigned char *data = NULL;
         size_t sz = fz_buffer_storage(ctx, buf, &data);
         result = (char *)malloc(sz + 1);
+        if (!result) fz_throw(ctx, FZ_ERROR_SYSTEM, "out of memory (%zu bytes)", (size_t)(sz + 1));
         if (result) { memcpy(result, data, sz); result[sz] = '\0'; }
     }
     fz_always(ctx) {
@@ -343,6 +349,7 @@ static char *gomupdf_page_stext_json(fz_context *ctx, fz_document *doc, int page
         unsigned char *data = NULL;
         size_t n = fz_buffer_storage(ctx, buf, &data);
         result = (char *)malloc(n + 1);
+        if (!result) fz_throw(ctx, FZ_ERROR_SYSTEM, "out of memory (%zu bytes)", (size_t)(n + 1));
         if (result) { memcpy(result, data, n); result[n] = '\0'; }
     }
     fz_always(ctx) {
@@ -412,6 +419,7 @@ static char *gomupdf_images(fz_context *ctx, fz_document *doc, int pageno,
         unsigned char *data = NULL;
         size_t sz = fz_buffer_storage(ctx, buf, &data);
         result = (char *)malloc(sz + 1);
+        if (!result) fz_throw(ctx, FZ_ERROR_SYSTEM, "out of memory (%zu bytes)", (size_t)(sz + 1));
         if (result) { memcpy(result, data, sz); result[sz] = '\0'; }
     }
     fz_always(ctx) {
@@ -447,6 +455,7 @@ static void gomupdf_img_extract_fill(fz_context *ctx, fz_device *dev, fz_image *
             unsigned char *data = NULL;
             size_t n = fz_buffer_storage(ctx, cb->buffer, &data);
             d->result = (unsigned char *)malloc(n);
+            if (!d->result) fz_throw(ctx, FZ_ERROR_SYSTEM, "out of memory (%zu bytes)", (size_t)(n));
             if (d->result) { memcpy(d->result, data, n); d->len = (int)n; }
         } else {
             fz_pixmap *pix = NULL;
@@ -459,6 +468,7 @@ static void gomupdf_img_extract_fill(fz_context *ctx, fz_device *dev, fz_image *
                 unsigned char *data = NULL;
                 size_t n = fz_buffer_storage(ctx, png, &data);
                 d->result = (unsigned char *)malloc(n);
+                if (!d->result) fz_throw(ctx, FZ_ERROR_SYSTEM, "out of memory (%zu bytes)", (size_t)(n));
                 if (d->result) { memcpy(d->result, data, n); d->len = (int)n; }
                 snprintf(d->ext, sizeof(d->ext), "png");
             }
@@ -466,7 +476,10 @@ static void gomupdf_img_extract_fill(fz_context *ctx, fz_device *dev, fz_image *
                 fz_drop_buffer(ctx, png);
                 fz_drop_pixmap(ctx, pix);
             }
-            fz_catch(ctx) { d->result = NULL; }
+            fz_catch(ctx) {
+                fz_rethrow_if(ctx, FZ_ERROR_SYSTEM); // out of memory is an error, not "no image"
+                d->result = NULL;
+            }
         }
     }
     d->count++;
@@ -612,6 +625,7 @@ static char *gomupdf_drawings(fz_context *ctx, fz_document *doc, int pageno,
         unsigned char *data = NULL;
         size_t sz = fz_buffer_storage(ctx, buf, &data);
         result = (char *)malloc(sz + 1);
+        if (!result) fz_throw(ctx, FZ_ERROR_SYSTEM, "out of memory (%zu bytes)", (size_t)(sz + 1));
         if (result) { memcpy(result, data, sz); result[sz] = '\0'; }
     }
     fz_always(ctx) {
@@ -639,11 +653,11 @@ func (d *mupdfDoc) textRaw(pageNo int) (string, error) {
 	if d.doc == nil {
 		return "", errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	cstr := C.gomupdf_page_text(d.ctx, d.doc, C.int(pageNo), errBuf, errBufLen)
 	if cstr == nil {
-		return "", errors.New("gomupdf: page text: " + C.GoString(errBuf))
+		return "", errors.New("gomupdf: page text: " + errText(errBuf))
 	}
 	defer C.free(unsafe.Pointer(cstr))
 	return C.GoString(cstr), nil
@@ -653,11 +667,11 @@ func (d *mupdfDoc) wordsRaw(pageNo int) (string, error) {
 	if d.doc == nil {
 		return "", errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	cstr := C.gomupdf_page_words(d.ctx, d.doc, C.int(pageNo), errBuf, errBufLen)
 	if cstr == nil {
-		return "", errors.New("gomupdf: words: " + C.GoString(errBuf))
+		return "", errors.New("gomupdf: words: " + errText(errBuf))
 	}
 	defer C.free(unsafe.Pointer(cstr))
 	return C.GoString(cstr), nil
@@ -667,11 +681,11 @@ func (d *mupdfDoc) boundRaw(pageNo int) (string, error) {
 	if d.doc == nil {
 		return "", errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	cstr := C.gomupdf_page_bound(d.ctx, d.doc, C.int(pageNo), errBuf, errBufLen)
 	if cstr == nil {
-		return "", errors.New("gomupdf: bound: " + C.GoString(errBuf))
+		return "", errors.New("gomupdf: bound: " + errText(errBuf))
 	}
 	defer C.free(unsafe.Pointer(cstr))
 	return C.GoString(cstr), nil
@@ -681,11 +695,11 @@ func (d *mupdfDoc) tocRaw() (string, error) {
 	if d.doc == nil {
 		return "", errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	cstr := C.gomupdf_toc(d.ctx, d.doc, errBuf, errBufLen)
 	if cstr == nil {
-		return "", errors.New("gomupdf: toc: " + C.GoString(errBuf))
+		return "", errors.New("gomupdf: toc: " + errText(errBuf))
 	}
 	defer C.free(unsafe.Pointer(cstr))
 	return C.GoString(cstr), nil
@@ -695,11 +709,11 @@ func (d *mupdfDoc) linksRaw(pageNo int) (string, error) {
 	if d.doc == nil {
 		return "", errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	cstr := C.gomupdf_links(d.ctx, d.doc, C.int(pageNo), errBuf, errBufLen)
 	if cstr == nil {
-		return "", errors.New("gomupdf: links: " + C.GoString(errBuf))
+		return "", errors.New("gomupdf: links: " + errText(errBuf))
 	}
 	defer C.free(unsafe.Pointer(cstr))
 	return C.GoString(cstr), nil
@@ -711,11 +725,11 @@ func (d *mupdfDoc) searchRaw(pageNo int, needle string) (string, error) {
 	}
 	cn := C.CString(needle)
 	defer C.free(unsafe.Pointer(cn))
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	cstr := C.gomupdf_search(d.ctx, d.doc, C.int(pageNo), cn, errBuf, errBufLen)
 	if cstr == nil {
-		return "", errors.New("gomupdf: search: " + C.GoString(errBuf))
+		return "", errors.New("gomupdf: search: " + errText(errBuf))
 	}
 	defer C.free(unsafe.Pointer(cstr))
 	return C.GoString(cstr), nil
@@ -725,11 +739,11 @@ func (d *mupdfDoc) structuredJSON(pageNo int) (string, error) {
 	if d.doc == nil {
 		return "", errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	cstr := C.gomupdf_page_stext_json(d.ctx, d.doc, C.int(pageNo), errBuf, errBufLen)
 	if cstr == nil {
-		return "", errors.New("gomupdf: stext json: " + C.GoString(errBuf))
+		return "", errors.New("gomupdf: stext json: " + errText(errBuf))
 	}
 	defer C.free(unsafe.Pointer(cstr))
 	return C.GoString(cstr), nil
@@ -739,11 +753,11 @@ func (d *mupdfDoc) imagesRaw(pageNo int) (string, error) {
 	if d.doc == nil {
 		return "", errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	cstr := C.gomupdf_images(d.ctx, d.doc, C.int(pageNo), errBuf, errBufLen)
 	if cstr == nil {
-		return "", errors.New("gomupdf: images: " + C.GoString(errBuf))
+		return "", errors.New("gomupdf: images: " + errText(errBuf))
 	}
 	defer C.free(unsafe.Pointer(cstr))
 	return C.GoString(cstr), nil
@@ -753,11 +767,10 @@ func (d *mupdfDoc) imageBytes(pageNo, index int) ([]byte, string, error) {
 	if d.doc == nil {
 		return nil, "", errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	extBuf := (*C.char)(C.malloc(8))
 	defer C.free(unsafe.Pointer(extBuf))
-	*errBuf = 0
 	*extBuf = 0
 	var outLen C.int
 	ptr := C.gomupdf_image_bytes(d.ctx, d.doc, C.int(pageNo), C.int(index), &outLen, extBuf, errBuf, errBufLen)
@@ -775,11 +788,11 @@ func (d *mupdfDoc) drawingsRaw(pageNo int) (string, error) {
 	if d.doc == nil {
 		return "", errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	cstr := C.gomupdf_drawings(d.ctx, d.doc, C.int(pageNo), errBuf, errBufLen)
 	if cstr == nil {
-		return "", errors.New("gomupdf: drawings: " + C.GoString(errBuf))
+		return "", errors.New("gomupdf: drawings: " + errText(errBuf))
 	}
 	defer C.free(unsafe.Pointer(cstr))
 	return C.GoString(cstr), nil

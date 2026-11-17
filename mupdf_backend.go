@@ -171,6 +171,24 @@ import (
 
 const errBufLen = 512
 
+// newErrBuf allocates an empty error buffer for a C helper; the caller frees
+// it. Empty, so a helper that fails without writing a message cannot leave
+// stale bytes to be read as one.
+func newErrBuf() *C.char {
+	b := (*C.char)(C.malloc(errBufLen))
+	*b = 0
+	return b
+}
+
+// errText returns the message a C helper wrote to buf, or says that it
+// wrote none: an error message is never empty.
+func errText(buf *C.char) string {
+	if s := C.GoString(buf); s != "" {
+		return s
+	}
+	return "unknown error (MuPDF gave no message)"
+}
+
 func init() {
 	defaultDriver = mupdfDriver{}
 }
@@ -193,14 +211,14 @@ func (drv mupdfDriver) open(data []byte, magic string) (docBackend, bool, error)
 	cdata := C.CBytes(data) // malloc'd copy; freed in close
 	cmagic := C.CString(magic)
 	defer C.free(unsafe.Pointer(cmagic))
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 
 	doc := C.gomupdf_open_magic(ctx, (*C.uchar)(cdata), C.size_t(len(data)), cmagic, errBuf, errBufLen)
 	if doc == nil {
 		C.free(cdata)
 		C.fz_drop_context(ctx)
-		return nil, false, errors.New("gomupdf: open failed: " + C.GoString(errBuf))
+		return nil, false, errors.New("gomupdf: open failed: " + errText(errBuf))
 	}
 	needsPass := C.gomupdf_needs_password(ctx, doc) != 0
 	return drv.opened(&mupdfDoc{ctx: ctx, doc: doc, data: cdata, dataLen: len(data)}, needsPass)
@@ -213,12 +231,12 @@ func (drv mupdfDriver) openPath(path string) (docBackend, bool, error) {
 	}
 	cpath := C.CString(path)
 	defer C.free(unsafe.Pointer(cpath))
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	doc := C.gomupdf_open_path(ctx, cpath, errBuf, errBufLen)
 	if doc == nil {
 		C.fz_drop_context(ctx)
-		return nil, false, errors.New("gomupdf: open failed: " + C.GoString(errBuf))
+		return nil, false, errors.New("gomupdf: open failed: " + errText(errBuf))
 	}
 	needsPass := C.gomupdf_needs_password(ctx, doc) != 0
 	return drv.opened(&mupdfDoc{ctx: ctx, doc: doc}, needsPass)
@@ -243,12 +261,12 @@ func (mupdfDriver) newPDF() (docBackend, error) {
 	if ctx == nil {
 		return nil, errors.New("gomupdf: failed to create context")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	doc := C.gomupdf_new_pdf(ctx, errBuf, errBufLen)
 	if doc == nil {
 		C.fz_drop_context(ctx)
-		return nil, errors.New("gomupdf: new pdf: " + C.GoString(errBuf))
+		return nil, errors.New("gomupdf: new pdf: " + errText(errBuf))
 	}
 	return &mupdfDoc{ctx: ctx, doc: doc, stable: true}, nil
 }
@@ -256,12 +274,12 @@ func (mupdfDriver) newPDF() (docBackend, error) {
 func (mupdfDriver) newFont(name string) (fontBackend, error) {
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
-	errBuf := (*C.char)(C.malloc(C.size_t(errBufLen)))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	var ctx *C.fz_context
 	cfont := C.gomupdf_new_base14(cname, &ctx, errBuf, C.int(errBufLen))
 	if cfont == nil {
-		return nil, errors.New("gomupdf: NewFont: " + C.GoString(errBuf))
+		return nil, errors.New("gomupdf: NewFont: " + errText(errBuf))
 	}
 	return &mupdfFont{ctx: ctx, font: cfont}, nil
 }
@@ -310,7 +328,7 @@ func (d *mupdfDoc) pageCount() int {
 	if d.doc == nil {
 		return 0
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	n := C.gomupdf_count_pages(d.ctx, d.doc, errBuf, errBufLen)
 	if n < 0 {

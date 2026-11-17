@@ -151,11 +151,11 @@ func (d *mupdfDoc) annotationsRaw(pageNo int) (string, error) {
 	if d.doc == nil {
 		return "", errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	cstr := C.gomupdf_list_annots(d.ctx, d.doc, C.int(pageNo), errBuf, errBufLen)
 	if cstr == nil {
-		return "", errors.New("gomupdf: annotations: " + C.GoString(errBuf))
+		return "", errors.New("gomupdf: annotations: " + errText(errBuf))
 	}
 	defer C.free(unsafe.Pointer(cstr))
 	return C.GoString(cstr), nil
@@ -165,10 +165,10 @@ func (d *mupdfDoc) deleteAnnotation(pageNo, index int) error {
 	if d.doc == nil {
 		return errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_delete_annot(d.ctx, d.doc, C.int(pageNo), C.int(index), errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: delete annotation: " + C.GoString(errBuf))
+		return errors.New("gomupdf: delete annotation: " + errText(errBuf))
 	}
 	return nil
 }
@@ -190,7 +190,7 @@ func (d *mupdfDoc) addMarkup(pageNo int, kind string, quads []float32) error {
 		return errors.New("gomupdf: unknown markup kind: " + kind)
 	}
 	nq := len(quads) / 8
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	flat := make([]C.float, len(quads))
 	for i, v := range quads {
@@ -198,7 +198,7 @@ func (d *mupdfDoc) addMarkup(pageNo int, kind string, quads []float32) error {
 	}
 	if C.gomupdf_add_markup_annot(d.ctx, d.doc, C.int(pageNo), C.int(annotType),
 		(*C.float)(unsafe.Pointer(&flat[0])), C.int(nq), errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: add markup annotation: " + C.GoString(errBuf))
+		return errors.New("gomupdf: add markup annotation: " + errText(errBuf))
 	}
 	return nil
 }

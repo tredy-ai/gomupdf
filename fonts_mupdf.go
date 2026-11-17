@@ -78,6 +78,7 @@ static char *gomupdf_page_fonts(fz_context *ctx, fz_document *doc, int pageno,
 
         size_t sz = fz_buffer_storage(ctx, buf, NULL);
         result = (char *)malloc(sz + 1);
+        if (!result) fz_throw(ctx, FZ_ERROR_SYSTEM, "out of memory (%zu bytes)", (size_t)(sz + 1));
         if (result) {
             unsigned char *p = NULL;
             fz_buffer_storage(ctx, buf, &p);
@@ -169,6 +170,7 @@ static unsigned char *gomupdf_extract_font(fz_context *ctx, fz_document *doc, in
                 size_t sz = fz_buffer_storage(ctx, streambuf, &p);
                 if (sz > 0 && p) {
                     result = (unsigned char *)malloc(sz);
+                    if (!result) fz_throw(ctx, FZ_ERROR_SYSTEM, "out of memory (%zu bytes)", (size_t)(sz));
                     if (result) {
                         memcpy(result, p, sz);
                         *out_len = (int)sz;
@@ -206,9 +208,8 @@ func (d *mupdfDoc) fontsRaw(pageNo int) (string, error) {
 	if d.doc == nil {
 		return "", errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
-	*errBuf = 0
 	cstr := C.gomupdf_page_fonts(d.ctx, d.doc, C.int(pageNo), errBuf, errBufLen)
 	if cstr == nil {
 		msg := C.GoString(errBuf)
@@ -225,13 +226,12 @@ func (d *mupdfDoc) extractFont(xref int) (name, ext string, data []byte, err err
 	if d.doc == nil {
 		return "", "", nil, errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	extBuf := (*C.char)(C.malloc(8))
 	defer C.free(unsafe.Pointer(extBuf))
 	nameBuf := (*C.char)(C.malloc(256))
 	defer C.free(unsafe.Pointer(nameBuf))
-	*errBuf = 0
 	*extBuf = 0
 	*nameBuf = 0
 

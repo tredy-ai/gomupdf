@@ -29,6 +29,7 @@ static char *gomupdf_page_geometry(fz_context *ctx, fz_document *doc, int pageno
         int hascrop = (cbo != NULL);
         fz_rect cb = hascrop ? fz_intersect_rect(pdf_to_rect(ctx, cbo), mb) : mb;
         result = (char *)malloc(256);
+        if (!result) fz_throw(ctx, FZ_ERROR_SYSTEM, "out of memory (%zu bytes)", (size_t)(256));
         if (result)
             snprintf(result, 256, "%d %g %g %g %g %g %g %g %g %d",
                      rot, mb.x0, mb.y0, mb.x1, mb.y1,
@@ -94,11 +95,11 @@ func (d *mupdfDoc) geometryRaw(pageNo int) (string, error) {
 	if d.doc == nil {
 		return "", errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	cstr := C.gomupdf_page_geometry(d.ctx, d.doc, C.int(pageNo), errBuf, errBufLen)
 	if cstr == nil {
-		return "", errors.New("gomupdf: page geometry: " + C.GoString(errBuf))
+		return "", errors.New("gomupdf: page geometry: " + errText(errBuf))
 	}
 	defer C.free(unsafe.Pointer(cstr))
 	return C.GoString(cstr), nil
@@ -108,10 +109,10 @@ func (d *mupdfDoc) setRotation(pageNo, deg int) error {
 	if d.doc == nil {
 		return errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_set_rotation(d.ctx, d.doc, C.int(pageNo), C.int(deg), errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: set rotation: " + C.GoString(errBuf))
+		return errors.New("gomupdf: set rotation: " + errText(errBuf))
 	}
 	return nil
 }
@@ -120,11 +121,11 @@ func (d *mupdfDoc) setBox(pageNo, which int, x0, y0, x1, y1 float64) error {
 	if d.doc == nil {
 		return errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_set_box(d.ctx, d.doc, C.int(pageNo), C.int(which),
 		C.float(x0), C.float(y0), C.float(x1), C.float(y1), errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: set box: " + C.GoString(errBuf))
+		return errors.New("gomupdf: set box: " + errText(errBuf))
 	}
 	return nil
 }

@@ -81,6 +81,7 @@ static char *gomupdf_get_page_labels(fz_context *ctx, fz_document *doc,
         unsigned char *data = NULL;
         size_t sz = fz_buffer_storage(ctx, buf, &data);
         result = (char *)malloc(sz + 1);
+        if (!result) fz_throw(ctx, FZ_ERROR_SYSTEM, "out of memory (%zu bytes)", (size_t)(sz + 1));
         if (result) { memcpy(result, data, sz); result[sz] = '\0'; }
     }
     fz_always(ctx) {
@@ -137,10 +138,10 @@ func (d *mupdfDoc) setPageLabels(spec string) error {
 	}
 	cspec := C.CString(spec)
 	defer C.free(unsafe.Pointer(cspec))
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_set_page_labels(d.ctx, d.doc, cspec, errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: set page labels: " + C.GoString(errBuf))
+		return errors.New("gomupdf: set page labels: " + errText(errBuf))
 	}
 	return nil
 }
@@ -149,11 +150,11 @@ func (d *mupdfDoc) pageLabelsRaw() (string, error) {
 	if d.doc == nil {
 		return "", errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	cstr := C.gomupdf_get_page_labels(d.ctx, d.doc, errBuf, errBufLen)
 	if cstr == nil {
-		return "", errors.New("gomupdf: page labels: " + C.GoString(errBuf))
+		return "", errors.New("gomupdf: page labels: " + errText(errBuf))
 	}
 	defer C.free(unsafe.Pointer(cstr))
 	return C.GoString(cstr), nil
@@ -163,11 +164,11 @@ func (d *mupdfDoc) pageLabel(pageNo int) (string, error) {
 	if d.doc == nil {
 		return "", errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	cstr := C.gomupdf_page_label(d.ctx, d.doc, C.int(pageNo), errBuf, errBufLen)
 	if cstr == nil {
-		return "", errors.New("gomupdf: page label: " + C.GoString(errBuf))
+		return "", errors.New("gomupdf: page label: " + errText(errBuf))
 	}
 	defer C.free(unsafe.Pointer(cstr))
 	return C.GoString(cstr), nil

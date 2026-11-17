@@ -229,10 +229,10 @@ func (d *mupdfDoc) newPage(width, height float64) error {
 	if d.doc == nil {
 		return errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_add_blank_page(d.ctx, d.doc, C.float(width), C.float(height), errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: new page: " + C.GoString(errBuf))
+		return errors.New("gomupdf: new page: " + errText(errBuf))
 	}
 	return nil
 }
@@ -241,10 +241,10 @@ func (d *mupdfDoc) deletePage(n int) error {
 	if d.doc == nil {
 		return errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_delete_page(d.ctx, d.doc, C.int(n), errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: delete page: " + C.GoString(errBuf))
+		return errors.New("gomupdf: delete page: " + errText(errBuf))
 	}
 	return nil
 }
@@ -257,20 +257,20 @@ func (d *mupdfDoc) insertPDF(src []byte, password string) error {
 	defer C.free(cdata)
 	cpw := C.CString(password)
 	defer C.free(unsafe.Pointer(cpw))
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_graft_bytes(d.ctx, d.doc, (*C.uchar)(cdata), C.size_t(len(src)), cpw, errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: insert pdf: " + C.GoString(errBuf))
+		return errors.New("gomupdf: insert pdf: " + errText(errBuf))
 	}
 	return nil
 }
 
 func (d *mupdfDoc) pdfPageCount() (int, error) {
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	n := int(C.gomupdf_pagecount_pdf(d.ctx, d.doc, errBuf, errBufLen))
 	if n < 0 {
-		return 0, errors.New("gomupdf: " + C.GoString(errBuf))
+		return 0, errors.New("gomupdf: " + errText(errBuf))
 	}
 	return n, nil
 }
@@ -289,10 +289,10 @@ func (d *mupdfDoc) copyPage(from, to int) error {
 	if to < 0 || to > n {
 		return errors.New("gomupdf: CopyPage: to index out of range")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_copy_page(d.ctx, d.doc, C.int(from), C.int(to), errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: CopyPage: " + C.GoString(errBuf))
+		return errors.New("gomupdf: CopyPage: " + errText(errBuf))
 	}
 	return nil
 }
@@ -311,10 +311,10 @@ func (d *mupdfDoc) movePage(from, to int) error {
 	if to < 0 || to >= n {
 		return errors.New("gomupdf: MovePage: to index out of range")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_move_page(d.ctx, d.doc, C.int(from), C.int(to), errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: MovePage: " + C.GoString(errBuf))
+		return errors.New("gomupdf: MovePage: " + errText(errBuf))
 	}
 	return nil
 }
@@ -336,12 +336,12 @@ func (d *mupdfDoc) selectPages(pages []int) error {
 	for i, p := range pages {
 		cPages[i] = C.int(p)
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_select_pages(d.ctx, d.doc,
 		(*C.int)(unsafe.Pointer(&cPages[0])), C.int(len(cPages)),
 		errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: SelectPages: " + C.GoString(errBuf))
+		return errors.New("gomupdf: SelectPages: " + errText(errBuf))
 	}
 	return nil
 }
@@ -354,13 +354,13 @@ func (d *mupdfDoc) insertPDFRange(src []byte, fromPage, toPage int, password str
 	defer C.free(cdata)
 	cpw := C.CString(password)
 	defer C.free(unsafe.Pointer(cpw))
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_insert_pdf_range(d.ctx, d.doc,
 		(*C.uchar)(cdata), C.size_t(len(src)),
 		C.int(fromPage), C.int(toPage),
 		cpw, errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: InsertPDFRange: " + C.GoString(errBuf))
+		return errors.New("gomupdf: InsertPDFRange: " + errText(errBuf))
 	}
 	return nil
 }

@@ -129,14 +129,14 @@ func (d *mupdfDoc) rawDictRaw(pageNo int, opts TextOptions) (string, error) {
 	if d.doc == nil {
 		return "", errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	clipEnabled, cx0, cy0, cx1, cy1 := stextClip(opts)
 	cstr := C.gomupdf_rawdict(d.ctx, d.doc, C.int(pageNo),
 		stextFlags(opts), clipEnabled, cx0, cy0, cx1, cy1,
 		errBuf, errBufLen)
 	if cstr == nil {
-		return "", errors.New("gomupdf: rawdict: " + C.GoString(errBuf))
+		return "", errors.New("gomupdf: rawdict: " + errText(errBuf))
 	}
 	defer C.free(unsafe.Pointer(cstr))
 	return C.GoString(cstr), nil

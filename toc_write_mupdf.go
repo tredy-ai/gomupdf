@@ -106,10 +106,10 @@ func (d *mupdfDoc) setTOC(spec string) error {
 	}
 	cspec := C.CString(spec)
 	defer C.free(unsafe.Pointer(cspec))
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_set_toc(d.ctx, d.doc, cspec, errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: set toc: " + C.GoString(errBuf))
+		return errors.New("gomupdf: set toc: " + errText(errBuf))
 	}
 	return nil
 }

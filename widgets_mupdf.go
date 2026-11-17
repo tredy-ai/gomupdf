@@ -225,11 +225,11 @@ func (d *mupdfDoc) widgetsRaw(pageNo int) (string, error) {
 	if d.doc == nil {
 		return "", errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	cstr := C.gomupdf_list_widgets(d.ctx, d.doc, C.int(pageNo), errBuf, errBufLen)
 	if cstr == nil {
-		return "", errors.New("gomupdf: widgets: " + C.GoString(errBuf))
+		return "", errors.New("gomupdf: widgets: " + errText(errBuf))
 	}
 	defer C.free(unsafe.Pointer(cstr))
 	return C.GoString(cstr), nil
@@ -241,10 +241,10 @@ func (d *mupdfDoc) setTextField(pageNo, index int, value string) error {
 	}
 	cvalue := C.CString(value)
 	defer C.free(unsafe.Pointer(cvalue))
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_set_text_field(d.ctx, d.doc, C.int(pageNo), C.int(index), cvalue, errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: set text field: " + C.GoString(errBuf))
+		return errors.New("gomupdf: set text field: " + errText(errBuf))
 	}
 	return nil
 }
@@ -257,10 +257,10 @@ func (d *mupdfDoc) setCheckbox(pageNo, index int, checked bool) error {
 	if checked {
 		cChecked = 1
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_set_checkbox(d.ctx, d.doc, C.int(pageNo), C.int(index), cChecked, errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: set checkbox: " + C.GoString(errBuf))
+		return errors.New("gomupdf: set checkbox: " + errText(errBuf))
 	}
 	return nil
 }
@@ -273,13 +273,13 @@ func (d *mupdfDoc) addTextField(pageNo int, name string, rect [4]float64, value 
 	defer C.free(unsafe.Pointer(cname))
 	cvalue := C.CString(value)
 	defer C.free(unsafe.Pointer(cvalue))
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_add_text_field(d.ctx, d.doc, C.int(pageNo),
 		cname,
 		C.float(rect[0]), C.float(rect[1]), C.float(rect[2]), C.float(rect[3]),
 		cvalue, errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: add text field: " + C.GoString(errBuf))
+		return errors.New("gomupdf: add text field: " + errText(errBuf))
 	}
 	return nil
 }

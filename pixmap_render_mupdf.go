@@ -72,6 +72,7 @@ static unsigned char *gomupdf_render(
         size_t samples = (size_t)pix->stride * pix->h;
         size_t total   = sizeof(hdr) + samples;
         result = (unsigned char *)malloc(total);
+        if (!result) fz_throw(ctx, FZ_ERROR_SYSTEM, "out of memory (%zu bytes)", (size_t)(total));
         if (result) {
             memcpy(result, hdr, sizeof(hdr));
             memcpy(result + sizeof(hdr), pix->samples, samples);
@@ -137,7 +138,7 @@ func (d *mupdfDoc) pixmap(pageNo int, o PixmapOptions) ([]byte, error) {
 		noAnnots = 1
 	}
 
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	var outLen C.int
 	ptr := C.gomupdf_render(
@@ -148,7 +149,7 @@ func (d *mupdfDoc) pixmap(pageNo int, o PixmapOptions) ([]byte, error) {
 		&outLen, errBuf, errBufLen,
 	)
 	if ptr == nil {
-		return nil, errors.New("gomupdf: render: " + C.GoString(errBuf))
+		return nil, errors.New("gomupdf: render: " + errText(errBuf))
 	}
 	defer C.free(unsafe.Pointer(ptr))
 	return C.GoBytes(unsafe.Pointer(ptr), outLen), nil

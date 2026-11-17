@@ -1280,10 +1280,10 @@ func (d *mupdfDoc) stabilise() error {
 	if d.stable {
 		return nil
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_stabilise(d.ctx, d.doc, errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: load objects: " + C.GoString(errBuf))
+		return errors.New("gomupdf: load objects: " + errText(errBuf))
 	}
 	d.stable = true
 	return nil
@@ -1298,7 +1298,7 @@ func (d *mupdfDoc) scrub(opts ScrubOptions) error {
 	if d.doc == nil {
 		return errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	flag := func(b bool) C.int {
 		if b {
@@ -1308,7 +1308,7 @@ func (d *mupdfDoc) scrub(opts ScrubOptions) error {
 	}
 	if C.gomupdf_scrub(d.ctx, d.doc, flag(opts.KeepAnnotations), flag(opts.KeepFormFields), flag(opts.KeepOutlines),
 		errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: scrub: " + C.GoString(errBuf))
+		return errors.New("gomupdf: scrub: " + errText(errBuf))
 	}
 	return nil
 }
@@ -1317,11 +1317,11 @@ func (d *mupdfDoc) hiddenContentRaw() ([]int, error) {
 	if d.doc == nil {
 		return nil, errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	var out [C.HC_COUNT]C.int
 	if C.gomupdf_hidden_content(d.ctx, d.doc, &out[0], errBuf, errBufLen) != 0 {
-		return nil, errors.New("gomupdf: hidden content: " + C.GoString(errBuf))
+		return nil, errors.New("gomupdf: hidden content: " + errText(errBuf))
 	}
 	counts := make([]int, len(out))
 	for i, v := range out {

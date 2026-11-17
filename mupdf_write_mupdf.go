@@ -266,10 +266,10 @@ func (d *mupdfDoc) insertText(pageNo int, x, y, size float64, text string) error
 	}
 	ct := C.CString(text)
 	defer C.free(unsafe.Pointer(ct))
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_insert_text(d.ctx, d.doc, C.int(pageNo), C.float(x), C.float(y), C.float(size), ct, errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: insert text: " + C.GoString(errBuf))
+		return errors.New("gomupdf: insert text: " + errText(errBuf))
 	}
 	return nil
 }
@@ -282,12 +282,12 @@ func (d *mupdfDoc) insertImage(pageNo int, rect [4]float64, img []byte) error {
 	defer C.free(cdata)
 	w := rect[2] - rect[0]
 	h := rect[3] - rect[1]
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_insert_image(d.ctx, d.doc, C.int(pageNo),
 		C.float(rect[0]), C.float(rect[1]), C.float(w), C.float(h),
 		(*C.uchar)(cdata), C.size_t(len(img)), errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: insert image: " + C.GoString(errBuf))
+		return errors.New("gomupdf: insert image: " + errText(errBuf))
 	}
 	return nil
 }
@@ -296,11 +296,11 @@ func (d *mupdfDoc) addRectAnnot(pageNo int, rect [4]float64) error {
 	if d.doc == nil {
 		return errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_add_rect_annot(d.ctx, d.doc, C.int(pageNo),
 		C.float(rect[0]), C.float(rect[1]), C.float(rect[2]), C.float(rect[3]), errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: add annot: " + C.GoString(errBuf))
+		return errors.New("gomupdf: add annot: " + errText(errBuf))
 	}
 	return nil
 }
@@ -311,10 +311,10 @@ func (d *mupdfDoc) drawContent(pageNo int, fragment string) error {
 	}
 	cf := C.CString(fragment)
 	defer C.free(unsafe.Pointer(cf))
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_draw_content(d.ctx, d.doc, C.int(pageNo), cf, errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: draw content: " + C.GoString(errBuf))
+		return errors.New("gomupdf: draw content: " + errText(errBuf))
 	}
 	return nil
 }
@@ -325,10 +325,10 @@ func (d *mupdfDoc) drawText(pageNo int, fragment string) error {
 	}
 	cf := C.CString(fragment)
 	defer C.free(unsafe.Pointer(cf))
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_draw_text(d.ctx, d.doc, C.int(pageNo), cf, errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: draw text: " + C.GoString(errBuf))
+		return errors.New("gomupdf: draw text: " + errText(errBuf))
 	}
 	return nil
 }

@@ -286,13 +286,13 @@ func (d *mupdfDoc) addLineAnnot(pageNo int, a, b [2]float64, style AnnotStyle) e
 	}
 	stroke, _, _, width, opacity := resolveAnnotStyle(style)
 	cStroke := cStrokeArr(stroke)
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_add_line(d.ctx, d.doc, C.int(pageNo),
 		C.float(a[0]), C.float(a[1]), C.float(b[0]), C.float(b[1]),
 		&cStroke[0], C.float(width), C.float(opacity),
 		errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: add line: " + C.GoString(errBuf))
+		return errors.New("gomupdf: add line: " + errText(errBuf))
 	}
 	return nil
 }
@@ -309,13 +309,13 @@ func (d *mupdfDoc) addCircleAnnot(pageNo int, rect [4]float64, style AnnotStyle)
 		cFill = cStrokeArr(fill)
 		fillPtr = &cFill[0]
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_add_circle(d.ctx, d.doc, C.int(pageNo),
 		C.float(rect[0]), C.float(rect[1]), C.float(rect[2]), C.float(rect[3]),
 		&cStroke[0], fillPtr, C.float(width), C.float(opacity),
 		errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: add circle: " + C.GoString(errBuf))
+		return errors.New("gomupdf: add circle: " + errText(errBuf))
 	}
 	return nil
 }
@@ -328,7 +328,7 @@ func (d *mupdfDoc) addPolyAnnot(pageNo int, closed bool, pts []float32, style An
 	flat := float32ToC(pts)
 	npts := len(pts) / 2
 	cStroke := cStrokeArr(stroke)
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if closed {
 		var fillPtr *C.float
@@ -341,7 +341,7 @@ func (d *mupdfDoc) addPolyAnnot(pageNo int, closed bool, pts []float32, style An
 			(*C.float)(unsafe.Pointer(&flat[0])), C.int(npts),
 			&cStroke[0], fillPtr, C.float(width), C.float(opacity),
 			errBuf, errBufLen) != 0 {
-			return errors.New("gomupdf: add polygon: " + C.GoString(errBuf))
+			return errors.New("gomupdf: add polygon: " + errText(errBuf))
 		}
 		return nil
 	}
@@ -349,7 +349,7 @@ func (d *mupdfDoc) addPolyAnnot(pageNo int, closed bool, pts []float32, style An
 		(*C.float)(unsafe.Pointer(&flat[0])), C.int(npts),
 		&cStroke[0], C.float(width), C.float(opacity),
 		errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: add polyline: " + C.GoString(errBuf))
+		return errors.New("gomupdf: add polyline: " + errText(errBuf))
 	}
 	return nil
 }
@@ -365,14 +365,14 @@ func (d *mupdfDoc) addInkAnnot(pageNo int, counts []int32, pts []float32, style 
 		cCounts[i] = C.int(c)
 	}
 	cStroke := cStrokeArr(stroke)
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_add_ink(d.ctx, d.doc, C.int(pageNo),
 		(*C.float)(unsafe.Pointer(&flat[0])),
 		(*C.int)(unsafe.Pointer(&cCounts[0])), C.int(len(counts)),
 		&cStroke[0], C.float(width), C.float(opacity),
 		errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: add ink: " + C.GoString(errBuf))
+		return errors.New("gomupdf: add ink: " + errText(errBuf))
 	}
 	return nil
 }
@@ -385,13 +385,13 @@ func (d *mupdfDoc) addFreeText(pageNo int, rect [4]float64, text string, size fl
 	cText := C.CString(text)
 	defer C.free(unsafe.Pointer(cText))
 	cStroke := cStrokeArr(stroke)
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_add_freetext(d.ctx, d.doc, C.int(pageNo),
 		C.float(rect[0]), C.float(rect[1]), C.float(rect[2]), C.float(rect[3]),
 		cText, C.float(size), &cStroke[0],
 		errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: add freetext: " + C.GoString(errBuf))
+		return errors.New("gomupdf: add freetext: " + errText(errBuf))
 	}
 	return nil
 }
@@ -402,12 +402,12 @@ func (d *mupdfDoc) addTextNote(pageNo int, at [2]float64, text string) error {
 	}
 	cText := C.CString(text)
 	defer C.free(unsafe.Pointer(cText))
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_add_textnote(d.ctx, d.doc, C.int(pageNo),
 		C.float(at[0]), C.float(at[1]), cText,
 		errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: add text note: " + C.GoString(errBuf))
+		return errors.New("gomupdf: add text note: " + errText(errBuf))
 	}
 	return nil
 }

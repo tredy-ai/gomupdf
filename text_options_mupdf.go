@@ -90,7 +90,7 @@ func (d *mupdfDoc) extractTextRaw(pageNo int, opts TextOptions) (string, error) 
 		return "", errors.New("gomupdf: document closed")
 	}
 
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 
 	clipEnabled, cx0, cy0, cx1, cy1 := stextClip(opts)
@@ -98,7 +98,7 @@ func (d *mupdfDoc) extractTextRaw(pageNo int, opts TextOptions) (string, error) 
 		stextFlags(opts), clipEnabled, cx0, cy0, cx1, cy1,
 		errBuf, errBufLen)
 	if cstr == nil {
-		return "", errors.New("gomupdf: extract text: " + C.GoString(errBuf))
+		return "", errors.New("gomupdf: extract text: " + errText(errBuf))
 	}
 	defer C.free(unsafe.Pointer(cstr))
 	return C.GoString(cstr), nil

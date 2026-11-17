@@ -32,6 +32,7 @@ static char *gomupdf_page_stext_html(fz_context *ctx, fz_document *doc, int page
         unsigned char *data = NULL;
         size_t n = fz_buffer_storage(ctx, buf, &data);
         result = (char *)malloc(n + 1);
+        if (!result) fz_throw(ctx, FZ_ERROR_SYSTEM, "out of memory (%zu bytes)", (size_t)(n + 1));
         if (result) { memcpy(result, data, n); result[n] = '\0'; }
     }
     fz_always(ctx) {
@@ -71,6 +72,7 @@ static char *gomupdf_page_stext_xhtml(fz_context *ctx, fz_document *doc, int pag
         unsigned char *data = NULL;
         size_t n = fz_buffer_storage(ctx, buf, &data);
         result = (char *)malloc(n + 1);
+        if (!result) fz_throw(ctx, FZ_ERROR_SYSTEM, "out of memory (%zu bytes)", (size_t)(n + 1));
         if (result) { memcpy(result, data, n); result[n] = '\0'; }
     }
     fz_always(ctx) {
@@ -110,6 +112,7 @@ static char *gomupdf_page_stext_xml(fz_context *ctx, fz_document *doc, int pagen
         unsigned char *data = NULL;
         size_t n = fz_buffer_storage(ctx, buf, &data);
         result = (char *)malloc(n + 1);
+        if (!result) fz_throw(ctx, FZ_ERROR_SYSTEM, "out of memory (%zu bytes)", (size_t)(n + 1));
         if (result) { memcpy(result, data, n); result[n] = '\0'; }
     }
     fz_always(ctx) {
@@ -137,11 +140,11 @@ func (d *mupdfDoc) htmlRaw(pageNo int) (string, error) {
 	if d.doc == nil {
 		return "", errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	cstr := C.gomupdf_page_stext_html(d.ctx, d.doc, C.int(pageNo), errBuf, errBufLen)
 	if cstr == nil {
-		return "", errors.New("gomupdf: HTML: " + C.GoString(errBuf))
+		return "", errors.New("gomupdf: HTML: " + errText(errBuf))
 	}
 	defer C.free(unsafe.Pointer(cstr))
 	return C.GoString(cstr), nil
@@ -151,11 +154,11 @@ func (d *mupdfDoc) xhtmlRaw(pageNo int) (string, error) {
 	if d.doc == nil {
 		return "", errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	cstr := C.gomupdf_page_stext_xhtml(d.ctx, d.doc, C.int(pageNo), errBuf, errBufLen)
 	if cstr == nil {
-		return "", errors.New("gomupdf: XHTML: " + C.GoString(errBuf))
+		return "", errors.New("gomupdf: XHTML: " + errText(errBuf))
 	}
 	defer C.free(unsafe.Pointer(cstr))
 	return C.GoString(cstr), nil
@@ -165,11 +168,11 @@ func (d *mupdfDoc) xmlRaw(pageNo int) (string, error) {
 	if d.doc == nil {
 		return "", errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	cstr := C.gomupdf_page_stext_xml(d.ctx, d.doc, C.int(pageNo), errBuf, errBufLen)
 	if cstr == nil {
-		return "", errors.New("gomupdf: XML: " + C.GoString(errBuf))
+		return "", errors.New("gomupdf: XML: " + errText(errBuf))
 	}
 	defer C.free(unsafe.Pointer(cstr))
 	return C.GoString(cstr), nil

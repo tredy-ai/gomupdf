@@ -1319,12 +1319,12 @@ func (d *mupdfDoc) addRedaction(pageNo int, rect [4]float64) error {
 		return err
 	}
 	repaired := d.repaired()
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_add_redaction(d.ctx, d.doc, C.int(pageNo),
 		C.float(rect[0]), C.float(rect[1]), C.float(rect[2]), C.float(rect[3]),
 		errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: add redaction: " + C.GoString(errBuf))
+		return errors.New("gomupdf: add redaction: " + errText(errBuf))
 	}
 	return d.lateRepair("add redaction", repaired)
 }
@@ -1351,12 +1351,12 @@ func (d *mupdfDoc) addRedactionQuads(pageNo int, quads []float32) error {
 		return err
 	}
 	repaired := d.repaired()
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_add_redaction_quads(d.ctx, d.doc, C.int(pageNo),
 		(*C.float)(unsafe.Pointer(&quads[0])), C.int(len(quads)/8),
 		errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: add redaction quads: " + C.GoString(errBuf))
+		return errors.New("gomupdf: add redaction quads: " + errText(errBuf))
 	}
 	return d.lateRepair("add redaction quads", repaired)
 }
@@ -1381,12 +1381,12 @@ func (d *mupdfDoc) applyRedactions(pageNo int, opts ApplyOptions) (int, error) {
 		return 0, err
 	}
 	repaired := d.repaired()
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	n := C.gomupdf_apply_redactions(d.ctx, d.doc, C.int(pageNo), boxes,
 		C.int(opts.Images), C.int(opts.LineArt), C.int(opts.Text), errBuf, errBufLen)
 	if n < 0 {
-		return 0, errors.New("gomupdf: apply redactions: " + C.GoString(errBuf))
+		return 0, errors.New("gomupdf: apply redactions: " + errText(errBuf))
 	}
 	if err := d.lateRepair("apply redactions", repaired); err != nil {
 		return 0, err

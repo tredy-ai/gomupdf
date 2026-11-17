@@ -55,6 +55,7 @@ static unsigned char *gomupdf_get_xmp(fz_context *ctx, fz_document *doc,
             unsigned char *data = NULL;
             size_t n = fz_buffer_storage(ctx, buf, &data);
             result = (unsigned char *)malloc(n ? n : 1);
+            if (!result) fz_throw(ctx, FZ_ERROR_SYSTEM, "out of memory (%zu bytes)", (size_t)(n ? n : 1));
             if (result) { memcpy(result, data, n); *out_len = (int)n; }
         }
     }
@@ -128,10 +129,10 @@ func (d *mupdfDoc) setMetadata(spec string) error {
 	}
 	cspec := C.CString(spec)
 	defer C.free(unsafe.Pointer(cspec))
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_set_metadata(d.ctx, d.doc, cspec, errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: set metadata: " + C.GoString(errBuf))
+		return errors.New("gomupdf: set metadata: " + errText(errBuf))
 	}
 	return nil
 }
@@ -140,13 +141,13 @@ func (d *mupdfDoc) xmp() ([]byte, error) {
 	if d.doc == nil {
 		return nil, errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	var outLen C.int
 	ptr := C.gomupdf_get_xmp(d.ctx, d.doc, &outLen, errBuf, errBufLen)
 	if ptr == nil {
 		if outLen < 0 {
-			return nil, errors.New("gomupdf: xmp: " + C.GoString(errBuf))
+			return nil, errors.New("gomupdf: xmp: " + errText(errBuf))
 		}
 		return nil, nil // no XMP stream
 	}
@@ -160,10 +161,10 @@ func (d *mupdfDoc) setXMP(xml []byte) error {
 	}
 	cdata := C.CBytes(xml)
 	defer C.free(cdata)
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_set_xmp(d.ctx, d.doc, (*C.uchar)(cdata), C.size_t(len(xml)), errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: set xmp: " + C.GoString(errBuf))
+		return errors.New("gomupdf: set xmp: " + errText(errBuf))
 	}
 	return nil
 }
@@ -172,10 +173,10 @@ func (d *mupdfDoc) deleteXMP() error {
 	if d.doc == nil {
 		return errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_del_xmp(d.ctx, d.doc, errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: delete xmp: " + C.GoString(errBuf))
+		return errors.New("gomupdf: delete xmp: " + errText(errBuf))
 	}
 	return nil
 }

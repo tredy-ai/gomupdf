@@ -105,12 +105,12 @@ func (d *mupdfDoc) insertLink(pageNo int, rect [4]float64, uri string) error {
 	}
 	curi := C.CString(uri)
 	defer C.free(unsafe.Pointer(curi))
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_insert_link(d.ctx, d.doc, C.int(pageNo),
 		C.float(rect[0]), C.float(rect[1]), C.float(rect[2]), C.float(rect[3]),
 		curi, errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: insert link: " + C.GoString(errBuf))
+		return errors.New("gomupdf: insert link: " + errText(errBuf))
 	}
 	return nil
 }
@@ -119,12 +119,12 @@ func (d *mupdfDoc) insertGotoLink(pageNo int, rect [4]float64, destPage int) err
 	if d.doc == nil {
 		return errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_insert_goto_link(d.ctx, d.doc, C.int(pageNo),
 		C.float(rect[0]), C.float(rect[1]), C.float(rect[2]), C.float(rect[3]),
 		C.int(destPage), errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: insert goto link: " + C.GoString(errBuf))
+		return errors.New("gomupdf: insert goto link: " + errText(errBuf))
 	}
 	return nil
 }
@@ -133,10 +133,10 @@ func (d *mupdfDoc) deleteLink(pageNo, index int) error {
 	if d.doc == nil {
 		return errors.New("gomupdf: document closed")
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_delete_link(d.ctx, d.doc, C.int(pageNo), C.int(index), errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: delete link: " + C.GoString(errBuf))
+		return errors.New("gomupdf: delete link: " + errText(errBuf))
 	}
 	return nil
 }
