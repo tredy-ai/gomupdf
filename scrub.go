@@ -76,7 +76,8 @@ type HiddenContent struct {
 	// on no page (see NonLinkAnnotations; annotations, widgets and Links,
 	// including those a default Scrub removes), the /AA or /A of any
 	// node of the /AcroForm field tree or of any field above a widget (up
-	// /Parent, which reaches fields /Fields leaves out), or the /A of any
+	// /Parent, which reaches fields /Fields leaves out) or of any other node
+	// of the form on no page (see NonLinkAnnotations), or the /A of any
 	// outline item. It does not know which ScrubOptions a later Scrub uses, so
 	// it reports these wherever they are. A script action is one with /S
 	// /JavaScript or /S /Launch, one with a /JS entry whatever its /S (a
@@ -279,8 +280,9 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 //     node of the /AcroForm field tree (fields with /Kids as well as widgets,
 //     edited in place so each stays the object /Fields and /Annots list) and
 //     on every field above a kept widget up /Parent, which reaches fields
-//     /Fields leaves out (32 levels; a field with /Kids that neither reaches
-//     is not touched). The annotation or field stays: a Link that loses its
+//     /Fields leaves out (32 levels), and on every other node of the form on
+//     no page (down /Kids from those fields: a page widget's sibling, say).
+//     The annotation or field stays: a Link that loses its
 //     /A is inert. A URI, GoTo, GoToR, Named or other action stays as it was.
 //
 // Removed objects that may be reachable from elsewhere are destroyed, not

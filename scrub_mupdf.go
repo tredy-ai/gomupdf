@@ -1418,7 +1418,15 @@ static void gomupdf_sweep(fz_context *ctx, pdf_document *pdf, gomupdf_marks *mk,
             else if (i < mk->len && !(m & (GM_ONPAGE | GM_CONTENT)) && !((out || keep_fields) && (m & GM_FORM))
                      && (shape = gomupdf_annot_shaped(ctx, ref)))
                 gomupdf_orphan_annot(ctx, mk, ref, shape, out, keep_annots, keep_fields);
-            else if (i != mk->root && !(m & (GM_PAGE | GM_INODE | GM_DONE)) && gomupdf_private_holder(ctx, ref))
+            else if (i < mk->len && (m & GM_FORM) && !(m & (GM_ONPAGE | GM_CONTENT)) && (out || keep_fields)
+                     && gomupdf_annot_shaped(ctx, ref)) {
+                // A node of the form on no page that neither /Fields nor a
+                // page widget's /Parent chain reaches (a sibling of a page
+                // widget, say): its scripts are reported, or go when the
+                // form stays, as on every other form node.
+                if (!out) gomupdf_actions(ctx, mk, ref, 1, mk);
+                else if (!out[HC_JS] && gomupdf_actions(ctx, NULL, ref, 0, mk)) out[HC_JS] = 1;
+            } else if (i != mk->root && !(m & (GM_PAGE | GM_INODE | GM_DONE)) && gomupdf_private_holder(ctx, ref))
                 gomupdf_private_keys(ctx, mk, ref, out);
             else if (out && gomupdf_layer_hidden(ctx, pdf, i, ref))
                 gomupdf_add(&out[HC_HIDDENLAYERS], 1);

@@ -3344,6 +3344,37 @@ func TestScrubOrphanAnnotations(t *testing.T) {
 	}
 }
 
+// A widget on no page that is part of the form only as the sibling of a page
+// widget under a field /Fields leaves out has its script reported and, when
+// the form stays, removed.
+func TestScrubFormSiblingScript(t *testing.T) {
+	const tok = "GomupdfSiblingJS4f1c"
+	pdf := scrubBuildPDF([]string{
+		/* 1 */ `<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [] >> >>`,
+		/* 2 */ `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+		/* 3 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Annots [5 0 R] >>`,
+		/* 4 */ `<< /FT /Tx /T (parent) /Kids [5 0 R 6 0 R] >>`,
+		/* 5 */ `<< /Type /Annot /Subtype /Widget /Parent 4 0 R /Rect [20 150 200 170] /P 3 0 R >>`,
+		/* 6 */ `<< /Type /Annot /Subtype /Widget /Parent 4 0 R /Rect [20 100 200 120] /AA << /K << /S /JavaScript /JS (var ` + tok + ` = 1;) >> >> >>`,
+	}, "")
+	scrubControl(t, pdf, tok)
+	d, err := OpenStream(pdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if h := scrubHidden(t, d); !h.JavaScript {
+		t.Errorf("before scrub: %+v, want JavaScript", h)
+	}
+	for _, opts := range []ScrubOptions{{}, {KeepFormFields: true}, {KeepAnnotations: true}} {
+		out, re := scrubRoundTrip(t, pdf, opts)
+		scrubNoTokens(t, fmt.Sprintf("%+v", opts), out, tok)
+		if h := scrubHidden(t, re); h.JavaScript {
+			t.Errorf("%+v: after scrub %+v", opts, h)
+		}
+	}
+}
+
 // A Hide action's /T names the annotation it hides. A kept Link's Hide action
 // and a kept /OpenAction Hide action that target an annotation Scrub removes
 // do not keep it: the annotation is destroyed, and /T resolves to null.
