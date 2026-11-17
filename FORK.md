@@ -55,7 +55,7 @@ f3b7339..main`), grouped by theme. The groups are thematic, not chronological:
 the order inside each group is the order in the history. "API impact" is
 `None`, `New API`, `Behavior change` (same signatures, different results or
 errors) or `BREAKING` (existing callers must change code or handle a new
-failure). Nothing has been pushed or tagged yet. 64 commits.
+failure). Nothing has been pushed or tagged yet. 75 commits, not counting later edits to this document.
 
 
 ### Fork and build
@@ -89,6 +89,8 @@ failure). Nothing has been pushed or tagged yet. 64 commits.
 | `8739cc5` | `fix: do not load or change a locked document` | BREAKING: changing or saving a locked document is refused |
 | `b0bb5ad` | `fix: refuse to read a locked document` | BREAKING: reading a locked document is refused; PageCount is 0 until Authenticate |
 | `d381f88` | `fix(open): refuse a page count the file cannot hold` | Behavior change: Open, OpenStream, OpenAnyStream and Authenticate refuse a page count larger than the object count |
+| `1eaaa10` | `fix(open): bound the page count by a fixed ceiling` | Behavior change: superseded by the next row (on its own it lets a hostile page count through to slow lookups) |
+| `2ff3ebe` | `fix(open): refuse a page tree that claims more pages than it can serve` | Behavior change: a count above the object count is refused above 1,048,576 pages, or when MuPDF cannot build its page map at open |
 
 ### Redaction
 
@@ -132,6 +134,10 @@ failure). Nothing has been pushed or tagged yet. 64 commits.
 | `b762bd9` | `fix(scrub): small corrections from review` | Behavior change: null trailer keys removed; kept widget appearances kept; /IRT no longer keeps an annotation |
 | `eea128e` | `fix(scrub): keep every annotation under KeepAnnotations` | Behavior change: KeepAnnotations keeps every annotation, including those on pages MuPDF does not serve |
 | `eaa11f5` | `fix(scrub): do not fail HiddenContent on a page tree MuPDF accepts` | Behavior change: HiddenContent and Scrub tolerate a page tree with an unloadable kid |
+| `41c98c6` | `fix(scrub): keep what a served page inherits from a page-shaped parent` | Behavior change: a page-shaped /Parent of a served page keeps its /Resources |
+| `e5f5dfe` | `fix(scrub): keep the appearance of a kept annotation on an orphan page` | Behavior change: a kept annotation on no page keeps its appearance stream |
+| `54ca4ae` | `fix(scrub): destroy every content-bearing resource of an orphan page` | Behavior change: orphan pages' patterns, Type 3 glyph procedures and soft-mask groups are destroyed too |
+| `ecd4da9` | `fix(scrub): treat a page entry that is not a dictionary as not served` | Behavior change: Scrub and HiddenContent skip a page-tree entry that is not a dictionary |
 
 ### Layers
 
@@ -160,12 +166,17 @@ failure). Nothing has been pushed or tagged yet. 64 commits.
 | `3fa95bf` | `test: add a corpus invariant test and fuzz target` | None (TestCorpus, FuzzPipeline) |
 | `46bba5a` | `test: add a curated PDF corpus` | None (committed corpus) |
 | `8deacf5` | `test: report redacted words left after scrub in the corpus test` | None (corpus test reports words left after Scrub) |
+| `2fe60dc` | `test: align the corpus test with the final library behaviour` | None (corpus test expectations) |
+| `e383895` | `test: compare the scrubbed render with the unscrubbed control` | None (corpus test compares renders with the control) |
 
 ### Documentation
 
 | Commit | Subject | API impact |
 | --- | --- | --- |
 | `a0c1781` | `docs: describe the fork as it is` | None (FORK.md and README.md rewritten) |
+| `8a05b28` | `docs: update for the final review fixes` | None |
+| `10306a9` | `docs: record the final corpus run` | None |
+| `d26050a` | `docs: correct two statements about scrub and open` | None |
 
 ## 4. Behavior differences from upstream and stock MuPDF
 
@@ -676,7 +687,7 @@ and returns an error; it does not remove them.
 - Deleting an object created in the same session breaks saves on 1.25.6; Scrub
   leaves an empty dictionary in its place.
 
-**Corpus results (final run, at `d381f88`, MuPDF 1.26.11 on Alpine 3.23, Go 1.27).**
+**Corpus results (final run, at `2ff3ebe`, MuPDF 1.26.11 on Alpine 3.23, Go 1.27).**
 5,347 public test and real-world PDFs from the pdf.js, veraPDF, qpdf, PyMuPDF,
 Poppler, corkami and PDF Association suites (kept outside the repo), plus the
 163 committed regression files. Each file is opened, extracted, redacted by
@@ -685,10 +696,10 @@ three modes and compared with an unscrubbed save.
 
 | Outcome | Files |
 |---|---|
-| Passed every check | 5,189 |
+| Passed every check | 5,191 |
 | Rejected at open | 30 |
 | Need a password | 46 |
-| Broke a cosmetic invariant (see below) | 77 |
+| Broke a cosmetic invariant, or cannot be saved (see below) | 75 |
 | Exceeded the 2-minute limit inside MuPDF | 4 |
 | Crashed MuPDF, only with `UseActualText` | 1 |
 | Redacted text extracted after a successful redaction and save | **0** |
