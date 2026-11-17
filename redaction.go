@@ -150,6 +150,10 @@ func isFinite32(f float32) bool {
 // removes overlapping links and FreeText annotations and deletes the
 // redaction annotations, without its own text removal. Pages whose
 // redactions are all rects, and TextNone, go through stock MuPDF unchanged.
+// So does a page whose redactions have more than 65536 quads and rects in
+// all (annotations in a file can share one huge /QuadPoints array): the
+// per-glyph pass would need memory per quad, so that page gets MuPDF's text
+// removal by each quad's bounds, which removes at least as much.
 //
 // A glyph's extent is its font's own advance by the font's ascender and
 // descender, as in stock MuPDF, while RawDict quads follow the PDF's /Widths.

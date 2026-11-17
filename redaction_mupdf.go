@@ -196,22 +196,35 @@ static int gomupdf_glyph_filter(fz_context *ctx, void *opaque, int *ucsbuf, int 
     return 0;
 }
 
+// GOMUPDF_MAX_REDACT_REGIONS bounds the regions (quads plus rect-only
+// redactions) gomupdf_collect_regions builds for one page. Annotations in a
+// file can share one huge /QuadPoints array, so the sum is unbounded;
+// beyond the limit the page takes MuPDF's own text removal, which reads the
+// quads in place and never removes less.
+#define GOMUPDF_MAX_REDACT_REGIONS (1 << 16)
+
 // gomupdf_collect_regions fills *rs from the page's redaction annotations,
 // mirroring pdf_redact_page's reading of them: /QuadPoints when the array is
 // non-empty (8 numbers per quad, pdf_to_quad's ul ur ll lr order), else
-// /Rect. Returns whether any annotation had /QuadPoints. Caller frees rs->r.
+// /Rect. Returns 1 if any annotation had /QuadPoints, 0 if none did, and -1
+// (building nothing) if the page has more than GOMUPDF_MAX_REDACT_REGIONS
+// regions. Caller frees rs->r.
 static int gomupdf_collect_regions(fz_context *ctx, pdf_page *page, gomupdf_regions *rs) {
     pdf_annot *a;
-    int any_quads = 0, cap = 0;
+    int any_quads = 0;
+    size_t cap = 0;
+    rs->n = 0;
+    rs->r = NULL;
     for (a = pdf_first_annot(ctx, page); a; a = pdf_next_annot(ctx, a)) {
         pdf_obj *obj = pdf_annot_obj(ctx, a);
         if (pdf_dict_get(ctx, obj, PDF_NAME(Subtype)) == PDF_NAME(Redact)) {
             int n = pdf_array_len(ctx, pdf_dict_get(ctx, obj, PDF_NAME(QuadPoints)));
-            cap += n > 0 ? (n + 7) / 8 : 1;
+            cap += n > 0 ? ((size_t)n + 7) / 8 : 1;
+            if (cap > GOMUPDF_MAX_REDACT_REGIONS)
+                return -1;
         }
     }
-    rs->n = 0;
-    rs->r = fz_malloc_array(ctx, cap > 0 ? cap : 1, gomupdf_region);
+    rs->r = fz_malloc_array(ctx, cap > 0 ? (int)cap : 1, gomupdf_region);
     for (a = pdf_first_annot(ctx, page); a; a = pdf_next_annot(ctx, a)) {
         pdf_obj *obj = pdf_annot_obj(ctx, a);
         pdf_obj *qp;
@@ -220,6 +233,10 @@ static int gomupdf_collect_regions(fz_context *ctx, pdf_page *page, gomupdf_regi
             continue;
         qp = pdf_dict_get(ctx, obj, PDF_NAME(QuadPoints));
         n = pdf_array_len(ctx, qp);
+        // The second walk sees what the first counted; the bound only
+        // guards against that changing. Fall back rather than drop regions.
+        if ((size_t)rs->n + (n > 0 ? ((size_t)n + 7) / 8 : 1) > cap)
+            return -1;
         if (n <= 0) {
             gomupdf_region *g = &rs->r[rs->n++];
             memset(g, 0, sizeof *g);
@@ -250,7 +267,7 @@ static int gomupdf_redact_text_per_glyph(fz_context *ctx, pdf_document *pdf, pdf
     int ran = 0;
     fz_var(rs);
     fz_try(ctx) {
-        if (gomupdf_collect_regions(ctx, page, &rs)) {
+        if (gomupdf_collect_regions(ctx, page, &rs) > 0) {
             pdf_sanitize_filter_options sopts;
             pdf_filter_factory filters[2];
             pdf_filter_options fopts;
