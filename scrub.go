@@ -19,6 +19,16 @@ type ScrubOptions struct {
 	// a JavaScript or Launch action. The zero value removes all annotations
 	// except Link annotations, all widgets, and /AcroForm.
 	KeepAnnotations bool
+	// KeepFormFields keeps the form: every widget annotation and the catalog
+	// /AcroForm with its whole field tree (fields on no page included), with
+	// their scripts removed as under KeepAnnotations. Every other non-Link
+	// annotation, popups and replies included, is still removed as by
+	// default. KeepAnnotations keeps the form too, whatever KeepFormFields
+	// says. Form field values are not reliably part of page text extraction
+	// (only an appearance stream that shows a value is), so a caller that
+	// keeps form fields must inspect the values itself (Page.Widgets) to
+	// detect or clear sensitive ones. KeepFormFields is new in this fork.
+	KeepFormFields bool
 	// KeepOutlines keeps the catalog /Outlines. Each item keeps its title and
 	// any /Dest but loses an /A that is or chains to a JavaScript or Launch
 	// action. The zero value removes the outlines and resets /PageMode
@@ -116,23 +126,26 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 //     JavaScript or Launch action (the item, its title and any /Dest stay);
 //   - on every page dictionary and every intermediate page-tree node above a
 //     page (up to 32 levels), /Thumb, /AA, /AF, /Metadata and /PieceInfo;
-//   - unless opts.KeepAnnotations, every annotation except Links, every
-//     widget, and the catalog /AcroForm;
+//   - unless opts.KeepAnnotations, every annotation except Links and widgets,
+//     popups and replies included; unless opts.KeepAnnotations or
+//     opts.KeepFormFields, every widget and the catalog /AcroForm;
 //   - on every annotation that stays, /AA, and each of /A and /PA that is or
-//     chains through /Next to a JavaScript or Launch action; with
-//     opts.KeepAnnotations, the same on every node of the /AcroForm field
-//     tree (fields with /Kids as well as widgets) and on every field above a
-//     widget up /Parent, which reaches fields /Fields leaves out (32 levels;
-//     a field with /Kids that neither reaches is not touched). The
-//     annotation or field stays: a Link that loses its /A is inert. A URI,
-//     GoTo, GoToR, Named or other action stays as it was.
+//     chains through /Next to a JavaScript or Launch action; when the form
+//     stays (opts.KeepAnnotations or opts.KeepFormFields), the same on every
+//     node of the /AcroForm field tree (fields with /Kids as well as widgets,
+//     edited in place so each stays the object /Fields and /Annots list) and
+//     on every field above a kept widget up /Parent, which reaches fields
+//     /Fields leaves out (32 levels; a field with /Kids that neither reaches
+//     is not touched). The annotation or field stays: a Link that loses its
+//     /A is inert. A URI, GoTo, GoToR, Named or other action stays as it was.
 //
 // Removed objects that may be reachable from elsewhere are destroyed, not
 // just unlinked, so a reference that survives (a structure-tree /OBJR or /AF,
 // as tagged PDFs carry) resolves to null instead of keeping the content.
-// Unless opts.KeepAnnotations, that is the non-Link annotations and widgets
-// with their /Popup and their /FS and /AF filespecs, and the /AcroForm
-// dictionary with its field tree; in every case it is /Info, the XMP stream,
+// Unless opts.KeepAnnotations, that is the removed annotations (and widgets,
+// unless opts.KeepFormFields) with their /Popup and their /FS and /AF
+// filespecs, and, unless the form stays, the /AcroForm dictionary with its
+// field tree; in every case it is /Info, the XMP stream,
 // page and page-tree node /Metadata and /Thumb streams, the filespecs of
 // /Names/EmbeddedFiles and of catalog, page and node /AF, every such
 // filespec's /EF streams, the /Names/JavaScript actions with their script
@@ -150,9 +163,10 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // up /Parent from every page); everything referenced, directly or not, from
 // each node's /Contents, /Resources and /Group (so the content streams and
 // the own and inherited resources of every page), from /Encrypt and from
-// /OCProperties; and the annotations that stay (Links, or all of them with
-// opts.KeepAnnotations), with opts.KeepAnnotations the /AcroForm dictionary
-// and its field tree (through /Fields, /Kids and /CO), and with
+// /OCProperties; and the annotations that stay (Links, widgets with
+// opts.KeepFormFields, or all of them with opts.KeepAnnotations), when the
+// form stays the /AcroForm dictionary and its field tree (through /Fields,
+// /Kids and /CO), and with
 // opts.KeepOutlines the outline items, with everything they reference other
 // than through their own /Parent, /P, /Popup, /AA and /SE and an /A or /PA
 // that Scrub removes. An object reached as kept content is walked through
@@ -178,7 +192,7 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // counts as unsafe and is removed, so on a page of 65,537 Links with URI
 // actions the last one loses its URI (and so on, in page order, past that).
 //
-// Out of scope: /AcroForm /XFA (kept with opts.KeepAnnotations; XFA can hold
+// Out of scope: /AcroForm /XFA (kept when the form stays; XFA can hold
 // scripts and form data), JavaScript reached other than through an action
 // Scrub checks (a Rendition action's /JS, a 3D or RichMedia annotation's
 // scripts, a javascript: URI), and actions of other kinds that reach outside

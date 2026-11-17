@@ -1767,13 +1767,20 @@ func scrubFieldActionsPDF(calcTok, actTok, fields string) []byte {
 // and those actions are destroyed although the structure tree references
 // them; the field, its widget and the annotation counts stay as they were.
 // A field left out of /AcroForm /Fields is reached up its widget's /Parent.
+// KeepFormFields does the same, but removes the Text annotation.
 func TestScrubKeepAnnotationsFieldActions(t *testing.T) {
-	for _, fields := range []string{"[5 0 R]", "[]"} {
-		t.Run("Fields "+fields, func(t *testing.T) { scrubFieldActionsCase(t, fields) })
+	for _, opts := range []ScrubOptions{{KeepAnnotations: true}, {KeepFormFields: true}} {
+		for _, fields := range []string{"[5 0 R]", "[]"} {
+			t.Run(fmt.Sprintf("%+v Fields %s", opts, fields), func(t *testing.T) { scrubFieldActionsCase(t, opts, fields) })
+		}
 	}
 }
 
-func scrubFieldActionsCase(t *testing.T, fields string) {
+func scrubFieldActionsCase(t *testing.T, opts ScrubOptions, fields string) {
+	notes := 0
+	if opts.KeepAnnotations {
+		notes = 1
+	}
 	const calcTok, actTok = "GomupdfFieldCalcJS6f2a", "GomupdfWidgetActJS3b8d"
 	pdf := scrubFieldActionsPDF(calcTok, actTok, fields)
 	scrubControl(t, pdf, calcTok, actTok)
@@ -1800,18 +1807,18 @@ func scrubFieldActionsCase(t *testing.T, fields string) {
 	if !before.JavaScript || before.Widgets != 1 || before.NonLinkAnnotations != 1 {
 		t.Fatalf("before scrub: %+v", before)
 	}
-	out, re := scrubRoundTrip(t, pdf, ScrubOptions{KeepAnnotations: true})
-	scrubNoTokens(t, "KeepAnnotations", out, calcTok, actTok)
-	scrubCheckAnnotsIndirect(t, "KeepAnnotations", out)
-	if h, want := scrubHidden(t, re), (HiddenContent{AcroForm: true, NonLinkAnnotations: 1, Widgets: 1}); h != want {
+	out, re := scrubRoundTrip(t, pdf, opts)
+	scrubNoTokens(t, "scrubbed", out, calcTok, actTok)
+	scrubCheckAnnotsIndirect(t, "scrubbed", out)
+	if h, want := scrubHidden(t, re), (HiddenContent{AcroForm: true, NonLinkAnnotations: notes, Widgets: 1}); h != want {
 		t.Errorf("after scrub: %+v, want %+v", h, want)
 	}
 	p, err := re.LoadPage(0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a, err := p.Annotations(); err != nil || len(a) != 1 {
-		t.Errorf("annotations %+v, %v; want 1", a, err)
+	if a, err := p.Annotations(); err != nil || len(a) != notes {
+		t.Errorf("annotations %+v, %v; want %d", a, err, notes)
 	}
 	w, err := p.Widgets()
 	if err != nil || len(w) != 1 || w[0].Value != formValue {
@@ -1970,6 +1977,256 @@ func TestScrubActionBudgetCeiling(t *testing.T) {
 	}
 	if !bytes.Contains(out, []byte(fmt.Sprintf("/%d)", budget-1))) || bytes.Contains(out, []byte(fmt.Sprintf("/%d)", budget))) {
 		t.Error("Scrub did not keep exactly the first 65,536 URIs")
+	}
+}
+
+// Tokens of scrubFormsFixture, each in exactly one object.
+const (
+	ffMerged = "GomupdfFFMergedValue4a1e"
+	ffPair   = "GomupdfFFPairValue7c3d"
+	ffJS     = "GomupdfFFKeystrokeJS2b9f"
+	ffNote   = "GomupdfFFNote5e8a"
+	ffPopup  = "GomupdfFFPopup1d6c"
+	ffReply  = "GomupdfFFReply9f2b"
+	ffSquare = "GomupdfFFSquare3a7e"
+)
+
+var ffFieldTokens, ffCommentTokens = []string{ffMerged, ffPair}, []string{ffNote, ffPopup, ffReply, ffSquare}
+
+// ffAllTokens returns every token of scrubFormsFixture.
+func ffAllTokens() []string {
+	return slices.Concat([]string{ffJS}, ffFieldTokens, ffCommentTokens)
+}
+
+// scrubFormsFixture is a tagged two-page form: the merged text field and
+// widget 5 (with a keystroke JavaScript /AA), the field 6 with kid widgets 7
+// (page 1) and 8 (page 2), a Text note 9 with its Popup 10 and reply 11
+// (/IRT), a Square 12 and a Link 13, every annotation also referenced from
+// the structure tree through /OBJR.
+func scrubFormsFixture() []byte {
+	var objr strings.Builder
+	for _, n := range []int{5, 7, 8, 9, 10, 11, 12, 13} {
+		fmt.Fprintf(&objr, "<< /Type /OBJR /Obj %d 0 R >> ", n)
+	}
+	return scrubBuildPDF([]string{
+		/* 1 */ `<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R 6 0 R] /DA (/Helv 0 Tf 0 g) >>
+   /MarkInfo << /Marked true >> /StructTreeRoot 14 0 R >>`,
+		/* 2 */ `<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>`,
+		/* 3 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Annots [5 0 R 7 0 R 9 0 R 10 0 R 11 0 R 12 0 R 13 0 R] >>`,
+		/* 4 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Annots [8 0 R] >>`,
+		/* 5 */ `<< /Type /Annot /Subtype /Widget /FT /Tx /T (merged) /V (` + ffMerged + `) /Rect [20 150 200 170] /P 3 0 R
+   /AA << /K << /S /JavaScript /JS (var ` + ffJS + ` = 1;) >> >> >>`,
+		/* 6 */ `<< /FT /Tx /T (pair) /V (` + ffPair + `) /Kids [7 0 R 8 0 R] >>`,
+		/* 7 */ `<< /Type /Annot /Subtype /Widget /Parent 6 0 R /Rect [20 120 200 140] /P 3 0 R >>`,
+		/* 8 */ `<< /Type /Annot /Subtype /Widget /Parent 6 0 R /Rect [20 120 200 140] /P 4 0 R >>`,
+		/* 9 */ `<< /Type /Annot /Subtype /Text /Rect [20 20 40 40] /Contents (` + ffNote + `) /Popup 10 0 R /P 3 0 R >>`,
+		/* 10 */ `<< /Type /Annot /Subtype /Popup /Rect [40 40 140 90] /Parent 9 0 R /Contents (` + ffPopup + `) >>`,
+		/* 11 */ `<< /Type /Annot /Subtype /Text /Rect [60 20 80 40] /Contents (` + ffReply + `) /IRT 9 0 R /P 3 0 R >>`,
+		/* 12 */ `<< /Type /Annot /Subtype /Square /Rect [150 20 250 60] /Contents (` + ffSquare + `) /P 3 0 R >>`,
+		/* 13 */ `<< /Type /Annot /Subtype /Link /Rect [100 60 140 80] /A << /S /URI /URI (https://example.com/) >> >>`,
+		/* 14 */ `<< /Type /StructTreeRoot /K [15 0 R] >>`,
+		/* 15 */ `<< /Type /StructElem /S /Document /P 14 0 R /Pg 3 0 R /K [` + objr.String() + `] >>`,
+	}, "")
+}
+
+// scrubCheckAllAnnotsIndirect checks that the saved file has n /Annots arrays,
+// each of indirect references only.
+func scrubCheckAllAnnotsIndirect(t *testing.T, where string, out []byte, n int) {
+	t.Helper()
+	m := scrubAnnotsRe.FindAllSubmatch(out, -1)
+	if len(m) != n {
+		t.Errorf("%s: %d /Annots arrays, want %d", where, len(m), n)
+	}
+	for _, a := range m {
+		if !scrubOnlyRefs.Match(a[1]) {
+			t.Errorf("%s: /Annots holds direct entries: %q", where, a[1])
+		}
+	}
+}
+
+// scrubWidgetValues returns the values of every widget on every page.
+func scrubWidgetValues(t *testing.T, d *Document) []string {
+	t.Helper()
+	var v []string
+	for i := range d.PageCount() {
+		p, err := d.LoadPage(i)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w, err := p.Widgets()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, x := range w {
+			v = append(v, x.Value)
+		}
+	}
+	return v
+}
+
+// KeepFormFields keeps the widgets and the field tree (minus their scripts)
+// and removes every other non-Link annotation, popups and replies included,
+// even though the structure tree references them.
+func TestScrubKeepFormFields(t *testing.T) {
+	pdf := scrubFormsFixture()
+	for _, tok := range ffAllTokens() {
+		if n := bytes.Count(pdf, []byte(tok)); n != 1 {
+			t.Fatalf("fixture holds %q %d times", tok, n)
+		}
+	}
+	scrubControl(t, pdf, ffAllTokens()...)
+	d, err := OpenStream(pdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if err := d.Scrub(ScrubOptions{KeepFormFields: true}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := d.SaveBytesWithOptions(scrubSaveOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scrubNoTokens(t, "KeepFormFields", out, append([]string{ffJS}, ffCommentTokens...)...)
+	for _, tok := range ffFieldTokens {
+		if n := bytes.Count(out, []byte(tok)); n != 1 {
+			t.Errorf("%q appears %d times, want 1", tok, n)
+		}
+	}
+	scrubCheckAllAnnotsIndirect(t, "KeepFormFields", out, 2)
+	re, err := OpenStream(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer re.Close()
+	if h, want := scrubHidden(t, re), (HiddenContent{AcroForm: true, Widgets: 3}); h != want {
+		t.Errorf("after scrub: %+v, want %+v", h, want)
+	}
+	if got, want := scrubWidgetValues(t, re), []string{ffMerged, ffPair, ffPair}; !slices.Equal(got, want) {
+		t.Errorf("widget values %q, want %q", got, want)
+	}
+	p, err := re.LoadPage(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, err := p.Annotations(); err != nil || len(a) != 0 {
+		t.Errorf("annotations %+v, %v; want none", a, err)
+	}
+	if l, err := p.Links(); err != nil || len(l) != 1 || l[0].URI != "https://example.com/" {
+		t.Errorf("links %+v, %v; want the URI link", l, err)
+	}
+	// The page's widget is the /Fields entry: setting it leaves no other copy
+	// of the old value.
+	const newValue = "GomupdfFFNewValue6d4c"
+	if err := p.SetTextField(0, newValue); err != nil {
+		t.Fatal(err)
+	}
+	set, err := re.SaveBytesWithOptions(scrubSaveOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(set, []byte(ffMerged)) {
+		t.Error("old field value survives SetTextField")
+	}
+	if n := len(regexp.MustCompile(`/V\s*\(`+newValue+`\)`).FindAll(set, -1)); n != 1 {
+		t.Errorf("new field value set %d times, want 1", n)
+	}
+
+	// Rendering and listing the scrubbed document's annotations, then saving,
+	// keeps every appearance and every /Annots entry indirect.
+	for i := range d.PageCount() {
+		sp, err := d.LoadPage(i)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := sp.Pixmap(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := sp.Annotations(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := sp.Widgets(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rendered, err := d.SaveBytesWithOptions(scrubSaveOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if regexp.MustCompile(`/N\s*null`).Match(rendered) {
+		t.Error("an appearance became /N null")
+	}
+	scrubCheckAllAnnotsIndirect(t, "rendered", rendered, 2)
+}
+
+// The same fixture loses every annotation, widget and field with the default
+// options, and keeps them all (minus the script) with KeepAnnotations,
+// whatever KeepFormFields says.
+func TestScrubFormsFixtureOtherOptions(t *testing.T) {
+	pdf := scrubFormsFixture()
+	out, re := scrubRoundTrip(t, pdf, ScrubOptions{})
+	scrubNoTokens(t, "default", out, ffAllTokens()...)
+	if h := scrubHidden(t, re); h != (HiddenContent{}) {
+		t.Errorf("default: after scrub %+v", h)
+	}
+	for _, opts := range []ScrubOptions{{KeepAnnotations: true}, {KeepAnnotations: true, KeepFormFields: true}} {
+		where := fmt.Sprintf("%+v", opts)
+		out, re := scrubRoundTrip(t, pdf, opts)
+		scrubNoTokens(t, where, out, ffJS)
+		for _, tok := range slices.Concat(ffFieldTokens, ffCommentTokens) {
+			if n := bytes.Count(out, []byte(tok)); n != 1 {
+				t.Errorf("%s: %q appears %d times, want 1", where, tok, n)
+			}
+		}
+		if h, want := scrubHidden(t, re), (HiddenContent{AcroForm: true, NonLinkAnnotations: 4, Widgets: 3}); h != want {
+			t.Errorf("%s: after scrub %+v, want %+v", where, h, want)
+		}
+		scrubCheckAllAnnotsIndirect(t, where, out, 2)
+	}
+}
+
+// KeepFormFields with a cyclic or very deep field tree and a Square to remove
+// neither crashes (MuPDF's annotation removal must not walk /Fields) nor
+// keeps the Square; the field-tree walk fails closed as JavaScript.
+func TestScrubKeepFormFieldsTreeLimits(t *testing.T) {
+	fieldPDF := func(widget int, fields ...string) []byte {
+		return scrubBuildPDF(append([]string{
+			`<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R] >> >>`,
+			`<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+			`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots [4 0 R ` + scrubRefs(widget) + `] >>`,
+			`<< /Type /Annot /Subtype /Square /Rect [100 100 150 150] >>`,
+		}, fields...), "")
+	}
+	const n = 1<<16 + 10
+	var chain []string
+	for i := range n - 1 {
+		chain = append(chain, `<< /T (f) /Kids [`+scrubRefs(i+6)+`] >>`)
+	}
+	w := 5 + n - 1
+	chain = append(chain, fmt.Sprintf(`<< /Type /Annot /Subtype /Widget /FT /Tx /Parent %d 0 R /Rect [0 0 50 20] /V (x) >>`, w-1))
+	cases := map[string][]byte{
+		"cycle": fieldPDF(6, `<< /T (f) /Kids [5 0 R 6 0 R] >>`,
+			`<< /Type /Annot /Subtype /Widget /FT /Tx /Parent 5 0 R /Rect [0 0 50 20] /V (x) >>`),
+		"deep": fieldPDF(w, chain...),
+	}
+	for name, pdf := range cases {
+		t.Run(name, func(t *testing.T) {
+			scrubConcurrently(func() {
+				d, err := OpenStream(pdf)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				defer d.Close()
+				if err := d.Scrub(ScrubOptions{KeepFormFields: true}); err != nil {
+					t.Error(err)
+				}
+				want := HiddenContent{AcroForm: true, Widgets: 1, JavaScript: true}
+				if h, err := d.HiddenContent(); err != nil || h != want {
+					t.Errorf("after scrub: %+v, %v; want %+v", h, err, want)
+				}
+			})
+		})
 	}
 }
 

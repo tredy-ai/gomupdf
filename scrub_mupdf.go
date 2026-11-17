@@ -47,8 +47,9 @@ static int gomupdf_name_in(const char *name, const char **list) {
 // page-tree node (from /Root /Pages down /Kids, and from every page MuPDF
 // counts up /Parent), the full closures of each node's /Contents, /Resources
 // and /Group, of /Encrypt and /OCProperties, and the closures of the kept
-// annotations (Links, or all of them with KeepAnnotations), with KeepOutlines
-// of /Outlines and with KeepAnnotations of /AcroForm and its field tree,
+// annotations (Links, widgets with KeepFormFields, or all of them with
+// KeepAnnotations), with KeepOutlines of /Outlines and with KeepFormFields or
+// KeepAnnotations of /AcroForm and its field tree,
 // except through the keys gomupdf_keep_tops skips on those dictionaries and
 // their items, fields and kids themselves. Each role
 // has its own queued bit, so an object with several is expanded in each, and
@@ -247,7 +248,8 @@ static void gomupdf_keep_on(fz_context *ctx, gomupdf_marks *mk, int which, pdf_o
 #define gomupdf_keep(ctx, mk, obj) gomupdf_keep_on(ctx, mk, GS_WALK, obj)
 
 // gomupdf_keep_tops expands the kept annotations, outline items and (with
-// KeepAnnotations) the /AcroForm dictionary and its field tree: everything
+// KeepFormFields or KeepAnnotations) the /AcroForm dictionary and its field
+// tree: everything
 // they reference is kept except through their own /Parent, /P, /Popup, /AA
 // and /SE, which lead up a tree, to another annotation, to actions Scrub
 // removes or into the structure tree, and except an /A or /PA that is or
@@ -388,9 +390,18 @@ static int gomupdf_is_link(fz_context *ctx, pdf_obj *annot) {
     return pdf_name_eq(ctx, pdf_dict_get(ctx, annot, PDF_NAME(Subtype)), PDF_NAME(Link));
 }
 
+// gomupdf_annot_kept reports whether the /Annots entry a stays: a Link always,
+// a widget with keep_fields, anything with keep_annots.
+static int gomupdf_annot_kept(fz_context *ctx, pdf_obj *a, int keep_annots, int keep_fields) {
+    return keep_annots || gomupdf_is_link(ctx, a)
+        || (keep_fields && pdf_name_eq(ctx, pdf_dict_get(ctx, a, PDF_NAME(Subtype)), PDF_NAME(Widget)));
+}
+
 // gomupdf_keep_pass marks the kept content of the document (see GM_KEEP).
+// keep_fields (KeepFormFields, or KeepAnnotations) keeps the widgets and the
+// /AcroForm field tree.
 static void gomupdf_keep_pass(fz_context *ctx, pdf_document *pdf, gomupdf_marks *mk,
-                              int keep_annots, int keep_outlines) {
+                              int keep_annots, int keep_fields, int keep_outlines) {
     pdf_obj *trailer = pdf_trailer(ctx, pdf);
     pdf_obj *root = pdf_dict_get(ctx, trailer, PDF_NAME(Root));
     unsigned short *m = gomupdf_mark(ctx, mk, root);
@@ -415,16 +426,17 @@ static void gomupdf_keep_pass(fz_context *ctx, pdf_document *pdf, gomupdf_marks 
     gomupdf_keep_walk(ctx, mk);
     mk->content = 0;
 
-    // Kept annotations: Links, or every /Annots entry with keep_annots.
+    // Kept annotations: Links, widgets with keep_fields, or every /Annots
+    // entry with keep_annots.
     gomupdf_stack *links = &mk->s[GS_LINK];
     while (links->n) {
         mk->cur = links->v[--links->n];
-        if (keep_annots || gomupdf_is_link(ctx, mk->cur)) gomupdf_keep_on(ctx, mk, GS_TOP, mk->cur);
+        if (gomupdf_annot_kept(ctx, mk->cur, keep_annots, keep_fields)) gomupdf_keep_on(ctx, mk, GS_TOP, mk->cur);
         pdf_drop_obj(ctx, mk->cur);
         mk->cur = NULL;
     }
     if (keep_outlines) gomupdf_keep_on(ctx, mk, GS_TOP, pdf_dict_get(ctx, root, PDF_NAME(Outlines)));
-    if (keep_annots) gomupdf_keep_on(ctx, mk, GS_TOP, pdf_dict_get(ctx, root, PDF_NAME(AcroForm)));
+    if (keep_fields) gomupdf_keep_on(ctx, mk, GS_TOP, pdf_dict_get(ctx, root, PDF_NAME(AcroForm)));
     gomupdf_keep_tops(ctx, mk);
     gomupdf_keep_walk(ctx, mk);
 }
@@ -451,7 +463,7 @@ static void gomupdf_load_all(fz_context *ctx, pdf_document *pdf) {
 // backstop: gomupdf_load_all makes any repair happen before). Returns
 // pdf->repair_attempted as the marks saw it.
 static int gomupdf_keep_all(fz_context *ctx, pdf_document *pdf, gomupdf_marks *mk,
-                            int keep_annots, int keep_outlines) {
+                            int keep_annots, int keep_fields, int keep_outlines) {
     for (int attempt = 0;; attempt++) {
         int repaired = pdf->repair_attempted;
         size_t len = (size_t)pdf_xref_len(ctx, pdf);
@@ -460,7 +472,7 @@ static int gomupdf_keep_all(fz_context *ctx, pdf_document *pdf, gomupdf_marks *m
         mk->len = 0;
         mk->m = fz_calloc(ctx, len ? len : 1, sizeof *mk->m);
         mk->len = (int)len;
-        gomupdf_keep_pass(ctx, pdf, mk, keep_annots, keep_outlines);
+        gomupdf_keep_pass(ctx, pdf, mk, keep_annots, keep_fields, keep_outlines);
         if (pdf->repair_attempted == repaired) return repaired;
         if (attempt) fz_throw(ctx, FZ_ERROR_FORMAT, "xref repaired while marking kept content");
     }
@@ -804,37 +816,39 @@ static pdf_obj *gomupdf_own(fz_context *ctx, gomupdf_marks *mk, pdf_obj *parent,
 }
 
 // gomupdf_own_annots applies gomupdf_own to a page's /Annots array and to
-// each of its entries, and returns the array. An entry that stays (a Link, or
-// any with keep_annots) is copied to a new indirect object; one Scrub removes
+// each of its entries, and returns the array. An entry that stays (see
+// gomupdf_annot_kept) is copied to a new indirect object; one Scrub removes
 // may be copied directly.
-static pdf_obj *gomupdf_own_annots(fz_context *ctx, gomupdf_marks *mk, pdf_obj *page, int keep_annots) {
+static pdf_obj *gomupdf_own_annots(fz_context *ctx, gomupdf_marks *mk, pdf_obj *page, int keep_annots,
+                                   int keep_fields) {
     pdf_obj *arr = gomupdf_own(ctx, mk, page, PDF_NAME(Annots), 0, 0);
     int n = pdf_array_len(ctx, arr);
     for (int i = 0; i < n; i++)
-        gomupdf_own(ctx, mk, arr, NULL, i, keep_annots || gomupdf_is_link(ctx, pdf_array_get(ctx, arr, i)));
+        gomupdf_own(ctx, mk, arr, NULL, i, gomupdf_annot_kept(ctx, pdf_array_get(ctx, arr, i), keep_annots, keep_fields));
     return arr;
 }
 
-// gomupdf_scrub_annots deletes every non-Link annotation and widget on one page
-// through MuPDF, then sweeps the raw /Annots array for anything MuPDF does not
-// list (Popup and unknown subtypes, broken entries), keeping only Links. Every
+// gomupdf_scrub_annots deletes every non-Link annotation and (unless
+// keep_fields) every widget on one page through MuPDF, then sweeps the raw
+// /Annots array for anything MuPDF does not list (Popup and unknown subtypes,
+// broken entries), keeping only Links and, with keep_fields, widgets. Every
 // removed entry, its /Popup, /FS and /AF filespecs, its JavaScript and Launch
 // actions and, for a widget, its /Parent field chain are recorded in del
 // first. Before any of that, the page takes private copies of the /Annots
 // array and entries kept content also uses, and resyncs a page MuPDF already
 // has open with them.
 static void gomupdf_scrub_annots(fz_context *ctx, pdf_document *pdf, int pageno, gomupdf_marks *del,
-                                 int *abudget) {
+                                 int keep_fields, int *abudget) {
     pdf_page *page = NULL;
     fz_var(page);
     fz_try(ctx) {
-        gomupdf_own_annots(ctx, del, pdf_lookup_page_obj(ctx, pdf, pageno), 0);
+        gomupdf_own_annots(ctx, del, pdf_lookup_page_obj(ctx, pdf, pageno), 0, keep_fields);
         page = pdf_load_page(ctx, pdf, pageno);
         pdf_sync_annots(ctx, page);
         pdf_obj *arr = pdf_dict_get(ctx, page->obj, PDF_NAME(Annots));
         for (int i = 0; i < pdf_array_len(ctx, arr); i++) {
             pdf_obj *e = pdf_array_get(ctx, arr, i);
-            if (!pdf_is_dict(ctx, e) || gomupdf_is_link(ctx, e)) continue;
+            if (!pdf_is_dict(ctx, e) || gomupdf_annot_kept(ctx, e, 0, keep_fields)) continue;
             gomupdf_destroy(ctx, del, e, GK_ANNOT);
             gomupdf_actions(ctx, del, e, 0, abudget);
             gomupdf_destroy_filespec(ctx, del, pdf_dict_get(ctx, e, PDF_NAME(FS)));
@@ -861,24 +875,25 @@ static void gomupdf_scrub_annots(fz_context *ctx, pdf_document *pdf, int pageno,
             next = pdf_next_annot(ctx, a);
             if (pdf_annot_type(ctx, a) != PDF_ANNOT_LINK) pdf_delete_annot(ctx, page, a);
         }
-        for (a = pdf_first_widget(ctx, page); a; a = next) {
+        for (a = keep_fields ? NULL : pdf_first_widget(ctx, page); a; a = next) {
             next = pdf_next_widget(ctx, a);
             pdf_delete_annot(ctx, page, a);
         }
         pdf_obj *annots = pdf_dict_get(ctx, page->obj, PDF_NAME(Annots));
         for (int i = pdf_array_len(ctx, annots) - 1; i >= 0; i--) {
             pdf_obj *e = pdf_array_get(ctx, annots, i);
-            if (!pdf_is_dict(ctx, e) || !gomupdf_is_link(ctx, e)) pdf_array_delete(ctx, annots, i);
+            if (!pdf_is_dict(ctx, e) || !gomupdf_annot_kept(ctx, e, 0, keep_fields)) pdf_array_delete(ctx, annots, i);
         }
     }
     fz_always(ctx) { fz_drop_page(ctx, (fz_page *)page); }
     fz_catch(ctx) { fz_rethrow(ctx); }
 }
 
-static int gomupdf_scrub(fz_context *ctx, fz_document *doc, int keep_annots,
+static int gomupdf_scrub(fz_context *ctx, fz_document *doc, int keep_annots, int keep_fields,
                          int keep_outlines, char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) { snprintf(err, errlen, "not a PDF document"); return -1; }
+    keep_fields |= keep_annots;
     gomupdf_marks mk;
     memset(&mk, 0, sizeof mk);
     int marked = 0, repaired = 0, failed = 0;
@@ -889,7 +904,7 @@ static int gomupdf_scrub(fz_context *ctx, fz_document *doc, int keep_annots,
         // Let any xref repair happen first, then mark kept content before
         // changing anything.
         gomupdf_load_all(ctx, pdf);
-        repaired = gomupdf_keep_all(ctx, pdf, &mk, keep_annots, keep_outlines);
+        repaired = gomupdf_keep_all(ctx, pdf, &mk, keep_annots, keep_fields, keep_outlines);
         marked = 1;
 
         pdf_obj *trailer = pdf_trailer(ctx, pdf);
@@ -905,7 +920,7 @@ static int gomupdf_scrub(fz_context *ctx, fz_document *doc, int keep_annots,
             gomupdf_destroy_filespec(ctx, &mk, pdf_array_get(ctx, af, i));
         gomupdf_destroy_name_tree(ctx, &mk, pdf_dict_get(ctx, names, PDF_NAME(EmbeddedFiles)), 0);
         gomupdf_destroy_name_tree(ctx, &mk, pdf_dict_get(ctx, names, PDF_NAME(JavaScript)), 1);
-        if (!keep_annots) {
+        if (!keep_fields) {
             pdf_obj *acroform = pdf_dict_get(ctx, root, PDF_NAME(AcroForm));
             int budget = GOMUPDF_TREE_BUDGET;
             gomupdf_destroy(ctx, &mk, acroform, GK_ACROFORM);
@@ -921,7 +936,8 @@ static int gomupdf_scrub(fz_context *ctx, fz_document *doc, int keep_annots,
         // Unlink /AcroForm before the page loop: pdf_delete_annot on a widget
         // walks /Fields recursively with no depth cap and no cycle check on
         // direct /Kids arrays, so a hostile field tree would overflow the stack.
-        if (!keep_annots) pdf_dict_del(ctx, root, PDF_NAME(AcroForm));
+        // With keep_fields it stays, and Scrub deletes no widget.
+        if (!keep_fields) pdf_dict_del(ctx, root, PDF_NAME(AcroForm));
         if (names) {
             names = gomupdf_own(ctx, &mk, root, PDF_NAME(Names), 0, 0);
             pdf_dict_del(ctx, names, PDF_NAME(EmbeddedFiles));
@@ -936,26 +952,26 @@ static int gomupdf_scrub(fz_context *ctx, fz_document *doc, int keep_annots,
 
         int npages = pdf_count_pages(ctx, pdf);
         for (int p = 0; p < npages; p++) {
-            if (!keep_annots) gomupdf_scrub_annots(ctx, pdf, p, &mk, &abudget);
+            if (!keep_annots) gomupdf_scrub_annots(ctx, pdf, p, &mk, keep_fields, &abudget);
             pdf_obj *page = pdf_lookup_page_obj(ctx, pdf, p);
             gomupdf_page_keys(ctx, &mk, page, NULL, &abudget);
             gomupdf_page_nodes(ctx, &mk, page, GM_DONE, NULL, &abudget);
-            // Annotations that stay (Links, or all with keep_annots) lose their
-            // /AA and their JavaScript and Launch /A and /PA so no script
+            // Annotations that stay (see gomupdf_annot_kept) lose their /AA
+            // and their JavaScript and Launch /A and /PA so no script
             // survives, matching what HiddenContent checks.
-            pdf_obj *annots = gomupdf_own_annots(ctx, &mk, page, keep_annots);
+            pdf_obj *annots = gomupdf_own_annots(ctx, &mk, page, keep_annots, keep_fields);
             int n = pdf_array_len(ctx, annots);
             for (int i = 0; i < n; i++) {
                 pdf_obj *a = pdf_array_get(ctx, annots, i);
                 if (!pdf_is_dict(ctx, a)) continue;
                 gomupdf_actions(ctx, &mk, a, 1, &abudget);
-                if (keep_annots && pdf_name_eq(ctx, pdf_dict_get(ctx, a, PDF_NAME(Subtype)), PDF_NAME(Widget)))
+                if (keep_fields && pdf_name_eq(ctx, pdf_dict_get(ctx, a, PDF_NAME(Subtype)), PDF_NAME(Widget)))
                     gomupdf_widget_fields(ctx, &mk, &mk, a, 1, &abudget);
             }
         }
         // The field tree, past the widgets the page loop reached, and the
         // outline items lose their scripts too.
-        if (keep_annots) {
+        if (keep_fields) {
             pdf_obj *acroform = pdf_dict_get(ctx, root, PDF_NAME(AcroForm));
             int budget = GOMUPDF_TREE_BUDGET;
             gomupdf_fields(ctx, &mk, 1, pdf_dict_get(ctx, acroform, PDF_NAME(Fields)),
@@ -1012,7 +1028,8 @@ func (d *mupdfDoc) scrub(opts ScrubOptions) error {
 		}
 		return 0
 	}
-	if C.gomupdf_scrub(d.ctx, d.doc, flag(opts.KeepAnnotations), flag(opts.KeepOutlines), errBuf, errBufLen) != 0 {
+	if C.gomupdf_scrub(d.ctx, d.doc, flag(opts.KeepAnnotations), flag(opts.KeepFormFields), flag(opts.KeepOutlines),
+		errBuf, errBufLen) != 0 {
 		return errors.New("gomupdf: scrub: " + C.GoString(errBuf))
 	}
 	return nil
