@@ -147,8 +147,17 @@ static int gomupdf_separated(const double *ax, const double *ay, const double *b
 // gomupdf_glyph_filter is the sanitize text_filter: non-zero removes the
 // glyph. bbox is the glyph's box in glyph space (advance by
 // descender..ascender), trm and ctm take it to PDF user space.
+//
+// MuPDF 1.27 added three arguments to the callback (text render mode and the
+// fill and stroke alpha). They do not affect whether a glyph is redacted.
+#if FZ_VERSION_MAJOR > 1 || FZ_VERSION_MINOR >= 27
+static int gomupdf_glyph_filter(fz_context *ctx, void *opaque, int *ucsbuf, int ucslen,
+                                fz_matrix trm, fz_matrix ctm, fz_rect bbox,
+                                int tr, float ca, float CA) {
+#else
 static int gomupdf_glyph_filter(fz_context *ctx, void *opaque, int *ucsbuf, int ucslen,
                                 fz_matrix trm, fz_matrix ctm, fz_rect bbox) {
+#endif
     const gomupdf_regions *rs = opaque;
     fz_matrix m = fz_concat(trm, ctm);
     // MuPDF's rule: the glyph's transformed bounds, shrunk by a tenth of
