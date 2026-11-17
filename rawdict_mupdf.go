@@ -5,6 +5,7 @@ package gomupdf
 /*
 
 #include <mupdf/fitz.h>
+#include "gomupdf_stext.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -54,7 +55,7 @@ static char *gomupdf_rawdict(fz_context *ctx, fz_document *doc, int pageno,
         fz_stext_options opts;
         memset(&opts, 0, sizeof(opts));
         opts.flags = flags;
-        stext = fz_new_stext_page_from_page(ctx, page, &opts);
+        stext = gomupdf_new_stext_page(ctx, page, &opts);
         buf = fz_new_buffer(ctx, 16384);
         out = fz_new_output_with_buffer(ctx, buf);
         fz_rect clip = fz_make_rect(cx0, cy0, cx1, cy1);

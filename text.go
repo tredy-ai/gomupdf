@@ -18,7 +18,7 @@ type Word struct {
 
 // Words returns the page's words with character-level bounding boxes. These
 // boxes are more precise than the span-split approximations and are the
-// recommended input for FindTables.
+// recommended input for FindTables. Words ignores /ActualText, with no toggle (see TextOptions.UseActualText).
 func (p *Page) Words() ([]Word, error) {
 	raw, err := p.wordsRaw()
 	if err != nil {
@@ -105,7 +105,8 @@ type rawStext struct {
 // StructuredText returns the page's blocks and spans with bounding boxes. Spans
 // are positioned text fragments; clustering them by x yields columns and by y
 // yields rows, which is how callers needing exact column geometry reconstruct
-// tables rather than relying on reading-order text.
+// tables rather than relying on reading-order text. It ignores /ActualText,
+// with no toggle (see TextOptions.UseActualText).
 func (p *Page) StructuredText() ([]Block, error) {
 	js, err := p.StructuredJSON()
 	if err != nil {

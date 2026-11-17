@@ -206,7 +206,7 @@ type Page struct {
 	Number int // 0-based page index
 }
 
-// GetText returns the page's reading-order plain text.
+// GetText returns the page's reading-order plain text. It ignores /ActualText, with no toggle (see TextOptions.UseActualText).
 func (p *Page) GetText() (string, error) {
 	return p.doc.rawText(p.Number)
 }
@@ -431,7 +431,7 @@ func (p *Page) wordsRaw() (string, error) {
 }
 
 // StructuredJSON returns structured text as JSON (blocks → lines → chars, each
-// with bbox). This is the raw geometry feed for layout reconstruction; see
+// with bbox). Ignores /ActualText (no toggle; see TextOptions.UseActualText). This is the raw geometry feed for layout reconstruction; see
 // Words/Blocks for typed access.
 func (p *Page) StructuredJSON() (string, error) {
 	d := p.doc
@@ -446,7 +446,7 @@ func (p *Page) StructuredJSON() (string, error) {
 const softHyphen = "­" // U+00AD
 
 // Lines returns the page's non-empty lines with the soft hyphen (U+00AD)
-// stripped and trailing whitespace trimmed.
+// stripped and trailing whitespace trimmed. It ignores /ActualText, with no toggle (see TextOptions.UseActualText).
 func (p *Page) Lines() ([]string, error) {
 	raw, err := p.GetText()
 	if err != nil {

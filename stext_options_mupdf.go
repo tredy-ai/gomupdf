@@ -30,6 +30,12 @@ func stextFlags(opts TextOptions) C.int {
 	if opts.AccurateBBoxes {
 		flags |= C.FZ_STEXT_ACCURATE_BBOXES
 	}
+	// Safe by default: /ActualText is ignored unless asked for. The
+	// options-less C helpers set the same flag directly. The flag alone is not
+	// enough on MuPDF 1.26.11; see gomupdf_stext.h.
+	if !opts.UseActualText {
+		flags |= C.FZ_STEXT_IGNORE_ACTUALTEXT
+	}
 	return flags
 }
 

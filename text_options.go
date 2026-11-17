@@ -7,7 +7,8 @@ import (
 )
 
 // TextOptions controls how text is extracted from a page by ExtractText and
-// RawDictWithOptions. The zero value sets no MuPDF structured-text flags.
+// RawDictWithOptions. The zero value sets no optional MuPDF structured-text flags and ignores
+// /ActualText (see UseActualText).
 //
 // MuPDF's FZ_STEXT_CLIP is never set implicitly, so text outside the page box
 // is returned unless the caller passes Clip.
@@ -23,6 +24,18 @@ type TextOptions struct {
 	// (FZ_STEXT_ACCURATE_BBOXES) instead of the font's ascender and
 	// descender. New in the tredy-ai fork.
 	AccurateBBoxes bool
+
+	// UseActualText returns the replacement text a PDF declares with
+	// /ActualText (a marked-content property that lets a producer say "these
+	// glyphs mean this string") instead of the glyphs actually drawn.
+	//
+	// Changed from upstream and from MuPDF: MuPDF honours /ActualText by
+	// default; this package ignores it (FZ_STEXT_IGNORE_ACTUALTEXT) unless
+	// UseActualText is true, so a detector reading the output sees what is on
+	// the page, not what a PDF claims is there. A consumer that wants both
+	// views extracts twice. Extraction APIs without options (GetText, Words,
+	// Search, HTML, ...) always ignore /ActualText.
+	UseActualText bool
 }
 
 // ExtractText returns the page's text honoring opts (reading order, lines separated by '\n').

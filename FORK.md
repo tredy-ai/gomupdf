@@ -65,6 +65,33 @@ n, err := page.ApplyRedactions(gomupdf.ApplyOptions{Images: gomupdf.ImageRemove}
 - `RedactOptions` has no fields now but is kept as the parameter type of
   `AddRedaction`.
 
+### `/ActualText` is ignored by default
+
+A PDF can draw one set of glyphs and declare different replacement text for
+them (`/Span << /ActualText (DECLARED) >> BDC ... EMC`). MuPDF returns the
+declared text by default, so a PII detector would read text that is not what is
+drawn on the page. Every extraction API now returns the glyphs actually drawn:
+`ExtractText`, `RawDict`, `RawDictWithOptions`, `GetText`, `Lines`, `Words`,
+`StructuredText`, `StructuredJSON`, `HTML`, `XHTML`, `XML`, `Search`,
+`SearchRects`, `SearchWith` and `FindTables`.
+
+```go
+// before: MuPDF's default, declared text
+// after: drawn glyphs; opt back in on the options-taking APIs
+s, err := page.ExtractText(gomupdf.TextOptions{UseActualText: true})
+```
+
+- `TextOptions.UseActualText` (default false) restores MuPDF's behaviour for
+  `ExtractText` and `RawDictWithOptions`. APIs without options have no toggle.
+  A consumer that wants both views extracts twice.
+- MuPDF's `FZ_STEXT_IGNORE_ACTUALTEXT` alone is not enough on 1.26.11: it keeps
+  the drawn glyphs but still appends the declared text as zero-width characters.
+  So the package also drops the stext device's metatext callbacks
+  (`gomupdf_stext.h`), which is how `/ActualText` reaches the device. Tests
+  assert this on 1.26.11; other MuPDF versions were not checked.
+- Output of `RawDict` and the other APIs changes for PDFs that use
+  `/ActualText`; no existing test fixture does.
+
 ### Go 1.27
 
 Consumers need Go 1.27 or newer (`go.mod` says `go 1.27`).
@@ -74,8 +101,7 @@ Consumers need Go 1.27 or newer (`go.mod` says `go 1.27`).
 - Encrypted saves (`SaveEncryptedBytes`, `SaveOptions.Encrypt`) and incremental
   saves stay buffered in memory; only plain `SaveWithOptions` streams to disk.
 - `AddRedactionQuads` is no more precise than rects for removing content on
-  MuPDF (observed on 1.25.6; the quad limitation tests also pass on 1.26.11 and
-  1.28.6): a glyph is removed when its axis-aligned bbox (shrunk 10% per
+  MuPDF 1.25.6: a glyph is removed when its axis-aligned bbox (shrunk 10% per
   side) overlaps any quad's axis-aligned bounds. On rotated text, redacting a
   word's character quads still removes the neighbouring characters, outside the
   drawn box, which does follow the quads. Quads only spare content in the

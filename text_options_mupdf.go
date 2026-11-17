@@ -5,6 +5,7 @@ package gomupdf
 /*
 
 #include <mupdf/fitz.h>
+#include "gomupdf_stext.h"
 #include <mupdf/pdf.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -28,7 +29,7 @@ static char *gomupdf_page_text_opts(fz_context *ctx, fz_document *doc, int pagen
         fz_stext_options opts;
         memset(&opts, 0, sizeof(opts));
         opts.flags = flags;
-        stext = fz_new_stext_page_from_page(ctx, page, &opts);
+        stext = gomupdf_new_stext_page(ctx, page, &opts);
         buf = fz_new_buffer(ctx, 4096);
         out = fz_new_output_with_buffer(ctx, buf);
 

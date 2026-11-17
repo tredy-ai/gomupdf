@@ -3,7 +3,8 @@ package gomupdf
 import "errors"
 
 // HTML returns the page's structured text as HTML (styled, absolute-positioned).
-// The output mirrors PyMuPDF's page.get_text("html").
+// The output mirrors PyMuPDF's page.get_text("html"). It ignores /ActualText,
+// with no toggle (see TextOptions.UseActualText).
 func (p *Page) HTML() (string, error) {
 	d := p.doc
 	d.mu.Lock()
@@ -15,7 +16,8 @@ func (p *Page) HTML() (string, error) {
 }
 
 // XHTML returns the page's structured text as semantic XHTML.
-// The output mirrors PyMuPDF's page.get_text("xhtml").
+// The output mirrors PyMuPDF's page.get_text("xhtml"). It ignores /ActualText,
+// with no toggle (see TextOptions.UseActualText).
 func (p *Page) XHTML() (string, error) {
 	d := p.doc
 	d.mu.Lock()
@@ -27,7 +29,8 @@ func (p *Page) XHTML() (string, error) {
 }
 
 // XML returns the page's structured text as XML with per-character detail.
-// The output mirrors PyMuPDF's page.get_text("xml").
+// The output mirrors PyMuPDF's page.get_text("xml"). It ignores /ActualText,
+// with no toggle (see TextOptions.UseActualText).
 func (p *Page) XML() (string, error) {
 	d := p.doc
 	d.mu.Lock()

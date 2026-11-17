@@ -9,6 +9,7 @@ import (
 
 // Search finds all occurrences of needle on the page and returns their hit
 // quads. Matching is MuPDF's case-insensitive, whitespace-tolerant search.
+// Text declared by /ActualText is not searched, only the glyphs drawn (no toggle; see TextOptions.UseActualText).
 // Returns nil if there are no hits.
 func (p *Page) Search(needle string) ([]geometry.Quad, error) {
 	if needle == "" {

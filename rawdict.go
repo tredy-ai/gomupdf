@@ -202,7 +202,8 @@ func buildSpans(raw []RawBlock, metas []charMeta) []RawBlock {
 }
 
 // RawDict returns the page's text blocks down to per-character geometry.
-// It is RawDictWithOptions(TextOptions{}).
+// It is RawDictWithOptions(TextOptions{}), so it ignores /ActualText: the
+// characters are the glyphs drawn, not text a PDF declares for them.
 //
 // Changed from upstream: a character whose font has no name is returned
 // (upstream dropped it), an invalid code point becomes U+FFFD, and output the

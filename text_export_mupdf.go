@@ -5,6 +5,7 @@ package gomupdf
 /*
 
 #include <mupdf/fitz.h>
+#include "gomupdf_stext.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -22,8 +23,8 @@ static char *gomupdf_page_stext_html(fz_context *ctx, fz_document *doc, int page
     fz_try(ctx) {
         page = fz_load_page(ctx, doc, pageno);
         fz_stext_options opts;
-        memset(&opts, 0, sizeof(opts));
-        stext = fz_new_stext_page_from_page(ctx, page, &opts);
+        memset(&opts, 0, sizeof(opts)); opts.flags = FZ_STEXT_IGNORE_ACTUALTEXT;
+        stext = gomupdf_new_stext_page(ctx, page, &opts);
         buf = fz_new_buffer(ctx, 8192);
         out = fz_new_output_with_buffer(ctx, buf);
         fz_print_stext_page_as_html(ctx, out, stext, pageno);
@@ -61,8 +62,8 @@ static char *gomupdf_page_stext_xhtml(fz_context *ctx, fz_document *doc, int pag
     fz_try(ctx) {
         page = fz_load_page(ctx, doc, pageno);
         fz_stext_options opts;
-        memset(&opts, 0, sizeof(opts));
-        stext = fz_new_stext_page_from_page(ctx, page, &opts);
+        memset(&opts, 0, sizeof(opts)); opts.flags = FZ_STEXT_IGNORE_ACTUALTEXT;
+        stext = gomupdf_new_stext_page(ctx, page, &opts);
         buf = fz_new_buffer(ctx, 8192);
         out = fz_new_output_with_buffer(ctx, buf);
         fz_print_stext_page_as_xhtml(ctx, out, stext, pageno);
@@ -100,8 +101,8 @@ static char *gomupdf_page_stext_xml(fz_context *ctx, fz_document *doc, int pagen
     fz_try(ctx) {
         page = fz_load_page(ctx, doc, pageno);
         fz_stext_options opts;
-        memset(&opts, 0, sizeof(opts));
-        stext = fz_new_stext_page_from_page(ctx, page, &opts);
+        memset(&opts, 0, sizeof(opts)); opts.flags = FZ_STEXT_IGNORE_ACTUALTEXT;
+        stext = gomupdf_new_stext_page(ctx, page, &opts);
         buf = fz_new_buffer(ctx, 8192);
         out = fz_new_output_with_buffer(ctx, buf);
         fz_print_stext_page_as_xml(ctx, out, stext, pageno);
