@@ -146,6 +146,9 @@ type docBackend interface {
 	scrub(opts ScrubOptions) error
 	// hiddenContentRaw returns the HiddenContent counts in field order.
 	hiddenContentRaw() ([]int, error)
+	// showAllLayers removes the optional-content configuration (see
+	// Document.ShowAllLayers).
+	showAllLayers() error
 }
 
 // fontBackend is a loaded font for measuring text.

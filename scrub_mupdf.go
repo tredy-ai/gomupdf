@@ -43,7 +43,7 @@ static void gomupdf_add(int *x, long long v) {
 enum {
     HC_INFO, HC_XMP, HC_ACROFORM, HC_OUTLINES, HC_EMBEDDED, HC_AF, HC_JS,
     HC_NONLINK, HC_WIDGETS, HC_THUMBS, HC_PAGEMETA, HC_PIECEINFO, HC_XFA, HC_TRAILER, HC_ORPHANPAGES,
-    HC_OBJMETA, HC_LASTMOD, HC_PERMS, HC_DSS, HC_WEBCAPTURE, HC_COUNT
+    HC_OBJMETA, HC_LASTMOD, HC_PERMS, HC_DSS, HC_WEBCAPTURE, HC_LAYERS, HC_HIDDENLAYERS, HC_COUNT
 };
 
 // Kinds of removed object. gomupdf_is_kind identifies each positively, so a
@@ -1228,6 +1228,8 @@ static int gomupdf_hidden_content(fz_context *ctx, fz_document *doc, int *out,
         out[HC_DSS] = pdf_dict_gets(ctx, root, "DSS") != NULL;
         out[HC_WEBCAPTURE] = pdf_dict_gets(ctx, root, "SpiderInfo") || pdf_dict_gets(ctx, names, "IDS")
             || pdf_dict_gets(ctx, names, "URLS");
+        pdf_obj *ocp = pdf_dict_get(ctx, root, PDF_NAME(OCProperties));
+        out[HC_LAYERS] = ocp ? pdf_array_len(ctx, pdf_dict_get(ctx, ocp, PDF_NAME(OCGs))) : 0;
         out[HC_JS] = pdf_dict_get(ctx, names, PDF_NAME(JavaScript)) != NULL
             || gomupdf_open_action_unsafe(ctx, root, &mk, NULL)
             || gomupdf_aa_unsafe(ctx, pdf_dict_get(ctx, root, PDF_NAME(AA)), &mk, NULL);
@@ -1353,6 +1355,24 @@ static void gomupdf_orphan_annot(fz_context *ctx, gomupdf_marks *mk, pdf_obj *a,
     if (keep_fields && widget) gomupdf_widget_fields(ctx, mk, mk, a, 1);
 }
 
+// gomupdf_layer_hidden reports whether object i (ref) is an optional-content
+// group or membership dictionary (/Type /OCG or /OCMD) that MuPDF's current
+// configuration hides for viewing. MuPDF matches groups against the
+// configuration by number and generation, so the reference it is asked about
+// carries the object's own generation.
+static int gomupdf_layer_hidden(fz_context *ctx, pdf_document *pdf, int i, pdf_obj *ref) {
+    pdf_obj *t = pdf_dict_get(ctx, ref, PDF_NAME(Type));
+    if (pdf_is_stream(ctx, ref) || !(pdf_name_eq(ctx, t, PDF_NAME(OCG)) || pdf_name_eq(ctx, t, PDF_NAME(OCMD))))
+        return 0;
+    pdf_obj *g = pdf_new_indirect(ctx, pdf, i, pdf_get_xref_entry_no_null(ctx, pdf, i)->gen);
+    int hidden = 0;
+    fz_var(hidden);
+    fz_try(ctx) hidden = pdf_is_ocg_hidden(ctx, pdf, NULL, "View", g);
+    fz_always(ctx) pdf_drop_obj(ctx, g);
+    fz_catch(ctx) fz_rethrow(ctx);
+    return hidden;
+}
+
 // gomupdf_sweep visits every object in the xref. It finds each /AF that is an
 // associated-files array (gomupdf_af_files), skipping the catalog, pages and
 // intermediate page-tree nodes (GM_PAGE, GM_INODE or GM_DONE in mk, whose /AF
@@ -1394,6 +1414,8 @@ static void gomupdf_sweep(fz_context *ctx, pdf_document *pdf, gomupdf_marks *mk,
                 gomupdf_orphan_annot(ctx, mk, ref, shape, out, keep_annots, keep_fields);
             else if (i != mk->root && !(m & (GM_PAGE | GM_INODE | GM_DONE)) && gomupdf_private_holder(ctx, ref))
                 gomupdf_private_keys(ctx, mk, ref, out);
+            else if (out && gomupdf_layer_hidden(ctx, pdf, i, ref))
+                gomupdf_add(&out[HC_HIDDENLAYERS], 1);
         }
         fz_always(ctx) {
             pdf_drop_obj(ctx, af);

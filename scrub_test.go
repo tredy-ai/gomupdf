@@ -858,8 +858,13 @@ func TestScrubKeepsPageContent(t *testing.T) {
 			}
 			defer re.Close()
 			same("saved", re)
-			if h := scrubHidden(t, re); h != (HiddenContent{}) {
-				t.Errorf("after scrub: %+v", h)
+			// Scrub leaves optional content alone; the /OFF group stays.
+			want := HiddenContent{}
+			if strings.Contains(c.cat, "/OCProperties") {
+				want.Layers, want.HiddenLayers = 1, 1
+			}
+			if h := scrubHidden(t, re); h != want {
+				t.Errorf("after scrub: %+v, want %+v", h, want)
 			}
 		})
 	}

@@ -172,10 +172,28 @@ type HiddenContent struct {
 	// WebCapture reports web-capture data: the catalog /SpiderInfo, or the
 	// /Names/IDS or /Names/URLS name tree.
 	WebCapture bool
+
+	// Layers is the number of optional-content groups the catalog
+	// /OCProperties lists in /OCGs, 0 without /OCProperties. HiddenLayers is
+	// the number of optional-content groups and membership dictionaries
+	// (indirect /Type /OCG and /Type /OCMD dictionaries, listed or not) that
+	// MuPDF's default configuration hides for viewing: an /OFF group, a group
+	// whose /Usage /View /ViewState is /OFF or whose /Intent the
+	// configuration leaves out, and a membership dictionary whose /P policy
+	// evaluates to hidden. Content marked with them is neither extracted,
+	// searched, rendered nor redacted, but stays in the file, and a viewer's
+	// user can switch it on. MuPDF does not evaluate a /VE visibility
+	// expression and shows its content (so it is extracted too); a viewer
+	// that evaluates it may hide it. HiddenLayers 0 thus means MuPDF hides
+	// nothing for viewing, not that no viewer hides anything; Layers is
+	// non-zero whenever there is a configuration at all. Scrub leaves layers
+	// alone: call Document.ShowAllLayers before extraction to make all of it
+	// ordinary content, after which both read 0.
+	Layers, HiddenLayers int
 }
 
 // hiddenContentCounts is the number of counts the backend returns.
-const hiddenContentCounts = 20
+const hiddenContentCounts = 22
 
 // hiddenContentFromCounts maps the backend's counts, in HiddenContent field
 // order, to a HiddenContent.
@@ -204,6 +222,8 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 		Perms:              c[17] != 0,
 		DSS:                c[18] != 0,
 		WebCapture:         c[19] != 0,
+		Layers:             c[20],
+		HiddenLayers:       c[21],
 	}, nil
 }
 
@@ -356,9 +376,12 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // field-tree node, outline item or page-tree node that is also page content,
 // and an annotation, field or page dictionary on no page that is also page
 // content; one of those that is a direct object nested in another (Scrub
-// finds them among the indirect objects); and text
-// in structure elements, optional-content groups, name trees and other
-// document-level dictionaries Scrub does not list here.
+// finds them among the indirect objects); text in structure elements, name
+// trees and other document-level dictionaries Scrub does not list here; and
+// optional content (layers): Scrub keeps /OCProperties as page content, so
+// content a layer hides stays hidden from extraction and in the file. Call
+// Document.ShowAllLayers before extraction to make it ordinary content, and
+// see HiddenContent's Layers and HiddenLayers.
 //
 // Scrub is meaningful only followed by a non-incremental save with
 // SaveOptions.Garbage >= 1, which drops unreferenced objects and nulls
