@@ -1923,60 +1923,204 @@ func TestScrubPageTreeNodes(t *testing.T) {
 	scrubNoTokens(t, "default", out, metaTok, thumbTok)
 }
 
-// scrubManyLinksPDF is a one-page PDF with n Links, each with its own URI
-// action (one action node) to https://example.com/<i>.
-func scrubManyLinksPDF(n int) []byte {
-	refs := make([]int, n)
-	objs := []string{
-		`<< /Type /Catalog /Pages 2 0 R >>`,
-		`<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
-		"",
+// A large well-formed file (70 pages of 1,000 Links, each with its own GoTo
+// action, and an outline item with a GoTo action) is not reported as
+// JavaScript, and Scrub with KeepOutlines keeps every Link target and the
+// outline destination.
+func TestScrubManyLinks(t *testing.T) {
+	const pages, perPage = 70, 1000
+	// 1 catalog, 2 pages, 3 outlines, 4 outline item, then each page followed
+	// by its Links.
+	objs := []string{`<< /Type /Catalog /Pages 2 0 R /Outlines 3 0 R >>`, "",
+		`<< /Type /Outlines /First 4 0 R /Last 4 0 R /Count 1 >>`, ""}
+	var kids []int
+	last := 0
+	for range pages {
+		pn := len(objs) + 1
+		kids, last = append(kids, pn), pn
+		refs := make([]int, perPage)
+		for i := range refs {
+			refs[i] = pn + 1 + i
+		}
+		objs = append(objs, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots [`+scrubRefs(refs...)+`] >>`)
+		link := fmt.Sprintf(`<< /Subtype /Link /Rect [0 0 1 1] /A << /S /GoTo /D [%d 0 R /Fit] >> >>`, pn)
+		for range perPage {
+			objs = append(objs, link)
+		}
 	}
-	for i := range n {
-		refs[i] = i + 4
-		objs = append(objs, fmt.Sprintf(`<< /Subtype /Link /Rect [0 0 1 1] /A << /S /URI /URI (https://example.com/%d) >> >>`, i))
+	objs[1] = fmt.Sprintf(`<< /Type /Pages /Kids [%s] /Count %d >>`, scrubRefs(kids...), pages)
+	objs[3] = fmt.Sprintf(`<< /Title (Last page) /Parent 3 0 R /A << /S /GoTo /D [%d 0 R /Fit] >> >>`, last)
+	pdf := scrubBuildPDF(objs, "")
+
+	d, err := OpenStream(pdf)
+	if err != nil {
+		t.Fatal(err)
 	}
-	objs[2] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots [` + scrubRefs(refs...) + `] >>`
-	return scrubBuildPDF(objs, "")
+	defer d.Close()
+	if h := scrubHidden(t, d); h != (HiddenContent{Outlines: true}) {
+		t.Errorf("before scrub: %+v, want only Outlines", h)
+	}
+	_, re := scrubRoundTrip(t, pdf, ScrubOptions{KeepOutlines: true})
+	if h := scrubHidden(t, re); h != (HiddenContent{Outlines: true}) {
+		t.Errorf("after scrub: %+v, want only Outlines", h)
+	}
+	for _, p := range []int{0, pages - 1} {
+		pg, err := re.LoadPage(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if l, err := pg.Links(); err != nil || len(l) != perPage {
+			t.Errorf("page %d: %d links after scrub, %v; want %d", p, len(l), err, perPage)
+		}
+	}
+	if toc, err := re.TOC(); err != nil || len(toc) != 1 || toc[0].Page != pages-1 {
+		t.Errorf("TOC after scrub = %+v, %v; want the last page", toc, err)
+	}
 }
 
-// Pins a documented limit: one Scrub or HiddenContent call walks at most
-// 65,536 action nodes. 65,536 Links with URI actions are within it; one more
-// reports JavaScript, and Scrub keeps the first 65,536 URIs and removes the
-// last Link's, failing closed, so the output reports none.
+// scrubSharedLinkPDF is a one-page PDF whose /Annots lists one Link, with a
+// direct URI action, n times: 5 xref entries.
+func scrubSharedLinkPDF(n int) []byte {
+	return scrubBuildPDF([]string{
+		`<< /Type /Catalog /Pages 2 0 R >>`,
+		`<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+		`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots [` + strings.Repeat("4 0 R ", n) + `] >>`,
+		`<< /Subtype /Link /Rect [0 0 1 1] /A << /S /URI /URI (https://example.com/) >> >>`,
+	}, "")
+}
+
+// Pins a documented limit: one HiddenContent call, and each Scrub pass, may
+// reach actions 4,096 + 32 x (xref length) times. One Link listed 4,256 times
+// on a page of a 5-entry xref is within it; listed once more it reports
+// JavaScript, and Scrub removes its action, failing closed.
 func TestScrubActionBudgetCeiling(t *testing.T) {
-	const budget = 1 << 16
-	d, err := OpenStream(scrubManyLinksPDF(budget))
+	const budget = 4096 + 32*5
+	d, err := OpenStream(scrubSharedLinkPDF(budget))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer d.Close()
 	if scrubHidden(t, d).JavaScript {
-		t.Errorf("%d URI Links reported as JavaScript", budget)
+		t.Errorf("%d reaches reported as JavaScript", budget)
+	}
+	_, re := scrubRoundTrip(t, scrubSharedLinkPDF(budget), ScrubOptions{})
+	p, _ := re.LoadPage(0)
+	if l, err := p.Links(); err != nil || len(l) != budget {
+		t.Errorf("within the budget: %d links after scrub, %v; want %d", len(l), err, budget)
 	}
 
-	pdf := scrubManyLinksPDF(budget + 1)
+	pdf := scrubSharedLinkPDF(budget + 1)
 	d, err = OpenStream(pdf)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer d.Close()
 	if !scrubHidden(t, d).JavaScript {
-		t.Errorf("%d URI Links not reported as JavaScript", budget+1)
+		t.Errorf("%d reaches not reported as JavaScript", budget+1)
 	}
-	out, re := scrubRoundTrip(t, pdf, ScrubOptions{})
+	_, re = scrubRoundTrip(t, pdf, ScrubOptions{})
 	if h := scrubHidden(t, re); h != (HiddenContent{}) {
 		t.Errorf("after scrub: %+v", h)
 	}
-	p, err := re.LoadPage(0)
-	if err != nil {
-		t.Fatal(err)
+	p, _ = re.LoadPage(0)
+	if l, err := p.Links(); err != nil || len(l) != 0 {
+		t.Errorf("past the budget: %d links after scrub, %v; want none", len(l), err)
 	}
-	if l, err := p.Links(); err != nil || len(l) != budget {
-		t.Errorf("%d links after scrub, %v; want %d", len(l), err, budget)
+}
+
+// A script that is the direct /Next of an indirect GoTo action G does not
+// survive when Scrub removes G from a Link, an outline item or a widget
+// although the structure tree also references G: every action dictionary of
+// a removed chain is destroyed.
+func TestScrubChainActionsDestroyed(t *testing.T) {
+	const linkTok, itemTok, fieldTok = "GomupdfChainLink5b1e", "GomupdfChainItem8d3a", "GomupdfChainField2f7c"
+	goTo := func(tok string) string {
+		return `<< /S /GoTo /D [3 0 R /Fit] /Next << /S /JavaScript /JS (var ` + tok + ` = 1;) >> >>`
 	}
-	if !bytes.Contains(out, []byte(fmt.Sprintf("/%d)", budget-1))) || bytes.Contains(out, []byte(fmt.Sprintf("/%d)", budget))) {
-		t.Error("Scrub did not keep exactly the first 65,536 URIs")
+	pdf := scrubBuildPDF([]string{
+		/* 1 */ `<< /Type /Catalog /Pages 2 0 R /Outlines 4 0 R /AcroForm << /Fields [6 0 R] >>
+   /MarkInfo << /Marked true >> /StructTreeRoot 10 0 R >>`,
+		/* 2 */ `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+		/* 3 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots [5 0 R 6 0 R] >>`,
+		/* 4 */ `<< /Type /Outlines /First 12 0 R /Last 12 0 R /Count 1 >>`,
+		/* 5 */ `<< /Type /Annot /Subtype /Link /Rect [0 0 50 50] /A 7 0 R >>`,
+		/* 6 */ `<< /Type /Annot /Subtype /Widget /FT /Btn /Ff 65536 /T (b) /Rect [60 0 110 50] /P 3 0 R /A 8 0 R >>`,
+		/* 7 */ goTo(linkTok),
+		/* 8 */ goTo(fieldTok),
+		/* 9 */ goTo(itemTok),
+		/* 10 */ `<< /Type /StructTreeRoot /K [11 0 R] >>`,
+		/* 11 */ `<< /Type /StructElem /S /Figure /P 10 0 R /Refs [7 0 R 8 0 R 9 0 R] >>`,
+		/* 12 */ `<< /Title (Item) /Parent 4 0 R /A 9 0 R >>`,
+	}, "")
+	scrubControl(t, pdf, linkTok, itemTok, fieldTok)
+	opts := ScrubOptions{KeepOutlines: true, KeepFormFields: true}
+	out, re := scrubRoundTrip(t, pdf, opts)
+	scrubNoTokens(t, "scrubbed", out, linkTok, itemTok, fieldTok)
+	if h, want := scrubHidden(t, re), (HiddenContent{AcroForm: true, Outlines: true, Widgets: 1}); h != want {
+		t.Errorf("after scrub: %+v, want %+v", h, want)
+	}
+}
+
+// A javascript: URI is caught however it is encoded: UTF-16BE, UTF-16LE or
+// UTF-8 with a byte-order mark, or with a tab or line break inside the
+// scheme. A URI that merely contains "javascript:" is not.
+func TestScrubScriptURIEncodings(t *testing.T) {
+	hexOf := func(b []byte) string { return fmt.Sprintf("<%X>", b) }
+	utf16 := func(s string, be bool) []byte {
+		b := []byte{0xFE, 0xFF}
+		if !be {
+			b = []byte{0xFF, 0xFE}
+		}
+		for _, c := range []byte(s) {
+			if be {
+				b = append(b, 0, c)
+			} else {
+				b = append(b, c, 0)
+			}
+		}
+		return b
+	}
+	const js = "javascript:void0"
+	cases := []struct {
+		name, uri string
+		script    bool
+	}{
+		{"UTF-16BE BOM", hexOf(utf16(js, true)), true},
+		{"UTF-16LE BOM", hexOf(utf16(js, false)), true},
+		{"UTF-8 BOM", hexOf(append([]byte{0xEF, 0xBB, 0xBF}, js...)), true},
+		{"tab in scheme", `(java\tscript:void0)`, true},
+		{"newline in scheme", `(java\nscript:void0)`, true},
+		{"carriage return in scheme", `(\r java\r\nscript:void0)`, true},
+		{"https", `(https://example.com/javascript:)`, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			pdf := scrubBuildPDF([]string{
+				`<< /Type /Catalog /Pages 2 0 R >>`,
+				`<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+				`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots [4 0 R] >>`,
+				`<< /Type /Annot /Subtype /Link /Rect [0 0 50 50] /A << /S /URI /URI ` + c.uri + ` >> >>`,
+			}, "")
+			d, err := OpenStream(pdf)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			if got := scrubHidden(t, d).JavaScript; got != c.script {
+				t.Errorf("JavaScript before scrub = %v, want %v", got, c.script)
+			}
+			out, re := scrubRoundTrip(t, pdf, ScrubOptions{})
+			if h := scrubHidden(t, re); h != (HiddenContent{}) {
+				t.Errorf("after scrub: %+v", h)
+			}
+			if got := bytes.Contains(out, []byte("/URI")); got == c.script {
+				t.Errorf("/URI in the scrubbed save = %v, want %v", got, !c.script)
+			}
+			p, _ := re.LoadPage(0)
+			if l, _ := p.Links(); c.script && len(l) != 0 {
+				t.Errorf("links after scrub = %+v, want none", l)
+			}
+		})
 	}
 }
 

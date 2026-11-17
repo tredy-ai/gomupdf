@@ -18,8 +18,18 @@ package gomupdf
 // entry or name-tree pair a walk looks at, so shared subgraphs cannot multiply
 // it. Real /Next chains, name trees and field trees are a few levels deep.
 // Every walk fails closed on any limit.
+//
+// The action budget scales with the file: each HiddenContent call and each
+// Scrub pass may reach actions GOMUPDF_ACTION_FLOOR + GOMUPDF_ACTION_PER_OBJECT
+// x (xref length) times (gomupdf_action_budget). Every reach of an action
+// (dictionary or /Next array, direct or indirect, including an indirect one
+// already decided) costs one unit, and an indirect one is decided once per
+// marks (gomupdf_action_walk caches the verdict), so a legitimate file, which
+// reaches each action a few times, never runs out, while one shared action
+// reached from very many places (a hostile shape) does, and fails closed.
 #define GOMUPDF_MAX_DEPTH 32
-#define GOMUPDF_ACTION_BUDGET (1 << 16) // action nodes per HiddenContent call
+#define GOMUPDF_ACTION_FLOOR 4096
+#define GOMUPDF_ACTION_PER_OBJECT 32
 #define GOMUPDF_TREE_BUDGET (1 << 16)   // name-tree or field-tree units per walk
 
 // gomupdf_add adds v >= 0 to *x, saturating at INT_MAX instead of wrapping.
@@ -33,6 +43,14 @@ static void gomupdf_add(int *x, long long v) {
 enum {
     HC_INFO, HC_XMP, HC_ACROFORM, HC_OUTLINES, HC_EMBEDDED, HC_AF, HC_JS,
     HC_NONLINK, HC_WIDGETS, HC_THUMBS, HC_PAGEMETA, HC_PIECEINFO, HC_XFA, HC_COUNT
+};
+
+// Kinds of removed object. gomupdf_is_kind identifies each positively, so a
+// removed slot that points at an object of another kind never destroys it
+// (defence in depth: the GM_KEEP marks are what protect kept content).
+enum {
+    GK_INFO, GK_XMP, GK_TREE, GK_FILESPEC, GK_EF, GK_EMBEDDED, GK_ACTION, GK_SCRIPT,
+    GK_ANNOT, GK_FIELD, GK_ACROFORM, GK_THUMB, GK_STRING, GK_LAUNCHP, GK_XFA, GK_ANYACTION
 };
 
 // gomupdf_name_in reports whether name is in the NULL-terminated list.
@@ -70,10 +88,14 @@ static int gomupdf_name_in(const char *name, const char **list) {
 // not follow an /A or /PA that gomupdf_action_unsafe calls unsafe (charging
 // the marking pass's own action budget), as it never follows /AA. So such an
 // action is kept only if something else kept reaches it (page content, say),
-// and Scrub then only unlinks it. The edit pass decides again with its own
-// budget; the two can differ only past a budget, where an action called safe
-// was walked in full and is safe, and one called unsafe is removed or left
-// unkept, never kept and left linked as unsafe.
+// and Scrub then only unlinks it. The verdicts on indirect actions are cached
+// in the marks (GM_ASAFE, GM_ABAD), so the edit pass, with a fresh budget,
+// reuses the marking pass's verdict on every indirect action that pass
+// decided; it decides again only direct actions and actions the marking pass
+// never reached. They can differ only past a budget, where an action called
+// safe was walked in full and is safe, and one called unsafe is removed or
+// left unkept, never kept and left linked as unsafe. A safe catalog
+// /OpenAction is kept like a kept annotation's /A.
 #define GM_KEEP 1
 #define GM_DEL 2
 #define GM_NODE 4     // the catalog or a page-tree node, queued for node expansion
@@ -86,6 +108,9 @@ static int gomupdf_name_in(const char *name, const char **list) {
 #define GM_INODE 512   // an intermediate page-tree node above a page (gomupdf_page_nodes)
 #define GM_DONE 1024   // a page-tree node gomupdf_page_nodes has counted or edited
 #define GM_FUP 2048    // a field gomupdf_widget_fields has checked or edited
+#define GM_ASAFE 4096  // an action gomupdf_action_walk decided safe
+#define GM_ABAD 8192   // an action gomupdf_action_walk decided unsafe
+#define GM_AREC 16384  // an action gomupdf_record_chain has recorded
 
 enum { GS_WALK, GS_TOP, GS_DOWN, GS_UP, GS_LINK, GS_COUNT };
 
@@ -97,7 +122,7 @@ typedef struct {
     int len;          // entries in m
     int root;         // object number of the catalog, which Scrub edits; 0 if none
     int content;      // set while queuing from page-content roots (GM_CONTENT)
-    int abudget;      // action budget of the marking pass (gomupdf_keep_tops)
+    int abudget;      // action budget of the current pass (gomupdf_action_walk)
     gomupdf_stack s[GS_COUNT];
     pdf_obj *cur;     // the entry being expanded, holding a reference
 } gomupdf_marks;
@@ -135,69 +160,123 @@ static void gomupdf_marks_free(fz_context *ctx, gomupdf_marks *mk) {
     mk->len = 0;
 }
 
+static void gomupdf_destroy(fz_context *ctx, gomupdf_marks *mk, pdf_obj *obj, int kind);
 static void gomupdf_destroy_action(fz_context *ctx, gomupdf_marks *mk, pdf_obj *act);
 static void gomupdf_page_nodes(fz_context *ctx, gomupdf_marks *mk, pdf_obj *page, unsigned short seen,
-                               int *out, int *abudget);
+                               int *out, gomupdf_marks *ax);
+
+// gomupdf_action_budget is the action budget of one HiddenContent call or
+// Scrub pass: GOMUPDF_ACTION_FLOOR + GOMUPDF_ACTION_PER_OBJECT x (xref
+// length), saturating at INT_MAX.
+static int gomupdf_action_budget(fz_context *ctx, pdf_document *pdf) {
+    long long b = GOMUPDF_ACTION_FLOOR + (long long)GOMUPDF_ACTION_PER_OBJECT * pdf_xref_len(ctx, pdf);
+    return b > INT_MAX ? INT_MAX : (int)b;
+}
+
+// gomupdf_js_scheme reports whether the n bytes at s start with "javascript:"
+// in any case, after a UTF-8 byte-order mark and bytes <= 0x20 or 0x7f, and
+// ignoring tab, CR and LF anywhere, as browsers parse a URL scheme.
+static int gomupdf_js_scheme(const char *s, size_t n) {
+    static const char want[] = "javascript:";
+    size_t i = 0, k = 0;
+    if (n >= 3 && !memcmp(s, "\xEF\xBB\xBF", 3)) i = 3;
+    while (i < n && ((unsigned char)s[i] <= 0x20 || s[i] == 0x7f)) i++;
+    for (; i < n && k < sizeof want - 1; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c == '\t' || c == '\r' || c == '\n') continue;
+        if ((c >= 'A' && c <= 'Z' ? c + 32 : c) != (unsigned char)want[k]) return 0;
+        k++;
+    }
+    return k == sizeof want - 1;
+}
 
 // gomupdf_is_script_action reports whether the action dictionary act runs a
 // script or a program: /S /JavaScript or /S /Launch, a /JS entry whatever its
-// /S (a Rendition action's, say), or a URI action whose /URI, after leading
-// whitespace and control characters, starts with "javascript:" in any case.
+// /S (a Rendition action's, say), or a URI action whose /URI is a
+// javascript: URI (gomupdf_js_scheme), as raw bytes or as the text MuPDF
+// decodes from it (UTF-16 or UTF-8 with a byte-order mark).
 static int gomupdf_is_script_action(fz_context *ctx, pdf_obj *act) {
     pdf_obj *s = pdf_dict_get(ctx, act, PDF_NAME(S));
     if (pdf_name_eq(ctx, s, PDF_NAME(JavaScript)) || pdf_name_eq(ctx, s, PDF_NAME(Launch))
         || pdf_dict_get(ctx, act, PDF_NAME(JS)))
         return 1;
     if (!pdf_name_eq(ctx, s, PDF_NAME(URI))) return 0;
-    size_t n = 0, i = 0;
-    const char *u = pdf_to_string(ctx, pdf_dict_get(ctx, act, PDF_NAME(URI)), &n);
-    while (i < n && ((unsigned char)u[i] <= 0x20 || u[i] == 0x7f)) i++;
-    return n - i >= 11 && !fz_strncasecmp(u + i, "javascript:", 11);
+    pdf_obj *uri = pdf_dict_get(ctx, act, PDF_NAME(URI));
+    size_t n = 0;
+    const char *raw = pdf_to_string(ctx, uri, &n);
+    if (gomupdf_js_scheme(raw, n)) return 1;
+    const char *text = pdf_to_text_string(ctx, uri); // borrowed, cached in the object
+    return gomupdf_js_scheme(text, strlen(text));
 }
 
-// gomupdf_action_unsafe reports whether act (an action dictionary, or an array
-// of them as /Next allows) is, or chains through /Next to, an action that runs
-// a script or a program (gomupdf_is_script_action; called a JavaScript or
-// Launch action elsewhere in this file). A graph too deep or too large for
-// the budget counts as unsafe.
-// With del it does not stop at the first such action but records every one it
-// reaches for destruction (gomupdf_destroy_action). A NULL act (no such key)
-// costs nothing.
-static int gomupdf_action_unsafe(fz_context *ctx, pdf_obj *act, int depth, int *budget, gomupdf_marks *del) {
+// gomupdf_action_walk reports whether act (an action dictionary, or an array
+// of them as /Next allows) is, or chains through /Next to, an action that
+// runs a script or a program (gomupdf_is_script_action; called a JavaScript
+// or Launch action elsewhere in this file). Every reach costs one unit of
+// ax->abudget. An indirect action's verdict is cached in ax, so it is walked
+// once; a chain deeper than the depth cap (a cycle, say) or cut by the budget
+// counts, and is cached, as unsafe, so a safe chain is cached as safe only if
+// it was walked in full. A NULL act (no such key) costs nothing.
+static int gomupdf_action_walk(fz_context *ctx, pdf_obj *act, int depth, gomupdf_marks *ax) {
     if (!act) return 0;
-    if (depth > GOMUPDF_MAX_DEPTH || --*budget < 0) return 1;
-    int bad = 0;
-    if (pdf_is_array(ctx, act)) {
+    if (--ax->abudget < 0) return 1;
+    unsigned short *m = gomupdf_mark(ctx, ax, act);
+    if (m && (*m & (GM_ASAFE | GM_ABAD))) return (*m & GM_ABAD) != 0;
+    int bad = depth > GOMUPDF_MAX_DEPTH;
+    if (!bad && pdf_is_array(ctx, act)) {
         int n = pdf_array_len(ctx, act);
-        for (int i = 0; i < n && !(bad && !del); i++) {
-            if (*budget < 0) return 1;
-            bad |= gomupdf_action_unsafe(ctx, pdf_array_get(ctx, act, i), depth + 1, budget, del);
-        }
-        return bad;
+        for (int i = 0; i < n && !bad; i++)
+            bad = gomupdf_action_walk(ctx, pdf_array_get(ctx, act, i), depth + 1, ax);
+    } else if (!bad && pdf_is_dict(ctx, act)) {
+        bad = gomupdf_is_script_action(ctx, act)
+            || gomupdf_action_walk(ctx, pdf_dict_get(ctx, act, PDF_NAME(Next)), depth + 1, ax);
     }
-    if (!pdf_is_dict(ctx, act)) return 0;
-    if (gomupdf_is_script_action(ctx, act)) {
-        if (!del) return 1;
-        gomupdf_destroy_action(ctx, del, act);
-        bad = 1;
-    }
-    return gomupdf_action_unsafe(ctx, pdf_dict_get(ctx, act, PDF_NAME(Next)), depth + 1, budget, del) | bad;
+    if (m) *m |= bad ? GM_ABAD : GM_ASAFE;
+    return bad;
+}
+
+// gomupdf_record_chain records for destruction the action tree act, which
+// Scrub removes because it holds a script action: every action dictionary in
+// it (GK_ANYACTION, so a script nested directly in a GoTo goes with it) and
+// each script action's payload (gomupdf_destroy_action). Each indirect
+// object is recorded once (GM_AREC), every reach costs one unit of
+// ax->abudget, and it stops at the depth cap; what it does not reach is only
+// unlinked.
+static void gomupdf_record_chain(fz_context *ctx, pdf_obj *act, int depth, gomupdf_marks *del,
+                                 gomupdf_marks *ax) {
+    unsigned short *m = gomupdf_mark(ctx, del, act);
+    if (!act || depth > GOMUPDF_MAX_DEPTH || (m && (*m & GM_AREC)) || --ax->abudget < 0) return;
+    if (m) *m |= GM_AREC;
+    int n = pdf_array_len(ctx, act);
+    for (int i = 0; i < n; i++) gomupdf_record_chain(ctx, pdf_array_get(ctx, act, i), depth + 1, del, ax);
+    if (!pdf_is_dict(ctx, act)) return;
+    gomupdf_destroy(ctx, del, act, GK_ANYACTION);
+    gomupdf_destroy_action(ctx, del, act);
+    gomupdf_record_chain(ctx, pdf_dict_get(ctx, act, PDF_NAME(Next)), depth + 1, del, ax);
+}
+
+// gomupdf_action_unsafe decides act (gomupdf_action_walk) and, when it is
+// unsafe and del is given, records its whole tree (gomupdf_record_chain).
+static int gomupdf_action_unsafe(fz_context *ctx, pdf_obj *act, gomupdf_marks *ax, gomupdf_marks *del) {
+    int bad = gomupdf_action_walk(ctx, act, 0, ax);
+    if (bad && del) gomupdf_record_chain(ctx, act, 0, del, ax);
+    return bad;
 }
 
 // gomupdf_open_action_unsafe: an array /OpenAction is a destination and is
 // harmless; a dictionary is an action and is walked.
-static int gomupdf_open_action_unsafe(fz_context *ctx, pdf_obj *root, int *budget, gomupdf_marks *del) {
+static int gomupdf_open_action_unsafe(fz_context *ctx, pdf_obj *root, gomupdf_marks *ax, gomupdf_marks *del) {
     pdf_obj *oa = pdf_dict_gets(ctx, root, "OpenAction");
-    return pdf_is_dict(ctx, oa) && gomupdf_action_unsafe(ctx, oa, 0, budget, del);
+    return pdf_is_dict(ctx, oa) && gomupdf_action_unsafe(ctx, oa, ax, del);
 }
 
 // gomupdf_aa_unsafe reports whether any action in an /AA (additional-actions)
-// dictionary is unsafe, charging the caller's action budget; with del it
-// walks them all and records the unsafe ones.
-static int gomupdf_aa_unsafe(fz_context *ctx, pdf_obj *aa, int *budget, gomupdf_marks *del) {
+// dictionary is unsafe, charging ax's action budget; with del it walks them
+// all and records the unsafe ones.
+static int gomupdf_aa_unsafe(fz_context *ctx, pdf_obj *aa, gomupdf_marks *ax, gomupdf_marks *del) {
     int bad = 0, n = pdf_dict_len(ctx, aa);
     for (int i = 0; i < n && !(bad && !del); i++)
-        bad |= gomupdf_action_unsafe(ctx, pdf_dict_get_val(ctx, aa, i), 0, budget, del);
+        bad |= gomupdf_action_unsafe(ctx, pdf_dict_get_val(ctx, aa, i), ax, del);
     return bad;
 }
 
@@ -206,12 +285,12 @@ static int gomupdf_aa_unsafe(fz_context *ctx, pdf_obj *aa, int *budget, gomupdf_
 // records each such action for destruction and, with strip, deletes /AA and
 // each such /A and /PA from o, which the caller has made safe to edit in
 // place. A safe /A or /PA (a URI, a GoTo) stays.
-static int gomupdf_actions(fz_context *ctx, gomupdf_marks *mk, pdf_obj *o, int strip, int *budget) {
+static int gomupdf_actions(fz_context *ctx, gomupdf_marks *mk, pdf_obj *o, int strip, gomupdf_marks *ax) {
     static const char *keys[] = {"A", "PA"}; // PA is not in MuPDF's name table
-    int bad = gomupdf_aa_unsafe(ctx, pdf_dict_get(ctx, o, PDF_NAME(AA)), budget, mk);
+    int bad = gomupdf_aa_unsafe(ctx, pdf_dict_get(ctx, o, PDF_NAME(AA)), ax, mk);
     if (strip) pdf_dict_del(ctx, o, PDF_NAME(AA));
     for (int k = 0; k < 2 && !(bad && !mk); k++)
-        if (gomupdf_action_unsafe(ctx, pdf_dict_gets(ctx, o, keys[k]), 0, budget, mk)) {
+        if (gomupdf_action_unsafe(ctx, pdf_dict_gets(ctx, o, keys[k]), ax, mk)) {
             bad = 1;
             if (strip) pdf_dict_dels(ctx, o, keys[k]);
         }
@@ -221,18 +300,18 @@ static int gomupdf_actions(fz_context *ctx, gomupdf_marks *mk, pdf_obj *o, int s
 // gomupdf_widget_fields applies gomupdf_actions (with del and strip) to the
 // fields above widget w, up /Parent: a field that /AcroForm /Fields leaves out
 // still gives its widgets its /AA. It climbs at most GOMUPDF_MAX_DEPTH levels
-// and stops at a field already visited (GM_FUP in seen); with strip it leaves
+// and stops at a field already visited (GM_FUP in ax); with strip it leaves
 // a field that is page content as it is. Returns whether any field has a
 // JavaScript or Launch action, or the climb stopped at the depth cap.
-static int gomupdf_widget_fields(fz_context *ctx, gomupdf_marks *seen, gomupdf_marks *del, pdf_obj *w,
-                                 int strip, int *budget) {
+static int gomupdf_widget_fields(fz_context *ctx, gomupdf_marks *ax, gomupdf_marks *del, pdf_obj *w,
+                                 int strip) {
     int bad = 0, d = 0;
     pdf_obj *f = pdf_dict_get(ctx, w, PDF_NAME(Parent));
     for (; d < GOMUPDF_MAX_DEPTH && pdf_is_dict(ctx, f) && !(bad && !del); d++) {
-        unsigned short *m = gomupdf_mark(ctx, seen, f);
+        unsigned short *m = gomupdf_mark(ctx, ax, f);
         if (m && (*m & GM_FUP)) return bad;
         if (m) *m |= GM_FUP;
-        if (!(strip && m && (*m & GM_CONTENT))) bad |= gomupdf_actions(ctx, del, f, strip, budget);
+        if (!(strip && m && (*m & GM_CONTENT))) bad |= gomupdf_actions(ctx, del, f, strip, ax);
         f = pdf_dict_get(ctx, f, PDF_NAME(Parent));
     }
     return bad || (d == GOMUPDF_MAX_DEPTH && pdf_is_dict(ctx, f));
@@ -291,7 +370,7 @@ static void gomupdf_keep_tops(fz_context *ctx, gomupdf_marks *mk) {
             const char *k = pdf_to_name(ctx, pdf_dict_get_key(ctx, o, i));
             pdf_obj *v = pdf_dict_get_val(ctx, o, i);
             if (gomupdf_name_in(k, skip)) continue;
-            if ((!strcmp(k, "A") || !strcmp(k, "PA")) && gomupdf_action_unsafe(ctx, v, 0, &mk->abudget, NULL))
+            if ((!strcmp(k, "A") || !strcmp(k, "PA")) && gomupdf_action_unsafe(ctx, v, mk, NULL))
                 continue;
             gomupdf_keep_on(ctx, mk, gomupdf_name_in(k, items) ? GS_TOP : GS_WALK, v);
         }
@@ -425,7 +504,7 @@ static void gomupdf_keep_pass(fz_context *ctx, pdf_document *pdf, gomupdf_marks 
     if (m) *m |= GM_NODE | GM_KEEP;
     mk->content = 1;
     mk->root = m ? pdf_to_num(ctx, root) : 0;
-    mk->abudget = GOMUPDF_ACTION_BUDGET;
+    mk->abudget = gomupdf_action_budget(ctx, pdf);
     gomupdf_push_node(ctx, mk, GS_DOWN, pdf_dict_get(ctx, root, PDF_NAME(Pages)));
     gomupdf_keep_nodes(ctx, mk, GS_DOWN);
     int npages = pdf_count_pages(ctx, pdf);
@@ -442,6 +521,11 @@ static void gomupdf_keep_pass(fz_context *ctx, pdf_document *pdf, gomupdf_marks 
     gomupdf_keep(ctx, mk, pdf_dict_get(ctx, root, PDF_NAME(OCProperties)));
     gomupdf_keep_walk(ctx, mk);
     mk->content = 0;
+
+    // A safe /OpenAction stays, so its actions are kept like a kept /A: a
+    // removed script chain that shares one of them only unlinks it.
+    if (!gomupdf_open_action_unsafe(ctx, root, mk, NULL))
+        gomupdf_keep(ctx, mk, pdf_dict_gets(ctx, root, "OpenAction"));
 
     // Kept annotations: Links, widgets with keep_fields, or every /Annots
     // entry with keep_annots.
@@ -495,14 +579,6 @@ static int gomupdf_keep_all(fz_context *ctx, pdf_document *pdf, gomupdf_marks *m
     }
 }
 
-// Kinds of removed object. gomupdf_is_kind identifies each positively, so a
-// removed slot that points at an object of another kind never destroys it
-// (defence in depth: the GM_KEEP marks are what protect kept content).
-enum {
-    GK_INFO, GK_XMP, GK_TREE, GK_FILESPEC, GK_EF, GK_EMBEDDED, GK_ACTION, GK_SCRIPT,
-    GK_ANNOT, GK_FIELD, GK_ACROFORM, GK_THUMB, GK_STRING, GK_LAUNCHP, GK_XFA
-};
-
 static int gomupdf_is_kind(fz_context *ctx, pdf_obj *o, int kind) {
 #define GK_HAS(k) (pdf_dict_get(ctx, o, PDF_NAME(k)) != NULL)
 #define GK_IS(v, k) pdf_name_eq(ctx, v, PDF_NAME(k))
@@ -517,6 +593,7 @@ static int gomupdf_is_kind(fz_context *ctx, pdf_obj *o, int kind) {
     case GK_FILESPEC:
         return dict && (GK_IS(t, Filespec) || (!t && (GK_HAS(EF) || GK_HAS(F) || GK_HAS(UF))));
     case GK_ACTION: return dict && (!t || GK_IS(t, Action)) && gomupdf_is_script_action(ctx, o);
+    case GK_ANYACTION: return dict && (!t || GK_IS(t, Action)) && pdf_is_name(ctx, pdf_dict_get(ctx, o, PDF_NAME(S)));
     case GK_ANNOT: return dict && (!t || GK_IS(t, Annot)) && st;
     case GK_FIELD:
         return dict && (!t || GK_IS(t, Annot))
@@ -599,12 +676,13 @@ static void gomupdf_destroy_all(fz_context *ctx, pdf_document *pdf, gomupdf_mark
 
 // gomupdf_name_tree counts the key/value pairs of a name tree, following
 // /Kids, and records every node and value in del when not NULL: filespecs,
-// or with js (an action budget, for /Names/JavaScript) the script actions of
-// each value and its /Next chain. Each node, /Kids entry and /Names pair
-// costs one unit of *budget. A node deeper than the depth cap or on a /Kids
-// cycle, and everything past the budget, sets *incomplete and is skipped.
+// or with js (the marks holding the action budget, for /Names/JavaScript)
+// each value's action tree (gomupdf_action_unsafe). Each node, /Kids entry
+// and /Names pair costs one unit of *budget. A node deeper than the depth cap
+// or on a /Kids cycle, and everything past the budget, sets *incomplete and
+// is skipped.
 static long long gomupdf_name_tree(fz_context *ctx, pdf_obj *node, int depth, pdf_cycle_list *up,
-                                   int *budget, int *incomplete, gomupdf_marks *del, int *js) {
+                                   int *budget, int *incomplete, gomupdf_marks *del, gomupdf_marks *js) {
     pdf_cycle_list here;
     if (!pdf_is_dict(ctx, node)) return 0;
     if (depth > GOMUPDF_MAX_DEPTH || --*budget < 0 || pdf_cycle(ctx, &here, up, node)) {
@@ -621,7 +699,7 @@ static long long gomupdf_name_tree(fz_context *ctx, pdf_obj *node, int depth, pd
     *budget -= pairs;
     for (int i = 0; i < pairs; i++) {
         pdf_obj *v = pdf_array_get(ctx, names, 2 * i + 1);
-        if (js && del) gomupdf_action_unsafe(ctx, v, 0, js, del);
+        if (js && del) gomupdf_action_unsafe(ctx, v, js, del);
         else gomupdf_destroy_filespec(ctx, del, v);
     }
     long long count = pairs;
@@ -639,17 +717,17 @@ static long long gomupdf_name_tree(fz_context *ctx, pdf_obj *node, int depth, pd
 }
 
 // gomupdf_destroy_name_tree records a whole name tree for destruction (js:
-// /Names/JavaScript, whose actions share one action budget).
+// /Names/JavaScript, whose actions charge del's action budget).
 static void gomupdf_destroy_name_tree(fz_context *ctx, gomupdf_marks *del, pdf_obj *tree, int js) {
-    int budget = GOMUPDF_TREE_BUDGET, incomplete = 0, abudget = GOMUPDF_ACTION_BUDGET;
-    gomupdf_name_tree(ctx, tree, 0, NULL, &budget, &incomplete, del, js ? &abudget : NULL);
+    int budget = GOMUPDF_TREE_BUDGET, incomplete = 0;
+    gomupdf_name_tree(ctx, tree, 0, NULL, &budget, &incomplete, del, js ? del : NULL);
 }
 
 // gomupdf_fields walks the /AcroForm field tree below the array fields,
 // following /Kids at most GOMUPDF_MAX_DEPTH levels deep and charging one unit
 // of *budget per array entry; a node too deep or on a /Kids cycle is skipped,
 // and everything past the budget, which makes the walk incomplete. Each
-// node's actions charge *abudget (gomupdf_actions). Without mk (HiddenContent)
+// node's actions charge ax (gomupdf_actions). Without mk (HiddenContent)
 // it returns 1 as soon as a node has a JavaScript or Launch action or the walk
 // is incomplete. With mk and !strip (Scrub removing /AcroForm) it records
 // every node and those actions for destruction; with strip (Scrub keeping the
@@ -657,7 +735,7 @@ static void gomupdf_destroy_name_tree(fz_context *ctx, gomupdf_marks *del, pdf_o
 // content (in is the content flag of the array's container, see
 // gomupdf_in_content), editing it in place.
 static int gomupdf_fields(fz_context *ctx, gomupdf_marks *mk, int strip, pdf_obj *fields, int in,
-                          int depth, pdf_cycle_list *up, int *budget, int *abudget) {
+                          int depth, pdf_cycle_list *up, int *budget, gomupdf_marks *ax) {
     int found = 0, n = pdf_array_len(ctx, fields);
     in = gomupdf_in_content(ctx, mk, fields, in);
     for (int i = 0; i < n && !(found && !mk); i++) {
@@ -671,9 +749,9 @@ static int gomupdf_fields(fz_context *ctx, gomupdf_marks *mk, int strip, pdf_obj
         }
         int c = gomupdf_in_content(ctx, mk, f, in);
         if (!strip) gomupdf_destroy(ctx, mk, f, GK_FIELD);
-        if (!(strip && c)) found |= gomupdf_actions(ctx, mk, f, strip, abudget);
+        if (!(strip && c)) found |= gomupdf_actions(ctx, mk, f, strip, ax);
         found |= gomupdf_fields(ctx, mk, strip, pdf_dict_get(ctx, f, PDF_NAME(Kids)), c, depth + 1, &here,
-                                budget, abudget);
+                                budget, ax);
     }
     return found;
 }
@@ -688,7 +766,7 @@ static int gomupdf_fields(fz_context *ctx, gomupdf_marks *mk, int strip, pdf_obj
 // every item that is not page content (in: see gomupdf_fields), in place, and
 // records its actions for destruction. /Dest is a destination and stays.
 static int gomupdf_outline(fz_context *ctx, gomupdf_marks *mk, pdf_obj *node, int in, int depth,
-                           pdf_cycle_list *up, int *budget, int *abudget) {
+                           pdf_cycle_list *up, int *budget, gomupdf_marks *ax) {
     pdf_cycle_list here;
     if (depth > GOMUPDF_MAX_DEPTH || pdf_cycle(ctx, &here, up, node)) return 1;
     int found = 0;
@@ -696,11 +774,11 @@ static int gomupdf_outline(fz_context *ctx, gomupdf_marks *mk, pdf_obj *node, in
          it = pdf_dict_get(ctx, it, PDF_NAME(Next))) {
         if (--*budget < 0) return 1;
         int c = gomupdf_in_content(ctx, mk, it, in);
-        if (!c && gomupdf_action_unsafe(ctx, pdf_dict_get(ctx, it, PDF_NAME(A)), 0, abudget, mk)) {
+        if (!c && gomupdf_action_unsafe(ctx, pdf_dict_get(ctx, it, PDF_NAME(A)), ax, mk)) {
             found = 1;
             if (mk) pdf_dict_del(ctx, it, PDF_NAME(A));
         }
-        found |= gomupdf_outline(ctx, mk, it, c, depth + 1, &here, budget, abudget);
+        found |= gomupdf_outline(ctx, mk, it, c, depth + 1, &here, budget, ax);
     }
     return found;
 }
@@ -708,21 +786,21 @@ static int gomupdf_outline(fz_context *ctx, gomupdf_marks *mk, pdf_obj *node, in
 // gomupdf_page_keys counts into out (HiddenContent) or removes (Scrub, mk) the
 // keys Scrub removes from a page or intermediate page-tree node: /Thumb, /AA,
 // /AF, /Metadata and /PieceInfo, recording what they hold for destruction.
-static void gomupdf_page_keys(fz_context *ctx, gomupdf_marks *mk, pdf_obj *o, int *out, int *abudget) {
+static void gomupdf_page_keys(fz_context *ctx, gomupdf_marks *mk, pdf_obj *o, int *out, gomupdf_marks *ax) {
     pdf_obj *af = pdf_dict_get(ctx, o, PDF_NAME(AF)), *aa = pdf_dict_get(ctx, o, PDF_NAME(AA));
     if (out) {
         gomupdf_add(&out[HC_THUMBS], pdf_dict_get(ctx, o, PDF_NAME(Thumb)) != NULL);
         gomupdf_add(&out[HC_PAGEMETA], pdf_dict_get(ctx, o, PDF_NAME(Metadata)) != NULL);
         gomupdf_add(&out[HC_AF], af != NULL);
         gomupdf_add(&out[HC_PIECEINFO], pdf_dict_get(ctx, o, PDF_NAME(PieceInfo)) != NULL);
-        if (!out[HC_JS] && gomupdf_aa_unsafe(ctx, aa, abudget, NULL)) out[HC_JS] = 1;
+        if (!out[HC_JS] && gomupdf_aa_unsafe(ctx, aa, ax, NULL)) out[HC_JS] = 1;
         return;
     }
     gomupdf_destroy(ctx, mk, pdf_dict_get(ctx, o, PDF_NAME(Thumb)), GK_THUMB);
     gomupdf_destroy(ctx, mk, pdf_dict_get(ctx, o, PDF_NAME(Metadata)), GK_XMP);
     for (int i = 0; i < pdf_array_len(ctx, af); i++)
         gomupdf_destroy_filespec(ctx, mk, pdf_array_get(ctx, af, i));
-    gomupdf_aa_unsafe(ctx, aa, abudget, mk);
+    gomupdf_aa_unsafe(ctx, aa, ax, mk);
     pdf_dict_del(ctx, o, PDF_NAME(Thumb));
     pdf_dict_del(ctx, o, PDF_NAME(AA));
     pdf_dict_del(ctx, o, PDF_NAME(AF));
@@ -738,15 +816,15 @@ static void gomupdf_page_keys(fz_context *ctx, gomupdf_marks *mk, pdf_obj *o, in
 // keys; otherwise (Scrub, seen GM_DONE) it removes them from every node that
 // is not page content.
 static void gomupdf_page_nodes(fz_context *ctx, gomupdf_marks *mk, pdf_obj *page, unsigned short seen,
-                               int *out, int *abudget) {
+                               int *out, gomupdf_marks *ax) {
     pdf_obj *node = pdf_dict_get(ctx, page, PDF_NAME(Parent));
     for (int d = 0; d < GOMUPDF_MAX_DEPTH; d++) {
         unsigned short *m = gomupdf_mark(ctx, mk, node);
         if (!m || (*m & (seen | GM_PAGE)) || pdf_to_num(ctx, node) == mk->root || !pdf_is_dict(ctx, node))
             return;
         *m |= seen;
-        if (out) gomupdf_page_keys(ctx, NULL, node, out, abudget);
-        else if (seen == GM_DONE && !(*m & GM_CONTENT)) gomupdf_page_keys(ctx, mk, node, NULL, abudget);
+        if (out) gomupdf_page_keys(ctx, NULL, node, out, ax);
+        else if (seen == GM_DONE && !(*m & GM_CONTENT)) gomupdf_page_keys(ctx, mk, node, NULL, ax);
         node = pdf_dict_get(ctx, node, PDF_NAME(Parent));
     }
 }
@@ -766,9 +844,10 @@ static int gomupdf_hidden_content(fz_context *ctx, fz_document *doc, int *out,
         pdf_obj *root = pdf_dict_get(ctx, trailer, PDF_NAME(Root));
         pdf_obj *names = pdf_dict_get(ctx, root, PDF_NAME(Names));
         int budget = GOMUPDF_TREE_BUDGET, incomplete = 0;
-        // One action budget for the whole call: a large /AA shared by many
-        // annotations, or by many keys, is walked against it only once.
-        int abudget = GOMUPDF_ACTION_BUDGET;
+        // One action budget and verdict cache for the whole call: a large /AA
+        // shared by many annotations, or by many keys, is walked once and
+        // each further reach is charged against the budget.
+        mk.abudget = gomupdf_action_budget(ctx, pdf);
         size_t len = (size_t)pdf_xref_len(ctx, pdf);
         mk.m = fz_calloc(ctx, len ? len : 1, sizeof *mk.m);
         mk.len = (int)len;
@@ -786,17 +865,17 @@ static int gomupdf_hidden_content(fz_context *ctx, fz_document *doc, int *out,
         out[HC_AF] = pdf_dict_get(ctx, root, PDF_NAME(AF)) != NULL;
         out[HC_PIECEINFO] = pdf_dict_get(ctx, root, PDF_NAME(PieceInfo)) != NULL;
         out[HC_JS] = pdf_dict_get(ctx, names, PDF_NAME(JavaScript)) != NULL
-            || gomupdf_open_action_unsafe(ctx, root, &abudget, NULL)
-            || gomupdf_aa_unsafe(ctx, pdf_dict_get(ctx, root, PDF_NAME(AA)), &abudget, NULL);
+            || gomupdf_open_action_unsafe(ctx, root, &mk, NULL)
+            || gomupdf_aa_unsafe(ctx, pdf_dict_get(ctx, root, PDF_NAME(AA)), &mk, NULL);
         if (!out[HC_JS]) {
             budget = GOMUPDF_TREE_BUDGET;
             pdf_obj *fields = pdf_dict_getp(ctx, root, "AcroForm/Fields");
-            out[HC_JS] = gomupdf_fields(ctx, NULL, 0, fields, 0, 0, NULL, &budget, &abudget);
+            out[HC_JS] = gomupdf_fields(ctx, NULL, 0, fields, 0, 0, NULL, &budget, &mk);
         }
         if (!out[HC_JS]) {
             budget = GOMUPDF_TREE_BUDGET;
             pdf_obj *outlines = pdf_dict_get(ctx, root, PDF_NAME(Outlines));
-            out[HC_JS] = gomupdf_outline(ctx, NULL, outlines, 0, 0, NULL, &budget, &abudget);
+            out[HC_JS] = gomupdf_outline(ctx, NULL, outlines, 0, 0, NULL, &budget, &mk);
         }
 
         int npages = pdf_count_pages(ctx, pdf);
@@ -806,19 +885,19 @@ static int gomupdf_hidden_content(fz_context *ctx, fz_document *doc, int *out,
         }
         for (int p = 0; p < npages; p++) {
             pdf_obj *page = pdf_lookup_page_obj(ctx, pdf, p);
-            gomupdf_page_keys(ctx, NULL, page, out, &abudget);
-            gomupdf_page_nodes(ctx, &mk, page, GM_DONE, out, &abudget);
+            gomupdf_page_keys(ctx, NULL, page, out, &mk);
+            gomupdf_page_nodes(ctx, &mk, page, GM_DONE, out, &mk);
 
             pdf_obj *annots = pdf_dict_get(ctx, page, PDF_NAME(Annots));
             int n = pdf_array_len(ctx, annots);
             for (int i = 0; i < n; i++) {
                 pdf_obj *a = pdf_array_get(ctx, annots, i);
                 if (!pdf_is_dict(ctx, a)) continue;
-                if (!out[HC_JS] && gomupdf_actions(ctx, NULL, a, 0, &abudget)) out[HC_JS] = 1;
+                if (!out[HC_JS] && gomupdf_actions(ctx, NULL, a, 0, &mk)) out[HC_JS] = 1;
                 if (gomupdf_is_link(ctx, a)) continue;
                 if (pdf_name_eq(ctx, pdf_dict_get(ctx, a, PDF_NAME(Subtype)), PDF_NAME(Widget))) {
                     gomupdf_add(&out[HC_WIDGETS], 1);
-                    if (!out[HC_JS] && gomupdf_widget_fields(ctx, &mk, NULL, a, 0, &abudget)) out[HC_JS] = 1;
+                    if (!out[HC_JS] && gomupdf_widget_fields(ctx, &mk, NULL, a, 0)) out[HC_JS] = 1;
                 } else
                     gomupdf_add(&out[HC_NONLINK], 1);
             }
@@ -882,7 +961,7 @@ static pdf_obj *gomupdf_own_annots(fz_context *ctx, gomupdf_marks *mk, pdf_obj *
 // array and entries kept content also uses, and resyncs a page MuPDF already
 // has open with them.
 static void gomupdf_scrub_annots(fz_context *ctx, pdf_document *pdf, int pageno, gomupdf_marks *del,
-                                 int keep_fields, int *abudget) {
+                                 int keep_fields) {
     pdf_page *page = NULL;
     fz_var(page);
     fz_try(ctx) {
@@ -894,7 +973,7 @@ static void gomupdf_scrub_annots(fz_context *ctx, pdf_document *pdf, int pageno,
             pdf_obj *e = pdf_array_get(ctx, arr, i);
             if (!pdf_is_dict(ctx, e) || gomupdf_annot_kept(ctx, e, 0, keep_fields)) continue;
             gomupdf_destroy(ctx, del, e, GK_ANNOT);
-            gomupdf_actions(ctx, del, e, 0, abudget);
+            gomupdf_actions(ctx, del, e, 0, del);
             gomupdf_destroy_filespec(ctx, del, pdf_dict_get(ctx, e, PDF_NAME(FS)));
             pdf_obj *af = pdf_dict_get(ctx, e, PDF_NAME(AF));
             for (int j = 0; j < pdf_array_len(ctx, af); j++)
@@ -909,7 +988,7 @@ static void gomupdf_scrub_annots(fz_context *ctx, pdf_document *pdf, int pageno,
             pdf_obj *f = pdf_dict_get(ctx, e, PDF_NAME(Parent));
             for (int d = 0; d < GOMUPDF_MAX_DEPTH && pdf_is_dict(ctx, f); d++) {
                 gomupdf_destroy(ctx, del, f, GK_FIELD);
-                gomupdf_actions(ctx, del, f, 0, abudget);
+                gomupdf_actions(ctx, del, f, 0, del);
                 f = pdf_dict_get(ctx, f, PDF_NAME(Parent));
             }
         }
@@ -955,7 +1034,9 @@ static int gomupdf_scrub(fz_context *ctx, fz_document *doc, int keep_annots, int
         pdf_obj *root = pdf_dict_get(ctx, trailer, PDF_NAME(Root));
         pdf_obj *names = pdf_dict_get(ctx, root, PDF_NAME(Names));
         pdf_obj *af = pdf_dict_get(ctx, root, PDF_NAME(AF));
-        int abudget = GOMUPDF_ACTION_BUDGET;
+        // The edit pass gets a fresh action budget and keeps the marking
+        // pass's verdicts (GM_ASAFE, GM_ABAD).
+        mk.abudget = gomupdf_action_budget(ctx, pdf);
 
         // Record what is removed below while it is still linked.
         gomupdf_destroy(ctx, &mk, pdf_dict_get(ctx, trailer, PDF_NAME(Info)), GK_INFO);
@@ -968,10 +1049,10 @@ static int gomupdf_scrub(fz_context *ctx, fz_document *doc, int keep_annots, int
             pdf_obj *acroform = pdf_dict_get(ctx, root, PDF_NAME(AcroForm));
             int budget = GOMUPDF_TREE_BUDGET;
             gomupdf_destroy(ctx, &mk, acroform, GK_ACROFORM);
-            gomupdf_fields(ctx, &mk, 0, pdf_dict_get(ctx, acroform, PDF_NAME(Fields)), 0, 0, NULL, &budget, &abudget);
+            gomupdf_fields(ctx, &mk, 0, pdf_dict_get(ctx, acroform, PDF_NAME(Fields)), 0, 0, NULL, &budget, &mk);
         }
         gomupdf_destroy_xfa(ctx, &mk, pdf_dict_getp(ctx, root, "AcroForm/XFA"));
-        gomupdf_aa_unsafe(ctx, pdf_dict_get(ctx, root, PDF_NAME(AA)), &abudget, &mk);
+        gomupdf_aa_unsafe(ctx, pdf_dict_get(ctx, root, PDF_NAME(AA)), &mk, &mk);
 
         pdf_dict_del(ctx, trailer, PDF_NAME(Info));
         pdf_dict_del(ctx, root, PDF_NAME(Metadata));
@@ -993,7 +1074,7 @@ static int gomupdf_scrub(fz_context *ctx, fz_document *doc, int keep_annots, int
             pdf_dict_del(ctx, names, PDF_NAME(EmbeddedFiles));
             pdf_dict_del(ctx, names, PDF_NAME(JavaScript));
         }
-        if (gomupdf_open_action_unsafe(ctx, root, &abudget, &mk)) pdf_dict_dels(ctx, root, "OpenAction");
+        if (gomupdf_open_action_unsafe(ctx, root, &mk, &mk)) pdf_dict_dels(ctx, root, "OpenAction");
         if (!keep_outlines) {
             pdf_dict_del(ctx, root, PDF_NAME(Outlines));
             if (pdf_name_eq(ctx, pdf_dict_get(ctx, root, PDF_NAME(PageMode)), PDF_NAME(UseOutlines)))
@@ -1002,10 +1083,10 @@ static int gomupdf_scrub(fz_context *ctx, fz_document *doc, int keep_annots, int
 
         int npages = pdf_count_pages(ctx, pdf);
         for (int p = 0; p < npages; p++) {
-            if (!keep_annots) gomupdf_scrub_annots(ctx, pdf, p, &mk, keep_fields, &abudget);
+            if (!keep_annots) gomupdf_scrub_annots(ctx, pdf, p, &mk, keep_fields);
             pdf_obj *page = pdf_lookup_page_obj(ctx, pdf, p);
-            gomupdf_page_keys(ctx, &mk, page, NULL, &abudget);
-            gomupdf_page_nodes(ctx, &mk, page, GM_DONE, NULL, &abudget);
+            gomupdf_page_keys(ctx, &mk, page, NULL, &mk);
+            gomupdf_page_nodes(ctx, &mk, page, GM_DONE, NULL, &mk);
             // Annotations that stay (see gomupdf_annot_kept) lose their /AA
             // and their JavaScript and Launch /A and /PA so no script
             // survives, matching what HiddenContent checks.
@@ -1014,9 +1095,9 @@ static int gomupdf_scrub(fz_context *ctx, fz_document *doc, int keep_annots, int
             for (int i = 0; i < n; i++) {
                 pdf_obj *a = pdf_array_get(ctx, annots, i);
                 if (!pdf_is_dict(ctx, a)) continue;
-                gomupdf_actions(ctx, &mk, a, 1, &abudget);
+                gomupdf_actions(ctx, &mk, a, 1, &mk);
                 if (keep_fields && pdf_name_eq(ctx, pdf_dict_get(ctx, a, PDF_NAME(Subtype)), PDF_NAME(Widget)))
-                    gomupdf_widget_fields(ctx, &mk, &mk, a, 1, &abudget);
+                    gomupdf_widget_fields(ctx, &mk, &mk, a, 1);
             }
         }
         // The field tree, past the widgets the page loop reached, and the
@@ -1025,13 +1106,13 @@ static int gomupdf_scrub(fz_context *ctx, fz_document *doc, int keep_annots, int
             pdf_obj *acroform = pdf_dict_get(ctx, root, PDF_NAME(AcroForm));
             int budget = GOMUPDF_TREE_BUDGET;
             gomupdf_fields(ctx, &mk, 1, pdf_dict_get(ctx, acroform, PDF_NAME(Fields)),
-                           gomupdf_in_content(ctx, &mk, acroform, 0), 0, NULL, &budget, &abudget);
+                           gomupdf_in_content(ctx, &mk, acroform, 0), 0, NULL, &budget, &mk);
         }
         if (keep_outlines) {
             pdf_obj *outlines = pdf_dict_get(ctx, root, PDF_NAME(Outlines));
             int budget = GOMUPDF_TREE_BUDGET;
             gomupdf_outline(ctx, &mk, outlines, gomupdf_in_content(ctx, &mk, outlines, 0), 0, NULL, &budget,
-                            &abudget);
+                            &mk);
         }
     }
     fz_catch(ctx) {

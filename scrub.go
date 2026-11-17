@@ -72,22 +72,27 @@ type HiddenContent struct {
 	// outline item. It does not know which ScrubOptions a later Scrub uses, so
 	// it reports these wherever they are. A script action is one with /S
 	// /JavaScript or /S /Launch, one with a /JS entry whatever its /S (a
-	// Rendition action's, say), or a URI action whose /URI, after leading
-	// whitespace and control characters, starts with "javascript:" in any
-	// case; in this documentation "JavaScript or Launch action" means any of
-	// them.
+	// Rendition action's, say), or a URI action whose /URI is a javascript:
+	// URI: it starts with "javascript:" in any case once a UTF-8 byte-order
+	// mark and leading whitespace and control characters are skipped and tab,
+	// CR and LF are ignored, either as raw bytes or as the text MuPDF decodes
+	// (UTF-16 with a byte-order mark). In this documentation "JavaScript or
+	// Launch action" means any of them.
 	//
 	// The field-tree and outline walks stop at 32 levels and at a /Kids or
 	// /First cycle, and after 65,536 units of work (one per /Fields or /Kids
 	// entry, one per outline item); a walk cut short, or a widget with more
 	// than 32 fields above it, counts as JavaScript, and still does after a
 	// Scrub that keeps that form or outline. The action walks of one call
-	// share a budget of 65,536 action nodes (one per action dictionary or
-	// /Next array) and stop at 32 levels of /Next; an action they cannot walk
-	// in full (cyclic, too deep, or past the budget) counts as JavaScript. So
-	// a page of 65,537 Links with URI actions reports JavaScript before Scrub;
-	// Scrub removes the actions past its own budget of the same size, so the
-	// reopened output does not on that account.
+	// share a budget of 4,096 + 32 x (xref length) reaches: every time a walk
+	// reaches an action dictionary or /Next array costs one unit, even an
+	// indirect one already decided, whose verdict is reused rather than walked
+	// again. They stop at 32 levels of /Next; an action they cannot walk in
+	// full (cyclic, too deep, or past the budget) counts as JavaScript. A
+	// well-formed file reaches each action a few times and stays far within
+	// the budget whatever its size; one action shared by very many places (one
+	// Link listed 4,257 times on a page of a 5-object file) runs out, reports
+	// JavaScript before Scrub, and loses that action in Scrub.
 	JavaScript bool
 
 	// NonLinkAnnotations and Widgets count the entries of every page's /Annots
@@ -169,11 +174,13 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // (from /OpenAction, any /AA, an /A or /PA, an outline item, a removed
 // annotation or field, the /Next chain of a /Names/JavaScript action) with
 // its /JS script string or stream, its /URI string, its /F file and a Launch
-// action's /Win, /Mac and /Unix dictionaries with their /F files. Each is
-// destroyed only if it is recognisably of its kind (an /Info dictionary has
-// no /Type, an XMP stream has /Type /Metadata or /Subtype /XML, a filespec
-// has /Type /Filespec, an action is a script action as HiddenContent's
-// JavaScript field defines it, an XFA stream has no /Type or /Subtype, and
+// action's /Win, /Mac and /Unix dictionaries with their /F files, and with
+// every other action dictionary of the chain it removes (a GoTo whose /Next
+// is the script, say). Each is destroyed only if it is recognisably of its
+// kind (an /Info dictionary has no /Type, an XMP stream has /Type /Metadata
+// or /Subtype /XML, a filespec has /Type /Filespec, a script action is one
+// as HiddenContent's JavaScript field defines it, another action has /S and
+// no /Type other than /Action, an XFA stream has no /Type or /Subtype, and
 // so on).
 //
 // Scrub never destroys kept content. Before it changes anything it loads
@@ -195,8 +202,9 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // /Annots, and on the catalog, where it skips the keys Scrub removes or edits
 // there, /Pages and /StructTreeRoot. A removed entry that points at kept
 // content (a /Thumb that the page also draws, an /Info that is the page's
-// /Resources, a JavaScript action that is also a graphics state) is only
-// unlinked. A field-tree node, outline item or intermediate page-tree node
+// /Resources, a JavaScript action that is also a graphics state, an action
+// that a kept /A or a kept /OpenAction also uses) is only unlinked. A
+// field-tree node, outline item or intermediate page-tree node
 // that is itself reached as page content (a malformed file) is left as it is,
 // scripts included; HiddenContent still reports what it holds.
 //
@@ -206,10 +214,12 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // a name tree, field tree or outline beyond 32 levels or 65,536 units of
 // walk work, and of a page tree more than 32 levels above a page. Unlinked
 // objects leave the file only if nothing else references them. Scrub's
-// action walks share one budget of 65,536 action nodes per call, as
-// HiddenContent's do; past it, every /A, /PA and /OpenAction it checks
-// counts as unsafe and is removed, so on a page of 65,537 Links with URI
-// actions the last one loses its URI (and so on, in page order, past that).
+// marking pass and its edit pass each have an action budget of 4,096 + 32 x
+// (xref length) reaches, as a HiddenContent call does, and the edit pass
+// reuses the marking pass's verdict on each indirect action; past the
+// budget, every /A, /PA and /OpenAction Scrub checks counts as unsafe and is
+// removed. A well-formed file of any size stays within it; see
+// HiddenContent's JavaScript field for the shape that does not.
 //
 // Out of scope: the scripts of 3D and RichMedia annotations when annotations
 // are kept; actions of other kinds that reach outside the file (URI, GoToR,
