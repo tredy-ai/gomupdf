@@ -346,7 +346,11 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // kept form keeps /Perms and /DSS with all they reference. A page dictionary
 // that is not in the page tree and is reached other than as page content (a
 // kept Link's or outline item's destination) is kept but not walked, so what
-// it holds is still destroyed. A removed entry that points at kept
+// it holds is still destroyed. Outside page content, an annotation or form
+// field is kept only in its own right (a kept annotation, a node of a kept
+// form), not because something kept points at it: a kept Link's or
+// /OpenAction's Hide action whose /T names an annotation Scrub removes keeps
+// the action, and the annotation is destroyed. A removed entry that points at kept
 // content (a /Thumb that the page also draws, an /Info that is the page's
 // /Resources, a JavaScript action that is also a graphics state, an action
 // that a kept /A or a kept /OpenAction also uses) is only unlinked. A

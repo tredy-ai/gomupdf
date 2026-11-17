@@ -178,6 +178,7 @@ static void gomupdf_sweep(fz_context *ctx, pdf_document *pdf, gomupdf_marks *mk,
                           int keep_fields);
 static pdf_obj *gomupdf_trailer_extra(fz_context *ctx, pdf_document *pdf, int *count);
 static void gomupdf_record_annot(fz_context *ctx, gomupdf_marks *del, pdf_obj *e);
+static int gomupdf_annot_shaped(fz_context *ctx, pdf_obj *ref);
 
 // gomupdf_af_files returns how many entries of the array v are file
 // specification dictionaries: an /AF with any is an associated-files array.
@@ -357,12 +358,17 @@ static int gomupdf_in_content(fz_context *ctx, gomupdf_marks *mk, pdf_obj *obj, 
 // gomupdf_keep_on marks obj kept and queues it on the WALK stack (keep all it
 // references) or the TOP stack (a kept annotation or outline item). Each
 // indirect object is queued once per stack; an object number outside the xref
-// resolves to null and holds nothing.
+// resolves to null and holds nothing. Outside the page-content walk, an
+// annotation or field (gomupdf_annot_shaped) is kept only in its own right,
+// as a kept annotation or form node (TOP), never because something kept
+// refers to it (a Hide action's /T, say), so one the options remove is still
+// destroyed and the reference resolves to null.
 static void gomupdf_keep_on(fz_context *ctx, gomupdf_marks *mk, int which, pdf_obj *obj) {
     if (pdf_is_indirect(ctx, obj)) {
         unsigned int *m = gomupdf_mark(ctx, mk, obj);
         unsigned int queued = which == GS_TOP ? GM_TOP : GM_WALK;
         if (!m || (*m & queued)) return;
+        if (which == GS_WALK && !mk->content && !(*m & GM_TOP) && gomupdf_annot_shaped(ctx, obj)) return;
         *m |= GM_KEEP | queued | (which == GS_WALK && mk->content ? GM_CONTENT : 0);
     } else if (!pdf_is_array(ctx, obj) && !pdf_is_dict(ctx, obj)) {
         return;

@@ -3343,3 +3343,35 @@ func TestScrubOrphanAnnotations(t *testing.T) {
 		})
 	}
 }
+
+// A Hide action's /T names the annotation it hides. A kept Link's Hide action
+// and a kept /OpenAction Hide action that target an annotation Scrub removes
+// do not keep it: the annotation is destroyed, and /T resolves to null.
+// (Reduced from veraPDF 6-6-1-t01-fail-a.pdf.)
+func TestScrubHideActionTarget(t *testing.T) {
+	const tokSquare, tokCircle = "GomupdfHideSquare7e2a", "GomupdfHideCircle3b9d"
+	pdf := scrubBuildPDF([]string{
+		/* 1 */ `<< /Type /Catalog /Pages 2 0 R /OpenAction << /S /Hide /T 6 0 R /H true >> >>`,
+		/* 2 */ `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+		/* 3 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Annots [4 0 R 5 0 R 6 0 R] >>`,
+		/* 4 */ `<< /Type /Annot /Subtype /Link /Rect [0 0 50 50] /A << /S /Hide /T 5 0 R >> >>`,
+		/* 5 */ `<< /Type /Annot /Subtype /Square /Rect [60 60 120 120] /Contents (` + tokSquare + `) >>`,
+		/* 6 */ `<< /Type /Annot /Subtype /Circle /Rect [130 60 190 120] /Contents (` + tokCircle + `) >>`,
+	}, "")
+	scrubControl(t, pdf, tokSquare, tokCircle)
+	out, re := scrubRoundTrip(t, pdf, ScrubOptions{})
+	scrubNoTokens(t, "default", out, tokSquare, tokCircle)
+	if h := scrubHidden(t, re); h != (HiddenContent{}) {
+		t.Errorf("after scrub: %+v", h)
+	}
+	if n := len(scrubLinkRe.FindAll(out, -1)); n != 1 {
+		t.Errorf("%d Link annotations after scrub, want 1", n)
+	}
+	// KeepAnnotations keeps both.
+	out, _ = scrubRoundTrip(t, pdf, ScrubOptions{KeepAnnotations: true})
+	for _, tok := range []string{tokSquare, tokCircle} {
+		if !bytes.Contains(out, []byte(tok)) {
+			t.Errorf("KeepAnnotations: %q removed", tok)
+		}
+	}
+}
