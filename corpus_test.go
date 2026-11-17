@@ -876,12 +876,12 @@ func (c *corpusCheck) redaction(data []byte, d *Document, pages []*corpusPage) {
 		}
 		c.step("redact %s save", mode.name)
 		out, err := dm.SaveBytesWithOptions(SaveOptions{Garbage: 1})
-		dm.Close()
 		// After a failed apply that changed the page, every save must be
 		// refused with ErrRedactionFailed; after a preflight refusal, which
 		// changes nothing, the save works.
 		switch {
 		case errors.Is(err, ErrRedactionFailed):
+			dm.Close()
 			if !changed && len(other) == 0 {
 				c.fail("save-error", "%s: %v, with no failed ApplyRedactions", mode.name, err)
 			}
@@ -891,6 +891,7 @@ func (c *corpusCheck) redaction(data []byte, d *Document, pages []*corpusPage) {
 			c.note("refused-save", "%s: %v", mode.name, err)
 			continue
 		case err != nil:
+			dm.Close()
 			c.fail("save-error", "%s: %v", mode.name, err)
 			continue
 		case changed:
@@ -899,6 +900,16 @@ func (c *corpusCheck) redaction(data []byte, d *Document, pages []*corpusPage) {
 		for _, o := range other {
 			c.note("refused-preflight", "%s (save allowed)", o)
 		}
+		// The whole pipeline: the same document after a default Scrub, for
+		// the "byte-hit-scrubbed" notes (what survives redaction and scrub).
+		bc.scrubbed = nil
+		c.step("redact %s scrub save", mode.name)
+		if dm.Scrub(ScrubOptions{}) == nil {
+			if b, err := dm.SaveBytesWithOptions(SaveOptions{Garbage: 1}); err == nil {
+				bc.scrubbed = pdfBlobs(b)
+			}
+		}
+		dm.Close()
 		c.step("redact %s reopen", mode.name)
 		da, err := OpenStream(out)
 		if err != nil {
@@ -923,6 +934,7 @@ func (c *corpusCheck) redaction(data []byte, d *Document, pages []*corpusPage) {
 type byteCtx struct {
 	baseDoc   []byte
 	base, out [][]byte
+	scrubbed  [][]byte // out's document after a default Scrub; nil if Scrub failed
 	text      []string
 }
 
@@ -1012,6 +1024,11 @@ func (c *corpusCheck) verifyPage(d, da *Document, mode corpusMode, pg *corpusPag
 			c.r.ByteConclusive++
 			if k, where2 := byteHits(bc.out, w.text); k > 0 {
 				c.note("byte-hit", "%s word %q: %d occurrences in the save: %s", where, w.text, k, where2)
+			}
+			if bc.scrubbed != nil {
+				if k, where2 := byteHits(bc.scrubbed, w.text); k > 0 {
+					c.note("byte-hit-scrubbed", "%s word %q: %d occurrences after redaction and Scrub: %s", where, w.text, k, where2)
+				}
 			}
 		}
 	}
