@@ -416,7 +416,7 @@ func TestRedactionLigaturesAndMarks(t *testing.T) {
 	for _, c := range []struct {
 		name, font, text string
 		extra            []string
-		targets          []int // chars (spaces dropped) whose BBox is redacted, one rect each
+		targets          []int // chars (spaces dropped) whose BBox is redacted, one rect each (a quad for a zero-width BBox, which AddRedaction refuses)
 		want             string
 	}{
 		// MuPDF removes f and i; so must we, and keep the c.
@@ -436,7 +436,11 @@ func TestRedactionLigaturesAndMarks(t *testing.T) {
 			gs := glyphsOf(pdfChars(t, pdf))
 			var adds []func(*Page) error
 			for _, i := range c.targets {
-				adds = append(adds, addRect(gs[i].BBox))
+				if gs[i].BBox.IsEmpty() {
+					adds = append(adds, addQuads([]geometry.Quad{gs[i].BBox.Quad()}))
+				} else {
+					adds = append(adds, addRect(gs[i].BBox))
+				}
 			}
 			got, _ := applySaveReopen(t, pdf, ApplyOptions{}, adds...)
 			if s := runesOf(got); s != c.want {

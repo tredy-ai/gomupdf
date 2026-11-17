@@ -68,7 +68,19 @@ type ApplyOptions struct {
 
 // AddRedaction marks rect for redaction (a redaction annotation). Nothing is
 // removed until ApplyRedactions is called.
+//
+// Changed from upstream: a rect that is empty (zero or negative width or
+// height) or has a NaN or infinite coordinate, after conversion to float32,
+// returns an error. MuPDF would accept it and remove next to nothing. Such a
+// rect typically comes from the union of Char.BBox for glyphs whose boxes
+// have no height (some Type 3 fonts); redact those characters with
+// AddRedactionQuads, which accepts zero-area quads.
 func (p *Page) AddRedaction(rect geometry.Rect, opts RedactOptions) error {
+	x0, y0, x1, y1 := float32(rect.X0), float32(rect.Y0), float32(rect.X1), float32(rect.Y1)
+	if !isFinite32(x0) || !isFinite32(y0) || !isFinite32(x1) || !isFinite32(y1) || !(x1 > x0) || !(y1 > y0) {
+		return fmt.Errorf("gomupdf: AddRedaction: empty or non-finite rect %v; "+
+			"use AddRedactionQuads for degenerate (zero-width or zero-height) boxes", rect)
+	}
 	d := p.doc
 	d.mu.Lock()
 	defer d.mu.Unlock()
