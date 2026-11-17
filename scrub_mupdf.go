@@ -1761,10 +1761,14 @@ import (
 // is dropped from the document, and the page tree, page count and objects
 // can differ from what was read before. Done once per document; later calls
 // are free. The cost is one pass over the objects, parsing each (streams are
-// not decoded), comparable to a garbage-collecting save.
+// not decoded), comparable to a garbage-collecting save. A locked document
+// is refused: objects loaded before Authenticate keep the wrong key's text.
 func (d *mupdfDoc) stabilise() error {
 	if d.stable {
 		return nil
+	}
+	if d.locked {
+		return errLocked
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))

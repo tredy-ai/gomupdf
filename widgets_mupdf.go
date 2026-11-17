@@ -236,8 +236,8 @@ func (d *mupdfDoc) widgetsRaw(pageNo int) (string, error) {
 }
 
 func (d *mupdfDoc) setTextField(pageNo, index int, value string) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	cvalue := C.CString(value)
 	defer C.free(unsafe.Pointer(cvalue))
@@ -250,8 +250,8 @@ func (d *mupdfDoc) setTextField(pageNo, index int, value string) error {
 }
 
 func (d *mupdfDoc) setCheckbox(pageNo, index int, checked bool) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	var cChecked C.int
 	if checked {
@@ -266,8 +266,8 @@ func (d *mupdfDoc) setCheckbox(pageNo, index int, checked bool) error {
 }
 
 func (d *mupdfDoc) addTextField(pageNo int, name string, rect [4]float64, value string) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))

@@ -100,8 +100,8 @@ import (
 )
 
 func (d *mupdfDoc) insertLink(pageNo int, rect [4]float64, uri string) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	curi := C.CString(uri)
 	defer C.free(unsafe.Pointer(curi))
@@ -116,8 +116,8 @@ func (d *mupdfDoc) insertLink(pageNo int, rect [4]float64, uri string) error {
 }
 
 func (d *mupdfDoc) insertGotoLink(pageNo int, rect [4]float64, destPage int) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
@@ -130,8 +130,8 @@ func (d *mupdfDoc) insertGotoLink(pageNo int, rect [4]float64, destPage int) err
 }
 
 func (d *mupdfDoc) deleteLink(pageNo, index int) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))

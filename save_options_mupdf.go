@@ -168,8 +168,8 @@ func cbint(b bool) C.int {
 // it retains the original bytes itself (d.data) for incremental saves.
 func (d *mupdfDoc) save(opts SaveOptions, orig []byte) ([]byte, error) {
 	_ = orig
-	if d.doc == nil {
-		return nil, errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return nil, err
 	}
 	if opts.Incremental && (d.data == nil || d.dataLen == 0) {
 		return nil, errors.New("gomupdf: incremental save needs a document opened with OpenStream")
@@ -213,14 +213,20 @@ func (d *mupdfDoc) save(opts SaveOptions, orig []byte) ([]byte, error) {
 // object anyway), so that a repair the save would trigger happens before
 // MuPDF starts writing. An incremental save loads only what changed, and a
 // repaired file cannot be saved incrementally, so it is left alone. Returns
-// whether the xref was repaired before the save.
+// whether the xref was repaired before the save. A repair this stabilise
+// makes is an error: it dropped the edits made since open (Open's own
+// stabilise, which runs before any edit, normally leaves nothing to do).
 func (d *mupdfDoc) beforeSave(incremental bool) (bool, error) {
+	repaired := d.repaired()
 	if !incremental {
 		if err := d.stabilise(); err != nil {
 			return false, err
 		}
+		if err := d.saveRepaired(repaired); err != nil {
+			return false, err
+		}
 	}
-	return d.repaired(), nil
+	return repaired, nil
 }
 
 // saveRepaired is the backstop for a repair during the save: MuPDF rebuilt
@@ -235,8 +241,8 @@ func (d *mupdfDoc) saveRepaired(repaired bool) error {
 }
 
 func (d *mupdfDoc) savePath(path string, opts SaveOptions) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	repaired, err := d.beforeSave(false)
 	if err != nil {
@@ -261,8 +267,8 @@ func (d *mupdfDoc) savePath(path string, opts SaveOptions) error {
 }
 
 func (d *mupdfDoc) saveEncrypted(userPwd, ownerPwd string) ([]byte, error) {
-	if d.doc == nil {
-		return nil, errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return nil, err
 	}
 	repaired, err := d.beforeSave(false)
 	if err != nil {

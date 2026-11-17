@@ -106,8 +106,8 @@ func (d *mupdfDoc) geometryRaw(pageNo int) (string, error) {
 }
 
 func (d *mupdfDoc) setRotation(pageNo, deg int) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
@@ -118,8 +118,8 @@ func (d *mupdfDoc) setRotation(pageNo, deg int) error {
 }
 
 func (d *mupdfDoc) setBox(pageNo, which int, x0, y0, x1, y1 float64) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))

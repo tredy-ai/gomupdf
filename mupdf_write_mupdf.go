@@ -261,8 +261,8 @@ import (
 )
 
 func (d *mupdfDoc) insertText(pageNo int, x, y, size float64, text string) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	ct := C.CString(text)
 	defer C.free(unsafe.Pointer(ct))
@@ -275,8 +275,8 @@ func (d *mupdfDoc) insertText(pageNo int, x, y, size float64, text string) error
 }
 
 func (d *mupdfDoc) insertImage(pageNo int, rect [4]float64, img []byte) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	cdata := C.CBytes(img)
 	defer C.free(cdata)
@@ -293,8 +293,8 @@ func (d *mupdfDoc) insertImage(pageNo int, rect [4]float64, img []byte) error {
 }
 
 func (d *mupdfDoc) addRectAnnot(pageNo int, rect [4]float64) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
@@ -306,8 +306,8 @@ func (d *mupdfDoc) addRectAnnot(pageNo int, rect [4]float64) error {
 }
 
 func (d *mupdfDoc) drawContent(pageNo int, fragment string) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	cf := C.CString(fragment)
 	defer C.free(unsafe.Pointer(cf))
@@ -320,8 +320,8 @@ func (d *mupdfDoc) drawContent(pageNo int, fragment string) error {
 }
 
 func (d *mupdfDoc) drawText(pageNo int, fragment string) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	cf := C.CString(fragment)
 	defer C.free(unsafe.Pointer(cf))

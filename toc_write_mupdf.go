@@ -101,8 +101,8 @@ import (
 )
 
 func (d *mupdfDoc) setTOC(spec string) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	cspec := C.CString(spec)
 	defer C.free(unsafe.Pointer(cspec))

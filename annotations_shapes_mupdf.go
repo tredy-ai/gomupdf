@@ -281,8 +281,8 @@ func float32ToC(pts []float32) []C.float {
 }
 
 func (d *mupdfDoc) addLineAnnot(pageNo int, a, b [2]float64, style AnnotStyle) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	stroke, _, _, width, opacity := resolveAnnotStyle(style)
 	cStroke := cStrokeArr(stroke)
@@ -298,8 +298,8 @@ func (d *mupdfDoc) addLineAnnot(pageNo int, a, b [2]float64, style AnnotStyle) e
 }
 
 func (d *mupdfDoc) addCircleAnnot(pageNo int, rect [4]float64, style AnnotStyle) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	stroke, hasFill, fill, width, opacity := resolveAnnotStyle(style)
 	cStroke := cStrokeArr(stroke)
@@ -321,8 +321,8 @@ func (d *mupdfDoc) addCircleAnnot(pageNo int, rect [4]float64, style AnnotStyle)
 }
 
 func (d *mupdfDoc) addPolyAnnot(pageNo int, closed bool, pts []float32, style AnnotStyle) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	stroke, hasFill, fill, width, opacity := resolveAnnotStyle(style)
 	flat := float32ToC(pts)
@@ -355,8 +355,8 @@ func (d *mupdfDoc) addPolyAnnot(pageNo int, closed bool, pts []float32, style An
 }
 
 func (d *mupdfDoc) addInkAnnot(pageNo int, counts []int32, pts []float32, style AnnotStyle) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	stroke, _, _, width, opacity := resolveAnnotStyle(style)
 	flat := float32ToC(pts)
@@ -378,8 +378,8 @@ func (d *mupdfDoc) addInkAnnot(pageNo int, counts []int32, pts []float32, style 
 }
 
 func (d *mupdfDoc) addFreeText(pageNo int, rect [4]float64, text string, size float64, style AnnotStyle) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	stroke, _, _, _, _ := resolveAnnotStyle(style)
 	cText := C.CString(text)
@@ -397,8 +397,8 @@ func (d *mupdfDoc) addFreeText(pageNo int, rect [4]float64, text string, size fl
 }
 
 func (d *mupdfDoc) addTextNote(pageNo int, at [2]float64, text string) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	cText := C.CString(text)
 	defer C.free(unsafe.Pointer(cText))

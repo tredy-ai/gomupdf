@@ -1492,13 +1492,16 @@ import (
 )
 
 func (d *mupdfDoc) addRedaction(pageNo int, rect [4]float64) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
+	// Read before this call's stabilise: a repair that stabilise makes now
+	// drops the edits made since open (Open's own stabilise is fine: nothing
+	// had changed).
+	repaired := d.repaired()
 	if err := d.stabilise(); err != nil {
 		return err
 	}
-	repaired := d.repaired()
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_add_redaction(d.ctx, d.doc, C.int(pageNo),
@@ -1521,16 +1524,19 @@ func (d *mupdfDoc) lateRepair(op string, repaired bool) error {
 }
 
 func (d *mupdfDoc) addRedactionQuads(pageNo int, quads []float32) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	if len(quads) == 0 || len(quads)%8 != 0 {
 		return errors.New("gomupdf: add redaction quads: want 8 floats per quad")
 	}
+	// Read before this call's stabilise: a repair that stabilise makes now
+	// drops the edits made since open (Open's own stabilise is fine: nothing
+	// had changed).
+	repaired := d.repaired()
 	if err := d.stabilise(); err != nil {
 		return err
 	}
-	repaired := d.repaired()
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_add_redaction_quads(d.ctx, d.doc, C.int(pageNo),
@@ -1542,8 +1548,8 @@ func (d *mupdfDoc) addRedactionQuads(pageNo int, quads []float32) error {
 }
 
 func (d *mupdfDoc) applyRedactions(pageNo int, opts ApplyOptions) (int, error) {
-	if d.doc == nil {
-		return 0, errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return 0, err
 	}
 	// Range-check in Go: C.int would silently truncate 1<<32+1 to a valid value.
 	if opts.Images < ImagePixels || opts.Images > ImageRemove ||
@@ -1557,10 +1563,13 @@ func (d *mupdfDoc) applyRedactions(pageNo int, opts ApplyOptions) (int, error) {
 	if opts.NoBox {
 		boxes = 0
 	}
+	// Read before this call's stabilise: a repair that stabilise makes now
+	// drops the edits made since open (Open's own stabilise is fine: nothing
+	// had changed).
+	repaired := d.repaired()
 	if err := d.stabilise(); err != nil {
 		return 0, err
 	}
-	repaired := d.repaired()
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	var check [3]C.int

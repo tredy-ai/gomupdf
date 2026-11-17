@@ -144,6 +144,11 @@ func (d *Document) NeedsPass() bool {
 
 // Authenticate tries a password and returns true if the document is now
 // readable (correct password, or it was never locked).
+//
+// Changed from upstream: on success it loads every object of the document
+// (see Open); if that fails (only running out of memory can), it returns
+// false and the document stays locked. While a document is locked, every
+// method that changes or saves it returns an error.
 func (d *Document) Authenticate(password string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()

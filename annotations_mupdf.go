@@ -162,8 +162,8 @@ func (d *mupdfDoc) annotationsRaw(pageNo int) (string, error) {
 }
 
 func (d *mupdfDoc) deleteAnnotation(pageNo, index int) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
@@ -182,8 +182,8 @@ var markupKinds = map[string]int{
 }
 
 func (d *mupdfDoc) addMarkup(pageNo int, kind string, quads []float32) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	annotType, ok := markupKinds[kind]
 	if !ok {

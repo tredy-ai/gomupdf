@@ -226,8 +226,8 @@ import (
 )
 
 func (d *mupdfDoc) newPage(width, height float64) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
@@ -238,8 +238,8 @@ func (d *mupdfDoc) newPage(width, height float64) error {
 }
 
 func (d *mupdfDoc) deletePage(n int) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
@@ -250,8 +250,8 @@ func (d *mupdfDoc) deletePage(n int) error {
 }
 
 func (d *mupdfDoc) insertPDF(src []byte, password string) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	cdata := C.CBytes(src)
 	defer C.free(cdata)
@@ -276,8 +276,8 @@ func (d *mupdfDoc) pdfPageCount() (int, error) {
 }
 
 func (d *mupdfDoc) copyPage(from, to int) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	n, err := d.pdfPageCount()
 	if err != nil {
@@ -298,8 +298,8 @@ func (d *mupdfDoc) copyPage(from, to int) error {
 }
 
 func (d *mupdfDoc) movePage(from, to int) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	n, err := d.pdfPageCount()
 	if err != nil {
@@ -320,8 +320,8 @@ func (d *mupdfDoc) movePage(from, to int) error {
 }
 
 func (d *mupdfDoc) selectPages(pages []int) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	n, err := d.pdfPageCount()
 	if err != nil {
@@ -347,8 +347,8 @@ func (d *mupdfDoc) selectPages(pages []int) error {
 }
 
 func (d *mupdfDoc) insertPDFRange(src []byte, fromPage, toPage int, password string) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	cdata := C.CBytes(src)
 	defer C.free(cdata)

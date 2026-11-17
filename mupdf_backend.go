@@ -247,6 +247,8 @@ func (drv mupdfDriver) openPath(path string) (docBackend, bool, error) {
 // save. A locked document is stabilised when authenticate succeeds: objects
 // loaded before that would be decrypted with the wrong key.
 func (drv mupdfDriver) opened(d *mupdfDoc, needsPass bool) (docBackend, bool, error) {
+	d.locked = needsPass
+	// Nothing has changed yet, so a repair this makes loses nothing.
 	if !needsPass && !drv.lazy {
 		if err := d.stabilise(); err != nil {
 			d.close()
@@ -292,6 +294,22 @@ type mupdfDoc struct {
 	data    unsafe.Pointer // C-malloc'd copy backing the in-memory stream
 	dataLen int            // length of the original bytes at data (incremental save)
 	stable  bool           // every object loaded once (see stabilise)
+	locked  bool           // needs a password Authenticate has not given
+}
+
+// errLocked refuses loading or changing a document before Authenticate.
+var errLocked = errors.New("gomupdf: document is locked: Authenticate first")
+
+// writable returns an error unless the document is open and not locked.
+// Every method that changes or saves the document starts with it.
+func (d *mupdfDoc) writable() error {
+	if d.doc == nil {
+		return errors.New("gomupdf: document closed")
+	}
+	if d.locked {
+		return errLocked
+	}
+	return nil
 }
 
 func (d *mupdfDoc) close() {
@@ -318,9 +336,14 @@ func (d *mupdfDoc) authenticate(password string) bool {
 	if C.gomupdf_authenticate(d.ctx, d.doc, cpw) == 0 {
 		return false
 	}
-	// Only running out of memory fails; the document then stays lazy, and
-	// redaction and save still refuse to report a late repair as success.
-	_ = d.stabilise()
+	// Load every object now that the key is right (see opened). If that
+	// fails (only running out of memory can), the document stays locked.
+	wasLocked := d.locked
+	d.locked = false
+	if err := d.stabilise(); err != nil {
+		d.locked = wasLocked
+		return false
+	}
 	return true
 }
 

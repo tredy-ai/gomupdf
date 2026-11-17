@@ -124,8 +124,8 @@ import (
 )
 
 func (d *mupdfDoc) setMetadata(spec string) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	cspec := C.CString(spec)
 	defer C.free(unsafe.Pointer(cspec))
@@ -156,8 +156,8 @@ func (d *mupdfDoc) xmp() ([]byte, error) {
 }
 
 func (d *mupdfDoc) setXMP(xml []byte) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	cdata := C.CBytes(xml)
 	defer C.free(cdata)
@@ -170,8 +170,8 @@ func (d *mupdfDoc) setXMP(xml []byte) error {
 }
 
 func (d *mupdfDoc) deleteXMP() error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
