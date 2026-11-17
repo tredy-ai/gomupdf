@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/tredy-ai/gomupdf/geometry"
 )
 
 // declaredDoc is a two-page document for the declared-text tests. Object 7
@@ -16,6 +18,7 @@ type declaredDoc struct {
 	prop         string // object 7
 	form         string // object 8's content
 	formDict     string // extra entries for object 8
+	formXObjects string // object 8's /XObject resources
 	structTree   string // object 9, e.g. "<< /Type /StructTreeRoot ... >>"
 	elems        []string
 	shared       bool // page 2's resources name /P1 and /Fm0 too
@@ -51,7 +54,7 @@ func (c declaredDoc) pdf() []byte {
 		helvetica,
 		stream("", c.page1),
 		prop,
-		stream("/Type /XObject /Subtype /Form /BBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> /Properties << /P1 7 0 R >> >> "+c.formDict, c.form),
+		stream("/Type /XObject /Subtype /Form /BBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> /Properties << /P1 7 0 R >> /XObject << "+c.formXObjects+" >> >> "+c.formDict, c.form),
 		root,
 		stream("", c.page2),
 	}
@@ -368,6 +371,98 @@ func formObjDoc(mcid, inTree, pg bool) declaredDoc {
 			"<< /Type /StructElem /S /P /P 12 0 R " + page + " /K << /Type /MCR /MCID 0 /Stm 8 0 R " + page + " >> >>",
 			"<< /Type /StructElem /S /Figure /P 9 0 R " + page + " /K [" + figKids + "] >>",
 		},
+	}
+}
+
+// deepParentTree is "aaa Hello bbb" as MCID 0 of page 1, owned by element
+// 11 (/ActualText "Hello World"), whose /ParentTree entry sits levels
+// /Kids deep.
+func deepParentTree(levels int) declaredDoc {
+	elems := []string{"<< /Type /StructElem /S /P /P 9 0 R /Pg 3 0 R /K 0 /ActualText (Hello World) >>"}
+	for i := range levels {
+		elems = append(elems, fmt.Sprintf("<< /Kids [%d 0 R] /Limits [0 0] >>", 13+i))
+	}
+	elems = append(elems, "<< /Nums [0 [11 0 R]] /Limits [0 0] >>")
+	return declaredDoc{
+		page1:      "/P << /MCID 0 >> BDC " + line("", "") + " EMC",
+		structTree: "<< /Type /StructTreeRoot /K 11 0 R /ParentTree 12 0 R >>",
+		elems:      elems,
+	}
+}
+
+// formFan is page 1 drawing form 8, which draws form 11 twice (as /A and
+// /B), which draws form 12 twice, and so on for levels forms: 2^levels
+// paths to the last form.
+func formFan(levels int) declaredDoc {
+	draw := "/A Do /B Do"
+	var elems []string
+	for i := range levels {
+		next := ""
+		if i < levels-1 {
+			next = fmt.Sprintf("/XObject << /A %d 0 R /B %d 0 R >>", 12+i, 12+i)
+		}
+		content := draw
+		if i == levels-1 {
+			content = "0 0 m 1 1 l S"
+		}
+		elems = append(elems, fmt.Sprintf("<< /Type /XObject /Subtype /Form /BBox [0 0 300 200] /Resources << %s >> /Length %d >>\nstream\n%s\nendstream", next, len(content), content))
+	}
+	return declaredDoc{
+		page1:        line("", "") + " q /Fm0 Do Q",
+		form:         draw,
+		formXObjects: "/A 11 0 R /B 11 0 R",
+		elems:        elems,
+	}
+}
+
+// A page whose structure or forms exceed a limit is refused before anything
+// on it changes: same saved bytes, its redaction still there, no private
+// form key anywhere, and a second call gives the same error.
+func TestRedactionPreflight(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		doc  declaredDoc
+		want string
+	}{
+		{"parent tree 70 deep", deepParentTree(70), "structure parent tree too deep"},
+		{"2^17 form paths", formFan(17), "too many form XObjects"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			d, err := OpenStream(c.doc.pdf())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			p, _ := d.LoadPage(0)
+			if err := p.AddRedaction(geometry.NewRect(0, 0, 300, 200), RedactOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			control, err := d.SaveBytesWithOptions(SaveOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for try := range 2 {
+				n, err := p.ApplyRedactions(ApplyOptions{})
+				if n != 0 || err == nil || !strings.Contains(err.Error(), c.want) {
+					t.Fatalf("call %d: ApplyRedactions = %d, %v; want an error with %q", try+1, n, err, c.want)
+				}
+			}
+			for _, g := range []int{0, 1, 3} {
+				out, err := d.SaveBytesWithOptions(SaveOptions{Garbage: g})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if g == 0 && !bytes.Equal(out, control) {
+					t.Error("the refused page changed the document")
+				}
+				if bytes.Contains(out, []byte("GomupdfRedactSrc")) {
+					t.Errorf("Garbage %d: the private form key is in the file", g)
+				}
+			}
+			if a, err := p.Annotations(); err != nil || len(a) != 1 {
+				t.Errorf("annotations after refusal: %d, %v", len(a), err)
+			}
+		})
 	}
 }
 

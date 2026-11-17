@@ -150,6 +150,15 @@ func isFinite32(f float32) bool {
 // file: both this package's pass and MuPDF's own redaction cost memory and
 // time per region.
 //
+// The page is refused the same way, before anything changes, when its form
+// XObjects are nested more than 32 deep or reached by more than 65536 paths
+// (each path is a copy MuPDF's redaction makes), when its /ParentTree is
+// more than 64 levels deep, or when its structure tree is larger than 16
+// nodes per object in the file plus 65536. A second call returns the same
+// error. Any other error (one MuPDF raises while rewriting the page, or
+// running out of memory) can come after the page has started to change: an
+// error from ApplyRedactions means the page must not be treated as redacted.
+//
 // Changed from upstream: it takes ApplyOptions. Upstream passed zeroed MuPDF
 // options, so no box was drawn, and always removed overlapping images whole.
 // Out-of-range enum values return an error.
@@ -186,8 +195,7 @@ func isFinite32(f float32) bool {
 // only partly. The cost is the page's accessibility text. Another page that
 // shares a named property dictionary keeps it (this page gets a stripped
 // copy); a structure ancestor that spans other pages loses its declared text
-// for them too. Over 32 levels of nested forms, 65536 forms or 64 levels of
-// /ParentTree, ApplyRedactions returns an error instead.
+// for them too.
 //
 // Also changed, in every Text mode: redaction makes the page draw redacted
 // copies of its form XObjects, but a structure element can still name the
