@@ -42,7 +42,7 @@ static void gomupdf_add(int *x, long long v) {
 // order.
 enum {
     HC_INFO, HC_XMP, HC_ACROFORM, HC_OUTLINES, HC_EMBEDDED, HC_AF, HC_JS,
-    HC_NONLINK, HC_WIDGETS, HC_THUMBS, HC_PAGEMETA, HC_PIECEINFO, HC_XFA, HC_COUNT
+    HC_NONLINK, HC_WIDGETS, HC_THUMBS, HC_PAGEMETA, HC_PIECEINFO, HC_XFA, HC_TRAILER, HC_COUNT
 };
 
 // Kinds of removed object. gomupdf_is_kind identifies each positively, so a
@@ -165,6 +165,7 @@ static void gomupdf_destroy(fz_context *ctx, gomupdf_marks *mk, pdf_obj *obj, in
 static void gomupdf_destroy_action(fz_context *ctx, gomupdf_marks *mk, pdf_obj *act);
 static int gomupdf_is_kind(fz_context *ctx, pdf_obj *o, int kind);
 static void gomupdf_af_sweep(fz_context *ctx, pdf_document *pdf, gomupdf_marks *mk, int *out);
+static pdf_obj *gomupdf_trailer_extra(fz_context *ctx, pdf_document *pdf, int *count);
 
 // gomupdf_af_files returns how many entries of the array v are file
 // specification dictionaries: an /AF with any is an associated-files array.
@@ -922,6 +923,7 @@ static int gomupdf_hidden_content(fz_context *ctx, fz_document *doc, int *out,
         mk.root = pdf_is_indirect(ctx, root) ? pdf_to_num(ctx, root) : 0;
 
         out[HC_INFO] = pdf_dict_get(ctx, trailer, PDF_NAME(Info)) != NULL;
+        gomupdf_trailer_extra(ctx, pdf, &out[HC_TRAILER]);
         out[HC_XMP] = pdf_dict_get(ctx, root, PDF_NAME(Metadata)) != NULL;
         out[HC_ACROFORM] = pdf_dict_get(ctx, root, PDF_NAME(AcroForm)) != NULL;
         out[HC_XFA] = pdf_dict_getp(ctx, root, "AcroForm/XFA") != NULL;
@@ -1027,6 +1029,45 @@ static void gomupdf_trailer_del(fz_context *ctx, pdf_document *pdf, pdf_obj *key
         pdf_dict_del(ctx, pdf_trailer(ctx, pdf), key);
     if (pdf_dict_get(ctx, pdf_trailer(ctx, pdf), key))
         fz_throw(ctx, FZ_ERROR_FORMAT, "cannot remove /%s from the trailer", pdf_to_name(ctx, key));
+}
+
+// gomupdf_trailer_extra returns the first key of the current trailer that is
+// not a standard one (see HiddenContent.TrailerKeys), or NULL, and with count
+// sets *count to the number of such keys. A save writes only /Size, /Root,
+// /Info, /ID and /Encrypt, but garbage collection marks from the whole
+// trailer, so what another key references is written as an object nothing
+// references. A cross-reference stream's own keys are in the list because
+// MuPDF's trailer for such a file is that stream's dictionary.
+static pdf_obj *gomupdf_trailer_extra(fz_context *ctx, pdf_document *pdf, int *count) {
+    static const char *std[] = {"Root", "Info", "ID", "Encrypt", "Size", "Prev", "XRefStm",
+                                "Type", "W", "Index", "Filter", "DecodeParms", "Length", NULL};
+    pdf_obj *t = pdf_trailer(ctx, pdf), *first = NULL;
+    int n = pdf_dict_len(ctx, t);
+    if (count) *count = 0;
+    for (int i = 0; i < n; i++) {
+        pdf_obj *k = pdf_dict_get_key(ctx, t, i);
+        if (gomupdf_name_in(pdf_to_name(ctx, k), std)) continue;
+        if (!first) first = k;
+        if (!count) break;
+        ++*count;
+    }
+    return first;
+}
+
+// gomupdf_trailer_strip deletes every non-standard key from the current
+// trailer (gomupdf_trailer_del), one at a time, and fails if any is left.
+// What they referenced is only unlinked.
+static void gomupdf_trailer_strip(fz_context *ctx, pdf_document *pdf) {
+    int n = pdf_dict_len(ctx, pdf_trailer(ctx, pdf));
+    for (int round = 0;; round++) {
+        pdf_obj *k = gomupdf_trailer_extra(ctx, pdf, NULL);
+        if (!k) return;
+        if (round > n) fz_throw(ctx, FZ_ERROR_FORMAT, "cannot remove /%s from the trailer", pdf_to_name(ctx, k));
+        k = pdf_keep_obj(ctx, k); // the deletion drops the trailer's reference
+        fz_try(ctx) gomupdf_trailer_del(ctx, pdf, k);
+        fz_always(ctx) pdf_drop_obj(ctx, k);
+        fz_catch(ctx) fz_rethrow(ctx);
+    }
 }
 
 // gomupdf_own returns the value of key in the dictionary parent (or, with a
@@ -1173,6 +1214,7 @@ static int gomupdf_scrub(fz_context *ctx, fz_document *doc, int keep_annots, int
         gomupdf_aa_unsafe(ctx, pdf_dict_get(ctx, root, PDF_NAME(AA)), &mk, &mk);
 
         gomupdf_trailer_del(ctx, pdf, PDF_NAME(Info));
+        gomupdf_trailer_strip(ctx, pdf);
         pdf_dict_del(ctx, root, PDF_NAME(Metadata));
         pdf_dict_del(ctx, root, PDF_NAME(AA));
         pdf_dict_del(ctx, root, PDF_NAME(AF));

@@ -109,13 +109,25 @@ type HiddenContent struct {
 	// PieceInfo counts /PieceInfo dictionaries on the catalog, on pages and on
 	// intermediate page-tree nodes.
 	PieceInfo int
+
+	// TrailerKeys counts the keys of the trailer other than /Root, /Info,
+	// /ID, /Encrypt, /Size, /Prev and /XRefStm and, when the trailer is a
+	// cross-reference stream's dictionary, that stream's own /Type, /W,
+	// /Index, /Filter, /DecodeParms and /Length. A save never writes them,
+	// but a garbage-collecting save keeps everything they reference, as
+	// objects nothing in the saved file references (qpdf's /QTest, say, can
+	// hold a page's content stream from before a redaction).
+	TrailerKeys int
 }
+
+// hiddenContentCounts is the number of counts the backend returns.
+const hiddenContentCounts = 14
 
 // hiddenContentFromCounts maps the backend's counts, in HiddenContent field
 // order, to a HiddenContent.
 func hiddenContentFromCounts(c []int) (HiddenContent, error) {
-	if len(c) != 13 {
-		return HiddenContent{}, fmt.Errorf("gomupdf: hidden content: got %d counts, want 13", len(c))
+	if len(c) != hiddenContentCounts {
+		return HiddenContent{}, fmt.Errorf("gomupdf: hidden content: got %d counts, want %d", len(c), hiddenContentCounts)
 	}
 	return HiddenContent{
 		Info:               c[0] != 0,
@@ -131,12 +143,14 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 		PageMetadata:       c[10],
 		PieceInfo:          c[11],
 		XFA:                c[12] != 0,
+		TrailerKeys:        c[13],
 	}, nil
 }
 
 // Scrub removes document-level content that page redaction never touches:
 //
-//   - trailer /Info, and catalog /Metadata, /AA, /AF and /PieceInfo;
+//   - trailer /Info and every non-standard trailer key (see HiddenContent's
+//     TrailerKeys), and catalog /Metadata, /AA, /AF and /PieceInfo;
 //   - /Names/EmbeddedFiles and /Names/JavaScript;
 //   - the catalog /OpenAction, if it or any action in its /Next chain is a
 //     JavaScript or Launch action (a destination or other action is kept);
@@ -219,7 +233,8 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // scripts included; HiddenContent still reports what it holds.
 //
 // Everything else is only unlinked too: annotation appearance streams and
-// resources, actions other than JavaScript and Launch, /PieceInfo,
+// resources, what a non-standard trailer key references, actions other than
+// JavaScript and Launch, /PieceInfo,
 // /Outlines, objects not recognisably of the removed kind, and the parts of
 // a name tree, field tree or outline beyond 32 levels or 65,536 units of
 // walk work (a field listed by several parents is walked once), and of a

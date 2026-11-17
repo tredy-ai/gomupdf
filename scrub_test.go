@@ -2838,3 +2838,118 @@ func TestScrubLinkActionLimits(t *testing.T) {
 		})
 	}
 }
+
+// scrubRedactWord redacts every occurrence of word on page 0 of d by its
+// search quads and applies the redaction.
+func scrubRedactWord(t *testing.T, d *Document, word string) {
+	t.Helper()
+	p, err := d.LoadPage(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, err := p.Search(word)
+	if err != nil || len(q) == 0 {
+		t.Fatalf("search %q: %v, %v", word, q, err)
+	}
+	if err := p.AddRedactionQuads(q, RedactOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.ApplyRedactions(ApplyOptions{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A non-standard trailer key (qpdf's /QTest, a leftover /Gone) that holds the
+// only reference to a page's old content stream: after a redaction replaces
+// that stream, a garbage-collecting save would still write it out, as an
+// object nothing references, because garbage collection marks from the whole
+// trailer while the writer emits only the standard keys. Scrub deletes the
+// key, from a table trailer, from a cross-reference stream's dictionary and
+// from the trailer of an incremental update, whether or not an edit has
+// already started a new xref section with a copy of the trailer. (Reduced
+// from qpdf bad22.pdf and incremental-1.pdf.)
+func TestScrubTrailerKeys(t *testing.T) {
+	const word = "GomupdfTrailerSecret5c2a"
+	page := `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>`
+	objs := []string{
+		/* 1 */ `<< /Type /Catalog /Pages 2 0 R >>`,
+		/* 2 */ `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+		/* 3 */ page,
+		/* 4 */ "\nstream\nBT /F1 12 Tf 20 150 Td (Visible " + word + ") Tj ET",
+		/* 5 */ `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>`,
+	}
+	cases := []struct {
+		name string
+		pdf  []byte
+		keys int
+	}{
+		{"table", scrubBuildPDF(objs, "/QTest 4 0 R"), 1},
+		{"xref stream", scrubXRefStreamPDF(objs, "/QTest 4 0 R"), 1},
+		{"incremental update", scrubAppendUpdate(scrubBuildPDF(objs, ""), 6, 3, page, "/Gone 4 0 R /QTest [4 0 R]"), 2},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d, err := OpenStream(c.pdf)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			if h := scrubHidden(t, d); h != (HiddenContent{TrailerKeys: c.keys}) {
+				t.Errorf("before scrub: %+v, want TrailerKeys %d", h, c.keys)
+			}
+			scrubRedactWord(t, d, word)
+			control, err := d.SaveBytesWithOptions(scrubSaveOpts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Contains(control, []byte(word)) {
+				t.Fatal("control: the redacted stream is not in the unscrubbed save")
+			}
+			if err := d.Scrub(ScrubOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			if h := scrubHidden(t, d); h != (HiddenContent{}) {
+				t.Errorf("in memory after scrub: %+v", h)
+			}
+			out, err := d.SaveBytesWithOptions(scrubSaveOpts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			scrubNoTokens(t, c.name, out, word)
+			re, err := OpenStream(out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer re.Close()
+			if h := scrubHidden(t, re); h != (HiddenContent{}) {
+				t.Errorf("after scrub: %+v", h)
+			}
+			if s := scrubText(t, re); !strings.Contains(s, "Visible") || strings.Contains(s, word) {
+				t.Errorf("page text after redaction and scrub = %q", s)
+			}
+
+			// Scrub on its own, its trailer edit the first edit of the
+			// document, leaves no key either.
+			_, re = scrubRoundTrip(t, c.pdf, ScrubOptions{})
+			if h := scrubHidden(t, re); h != (HiddenContent{}) {
+				t.Errorf("scrub only: %+v", h)
+			}
+		})
+	}
+
+	// A cross-reference stream's own keys and the standard ones are not
+	// counted: MuPDF's trailer for such a file is the stream's dictionary.
+	for name, pdf := range map[string][]byte{
+		"xref stream": scrubXRefStreamPDF(objs, "/Info << /Title (x) >> /ID [<00> <00>]"),
+		"incremental": scrubAppendUpdate(scrubBuildPDF(objs, "/ID [<00> <00>]"), 6, 3, page, "/ID [<00> <01>]"),
+	} {
+		d, err := OpenStream(pdf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h := scrubHidden(t, d); h.TrailerKeys != 0 {
+			t.Errorf("%s: TrailerKeys = %d, want 0", name, h.TrailerKeys)
+		}
+		d.Close()
+	}
+}
