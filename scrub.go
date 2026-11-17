@@ -337,7 +337,10 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // filespecs, and, unless the form stays, the /AcroForm dictionary with its
 // field tree; in every case it is the content streams of a page MuPDF does
 // not serve, the forms and images its own and inherited /Resources /XObject
-// reach, down through the /Resources of each such form, and the annotations
+// reach, its tiling patterns (/Pattern), the glyph procedures of its Type 3
+// fonts (/Font) and its soft-mask groups (/ExtGState /SMask /G, and that of
+// a shading pattern's /ExtGState), down
+// through the /Resources of each of those at any depth, and the annotations
 // on it that the options remove as on a page, /Info, every
 // removed /Metadata XMP stream, every removed /PieceInfo page-piece
 // dictionary with its data dictionaries, their /Private values and the

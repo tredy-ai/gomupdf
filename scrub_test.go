@@ -3237,6 +3237,87 @@ func TestScrubPageShapedParent(t *testing.T) {
 	}
 }
 
+// An orphan page's content goes beyond its /XObject forms: the text in a
+// tiling pattern and in a form inside it, in a Type 3 font's glyph
+// procedure, and in a soft-mask group of a graphics state are destroyed
+// although the structure tree references them (an MCR /Stm), while the
+// pattern, Type 3 font or graphics state the served page shares with the
+// orphan page stays, so the served page renders and extracts as before.
+func TestScrubOrphanPageResourceKinds(t *testing.T) {
+	const tok, tok2 = "GomupdfOrphanResourceText7e4b", "GomupdfOrphanPatternText2c8f"
+	const group = "/Type /XObject /Subtype /Form /BBox [0 0 300 200] /Group << /S /Transparency /CS /DeviceGray >>"
+	type3 := func(procs, res string) string {
+		return `<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0]
+   /CharProcs << /a ` + procs + ` >> /Encoding << /Type /Encoding /Differences [97 /a] >> /FirstChar 97 /LastChar 97
+   /Widths [1000] /Resources ` + res + ` >>`
+	}
+	for _, c := range []struct {
+		name                 string
+		res, draw, orphanRes string // served page resources and drawing; the orphan page's extra resources
+		orphanDraw, stm      string
+		tokens               []string
+		extra                []string // objects from 10: shared S, then the orphan's own
+	}{
+		{name: "tiling pattern", res: `/Pattern << /P1 10 0 R >>`, draw: "/Pattern cs /P1 scn 100 20 80 80 re f",
+			orphanRes: `/Pattern << /P1 10 0 R /P2 11 0 R >>`, orphanDraw: "/Pattern cs /P2 scn 0 0 300 200 re f",
+			stm: "12 0 R", tokens: []string{tok, tok2}, extra: []string{
+				/* 10 */ "/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 10 10] /XStep 10 /YStep 10 /Resources << >>" +
+					"\nstream\n1 0 0 rg 0 0 5 5 re f",
+				/* 11 */ "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 100 20] /XStep 100 /YStep 20" +
+					" /Resources << /Font << /F1 5 0 R >> /XObject << /Fx 12 0 R >> >>\nstream\nBT /F1 10 Tf 0 12 Td (" + tok2 + ") Tj ET /Fx Do",
+				/* 12 */ "/Type /XObject /Subtype /Form /BBox [0 0 100 20] /Resources << /Font << /F1 5 0 R >> >>" +
+					"\nstream\nBT /F1 10 Tf 0 2 Td (" + tok + ") Tj ET",
+			}},
+		{name: "Type 3 glyph procedure", res: `/Font << /F1 5 0 R /T3 10 0 R >>`, draw: "BT /T3 20 Tf 100 50 Td (a) Tj ET",
+			orphanRes: `/Font << /F1 5 0 R /T3 10 0 R /T4 12 0 R >>`, orphanDraw: "BT /T4 20 Tf 20 50 Td (a) Tj ET",
+			stm: "13 0 R", tokens: []string{tok}, extra: []string{
+				/* 10 */ type3("11 0 R", "<< >>"),
+				/* 11 */ "\nstream\n1000 0 0 0 1000 1000 d1 0 0 1000 1000 re f",
+				/* 12 */ type3("13 0 R", "<< /Font << /F1 5 0 R >> >>"),
+				/* 13 */ "\nstream\n1000 0 d0 BT /F1 500 Tf 0 0 Td (" + tok + ") Tj ET",
+			}},
+		{name: "soft-mask group", res: `/ExtGState << /G1 10 0 R >>`, draw: "q /G1 gs 0 0 1 rg 100 20 80 80 re f Q",
+			orphanRes: `/ExtGState << /G1 10 0 R /G2 12 0 R >>`, orphanDraw: "q /G2 gs 0 0 300 200 re f Q",
+			stm: "13 0 R", tokens: []string{tok}, extra: []string{
+				/* 10 */ `<< /Type /ExtGState /SMask << /S /Luminosity /G 11 0 R >> >>`,
+				/* 11 */ group + "\nstream\n0.7 g 0 0 300 200 re f",
+				/* 12 */ `<< /Type /ExtGState /SMask << /S /Luminosity /G 13 0 R >> >>`,
+				/* 13 */ group + " /Resources << /Font << /F1 5 0 R >> >>\nstream\n1 g 0 0 300 200 re f 0 g BT /F1 12 Tf 20 60 Td (" + tok + ") Tj ET",
+			}},
+		{name: "shading pattern soft-mask group", res: `/Pattern << /P1 10 0 R >>`, draw: "/Pattern cs /P1 scn 100 20 80 80 re f",
+			orphanRes: `/Pattern << /P1 10 0 R /P2 12 0 R >>`, orphanDraw: "/Pattern cs /P2 scn 0 0 300 200 re f",
+			stm: "13 0 R", tokens: []string{tok}, extra: []string{
+				/* 10 */ `<< /PatternType 2 /Shading 11 0 R /ExtGState << /SMask << /S /Luminosity /G 14 0 R >> >> >>`,
+				/* 11 */ `<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 300 0] /Function << /FunctionType 2 /Domain [0 1] /C0 [1 0 0] /C1 [0 0 1] /N 1 >> >>`,
+				/* 12 */ `<< /PatternType 2 /Shading 11 0 R /ExtGState << /SMask << /S /Luminosity /G 13 0 R >> >> >>`,
+				/* 13 */ group + " /Resources << /Font << /F1 5 0 R >> >>\nstream\n1 g 0 0 300 200 re f 0 g BT /F1 12 Tf 20 60 Td (" + tok + ") Tj ET",
+				/* 14 */ group + "\nstream\n0.7 g 0 0 300 200 re f",
+			}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			pdf := scrubBuildPDF(append([]string{
+				/* 1 */ `<< /Type /Catalog /Pages 2 0 R /MarkInfo << /Marked true >> /StructTreeRoot 8 0 R >>`,
+				/* 2 */ `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+				/* 3 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> ` + c.res + ` >> /Contents 4 0 R >>`,
+				/* 4 */ "\nstream\nBT /F1 12 Tf 20 150 Td (" + scrubPageText + ") Tj ET " + c.draw,
+				/* 5 */ `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>`,
+				/* 6 */ `<< /Type /Page /MediaBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> ` + c.orphanRes + ` >> /Contents 7 0 R >>`,
+				/* 7 */ "\nstream\n" + c.orphanDraw,
+				/* 8 */ `<< /Type /StructTreeRoot /K [9 0 R] >>`,
+				/* 9 */ `<< /Type /StructElem /S /P /P 8 0 R /Pg 6 0 R /K [<< /Type /MCR /Pg 6 0 R /Stm ` + c.stm + ` /MCID 0 >>]
+   /GomupdfRefs [10 0 R 11 0 R 12 0 R 13 0 R] >>`,
+			}, c.extra...), "")
+			scrubOrphanCase(t, pdf, HiddenContent{OrphanPages: 1}, HiddenContent{}, c.tokens...)
+			re := scrubCheckKept(t, pdf, ScrubOptions{KeepAnnotations: true})
+			out, err := re.SaveBytesWithOptions(scrubSaveOpts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			scrubNoTokens(t, "KeepAnnotations", out, c.tokens...)
+		})
+	}
+}
+
 // Page-tree nodes MuPDF does not serve are not part of the document: a page
 // past a /Count that is too small is an orphan page, and the annotations on
 // an intermediate /Pages node are annotations on no page. Their text, the

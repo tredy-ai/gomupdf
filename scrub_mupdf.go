@@ -52,7 +52,7 @@ enum {
 enum {
     GK_INFO, GK_XMP, GK_TREE, GK_FILESPEC, GK_EF, GK_EMBEDDED, GK_ACTION, GK_SCRIPT,
     GK_ANNOT, GK_FIELD, GK_ACROFORM, GK_THUMB, GK_STRING, GK_LAUNCHP, GK_XFA, GK_ANYACTION,
-    GK_CONTENTS, GK_XOBJECT, GK_PIECEINFO, GK_PRIVATE, GK_SIG, GK_DSS
+    GK_CONTENTS, GK_XOBJECT, GK_PIECEINFO, GK_PRIVATE, GK_SIG, GK_DSS, GK_PATTERN
 };
 
 // gomupdf_name_in reports whether name is in the NULL-terminated list.
@@ -1016,6 +1016,8 @@ static int gomupdf_is_kind(fz_context *ctx, pdf_obj *o, int kind) {
     case GK_STRING: return pdf_is_string(ctx, o);
     case GK_XFA: case GK_CONTENTS: return stream && !t && !st;
     case GK_XOBJECT: return stream && (!t || GK_IS(t, XObject)) && (GK_IS(st, Form) || GK_IS(st, Image));
+    case GK_PATTERN: // a tiling pattern
+        return stream && (!t || GK_IS(t, Pattern)) && pdf_to_int(ctx, pdf_dict_get(ctx, o, PDF_NAME(PatternType))) == 1;
     case GK_PRIVATE: return !t && (dict || (stream && !st));
     case GK_SIG: return dict && (GK_IS(t, Sig) || gomupdf_type_is(ctx, o, "DocTimeStamp"));
     case GK_DSS: return dict && (!t || gomupdf_type_is(ctx, o, "DSS"));
@@ -1468,31 +1470,73 @@ static int gomupdf_kept(fz_context *ctx, gomupdf_marks *mk, pdf_obj *obj) {
     return m && (*m & GM_KEEP);
 }
 
-// gomupdf_orphan_closure records for destruction the forms and images an
-// orphan page's resource dictionary res reaches through /XObject, and those
-// that the /Resources of each such form reach in turn, iteratively (the
-// ORPHAN stack). Each indirect object is walked once (GM_OWALK: resource
-// dictionaries, /XObject dictionaries, forms), and nothing kept (GM_KEEP) is
-// walked: all a kept object reaches is kept too. What is recorded and kept
-// is only unlinked.
+// gomupdf_orphan_skip reports whether the orphan resource walk passes over
+// obj: it is kept (GM_KEEP), and all it reaches is kept too, or indirect and
+// already walked (GM_OWALK, which it marks).
+static int gomupdf_orphan_skip(fz_context *ctx, gomupdf_marks *mk, pdf_obj *obj) {
+    return gomupdf_kept(ctx, mk, obj) || gomupdf_walked(ctx, mk, obj, GM_OWALK);
+}
+
+// gomupdf_orphan_resource records for destruction the content-bearing
+// resource v of an orphan page's resource category cat (gomupdf_orphan_closure)
+// and queues the /Resources it draws with: an /XObject form or image, a
+// /Pattern tiling pattern, the soft-mask group of a shading pattern's
+// /ExtGState (its shading draws no text), the glyph procedures (/CharProcs
+// streams) of a Type 3 /Font, and the soft-mask group (/SMask /G form) of an
+// /ExtGState. The caller has checked that v is not
+// kept nor walked; /CharProcs and the group are checked here.
+static void gomupdf_orphan_resource(fz_context *ctx, gomupdf_marks *mk, int cat, pdf_obj *v) {
+    pdf_obj *r = NULL;
+    if (cat == 0) {
+        gomupdf_destroy(ctx, mk, v, GK_XOBJECT);
+        if (gomupdf_is_kind(ctx, v, GK_XOBJECT) && pdf_name_eq(ctx, pdf_dict_get(ctx, v, PDF_NAME(Subtype)), PDF_NAME(Form)))
+            r = pdf_dict_get(ctx, v, PDF_NAME(Resources));
+    } else if (cat == 1) {
+        gomupdf_destroy(ctx, mk, v, GK_PATTERN);
+        if (gomupdf_is_kind(ctx, v, GK_PATTERN)) r = pdf_dict_get(ctx, v, PDF_NAME(Resources));
+        // A shading pattern's own graphics state can carry a soft-mask group.
+        pdf_obj *gs = pdf_dict_get(ctx, v, PDF_NAME(ExtGState));
+        if (gs && !gomupdf_orphan_skip(ctx, mk, gs)) gomupdf_orphan_resource(ctx, mk, 3, gs);
+    } else if (cat == 2) {
+        if (!pdf_name_eq(ctx, pdf_dict_get(ctx, v, PDF_NAME(Subtype)), PDF_NAME(Type3))) return;
+        pdf_obj *procs = pdf_dict_get(ctx, v, PDF_NAME(CharProcs));
+        int n = gomupdf_orphan_skip(ctx, mk, procs) ? 0 : pdf_dict_len(ctx, procs);
+        for (int i = 0; i < n; i++) gomupdf_destroy(ctx, mk, pdf_dict_get_val(ctx, procs, i), GK_CONTENTS);
+        r = pdf_dict_get(ctx, v, PDF_NAME(Resources));
+    } else {
+        pdf_obj *g = pdf_dict_get(ctx, pdf_dict_get(ctx, v, PDF_NAME(SMask)), PDF_NAME(G));
+        if (!g || gomupdf_orphan_skip(ctx, mk, g)) return;
+        gomupdf_destroy(ctx, mk, g, GK_XOBJECT);
+        if (gomupdf_is_kind(ctx, g, GK_XOBJECT)) r = pdf_dict_get(ctx, g, PDF_NAME(Resources));
+    }
+    if (pdf_is_dict(ctx, r)) gomupdf_push(ctx, mk, GS_ORPHAN, r);
+}
+
+// gomupdf_orphan_closure records for destruction the content an orphan
+// page's resource dictionary res reaches through every resource category
+// that can draw text (gomupdf_orphan_resource: /XObject, /Pattern, /Font and
+// /ExtGState), and what the /Resources of each form, tiling pattern, Type 3
+// font and soft-mask group reach in turn, at any depth, iteratively (the
+// ORPHAN stack). /Shading and /ColorSpace are left alone: a shading paints
+// colour from a function or mesh and a colour space stream is an ICC profile
+// or lookup table, neither of which draws text. Each indirect object is
+// walked once (GM_OWALK: resource dictionaries, their category
+// subdictionaries, each resource, /CharProcs, groups), and nothing kept
+// (GM_KEEP) is walked: all a kept object reaches is kept too, and a served
+// page may share any of these. What is recorded and kept is only unlinked.
 static void gomupdf_orphan_closure(fz_context *ctx, gomupdf_marks *mk, pdf_obj *res) {
+    static const char *cats[] = {"XObject", "Pattern", "Font", "ExtGState"};
     gomupdf_stack *s = &mk->s[GS_ORPHAN];
     if (pdf_is_dict(ctx, res)) gomupdf_push(ctx, mk, GS_ORPHAN, res);
     while (s->n) {
         mk->cur = s->v[--s->n];
-        pdf_obj *xo = pdf_dict_get(ctx, mk->cur, PDF_NAME(XObject));
-        if (!gomupdf_kept(ctx, mk, mk->cur) && !gomupdf_walked(ctx, mk, mk->cur, GM_OWALK)
-            && !gomupdf_kept(ctx, mk, xo) && !gomupdf_walked(ctx, mk, xo, GM_OWALK)) {
-            int n = pdf_dict_len(ctx, xo);
+        int walk = !gomupdf_orphan_skip(ctx, mk, mk->cur);
+        for (int c = 0; walk && c < 4; c++) {
+            pdf_obj *sub = pdf_dict_gets(ctx, mk->cur, cats[c]);
+            int n = gomupdf_orphan_skip(ctx, mk, sub) ? 0 : pdf_dict_len(ctx, sub);
             for (int i = 0; i < n; i++) {
-                pdf_obj *v = pdf_dict_get_val(ctx, xo, i);
-                gomupdf_destroy(ctx, mk, v, GK_XOBJECT);
-                if (gomupdf_kept(ctx, mk, v) || !gomupdf_is_kind(ctx, v, GK_XOBJECT)
-                    || !pdf_name_eq(ctx, pdf_dict_get(ctx, v, PDF_NAME(Subtype)), PDF_NAME(Form))
-                    || gomupdf_walked(ctx, mk, v, GM_OWALK))
-                    continue;
-                pdf_obj *r = pdf_dict_get(ctx, v, PDF_NAME(Resources));
-                if (pdf_is_dict(ctx, r)) gomupdf_push(ctx, mk, GS_ORPHAN, r);
+                pdf_obj *v = pdf_dict_get_val(ctx, sub, i);
+                if (!gomupdf_orphan_skip(ctx, mk, v)) gomupdf_orphan_resource(ctx, mk, c, v);
             }
         }
         pdf_drop_obj(ctx, mk->cur);
@@ -1505,8 +1549,9 @@ static void gomupdf_orphan_closure(fz_context *ctx, gomupdf_marks *mk, pdf_obj *
 // /Contents, /Resources, /B, /Group, /StructParents, /Parent and the keys
 // gomupdf_page_keys removes, recording for destruction the content
 // streams (/Contents or the entries of a /Contents array, walked once however
-// many orphan pages share it), the forms and images its /Resources reach
-// (gomupdf_orphan_closure) and what gomupdf_page_keys records. A /Pages node
+// many orphan pages share it), the content its /Resources reach (forms,
+// images, tiling patterns, Type 3 glyph procedures and soft-mask groups,
+// gomupdf_orphan_closure) and what gomupdf_page_keys records. A /Pages node
 // it inherits from that is outside the page tree (/Type /Pages, not GM_NODE
 // and not page content), and each such node above that one, up to
 // GOMUPDF_MAX_DEPTH levels, is orphan content too and emptied the same way,
