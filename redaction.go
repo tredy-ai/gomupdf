@@ -155,18 +155,25 @@ func isFinite32(f float32) bool {
 var (
 	// ErrTextRemains: text is still extracted under a redaction.
 	ErrTextRemains = errors.New("gomupdf: text remains under a redaction")
-	// ErrTextMoved: a redacted character reappears, moved, on its line, so
-	// the redaction missed the glyph it was meant for.
+	// ErrTextMoved: redacted text reappears moved (on its line, or anywhere
+	// on the page and possibly as other characters, when the page has more
+	// characters than the redaction kept), so the redaction missed the
+	// glyphs it was meant for.
 	ErrTextMoved = errors.New("gomupdf: redacted text moved next to its redaction")
 )
 
 // RedactionCheckError is returned by ApplyRedactions when the page, checked
 // after redacting, still shows text it should not. New relative to upstream.
+// The counts overlap: a character can be in Remaining or Moved and also make
+// up Excess.
 type RedactionCheckError struct {
 	Page           int // 0-based page number
 	Remaining      int // redacted characters still under a redaction (ErrTextRemains)
 	Moved          int // redacted characters that reappear moved on their line (ErrTextMoved)
-	MovedElsewhere int // kept characters that moved, elsewhere or under a box (not an error by itself)
+	MovedElsewhere int // other characters not where kept text was, elsewhere or under a box (not an error by itself)
+	Excess         int // characters on the page beyond those the redaction kept (ErrTextMoved)
+
+	kept int // characters outside every redaction before (for Excess)
 }
 
 func (e *RedactionCheckError) Error() string {
@@ -176,6 +183,10 @@ func (e *RedactionCheckError) Error() string {
 	}
 	if e.Moved > 0 {
 		parts = append(parts, fmt.Sprintf("%d redacted characters reappear moved next to their redactions", e.Moved))
+	}
+	if e.Excess > 0 {
+		parts = append(parts, fmt.Sprintf("the page has %d characters, %d more than the redactions kept",
+			e.kept+e.Excess, e.Excess))
 	}
 	return fmt.Sprintf("gomupdf: apply redactions: page %d: %s (text in a pattern, soft mask, or other content "+
 		"redaction cannot reach or measures wrongly); the page must not be treated as redacted",
@@ -188,7 +199,7 @@ func (e *RedactionCheckError) Unwrap() []error {
 	if e.Remaining > 0 {
 		errs = append(errs, ErrTextRemains)
 	}
-	if e.Moved > 0 {
+	if e.Moved > 0 || e.Excess > 0 {
 		errs = append(errs, ErrTextMoved)
 	}
 	return errs
@@ -252,10 +263,29 @@ func (e *RedactionCheckError) Unwrap() []error {
 // moved, elsewhere on the page or under a box, is not an error (MuPDF's
 // rewriting of the page can shift kept text slightly); when the call fails
 // anyway, the error counts it in MovedElsewhere. Spaces (real ones, and
-// those extraction makes up for gaps), and ligature trailing components and zero-advance marks at the next glyph's
-// origin, are not checked. The error comes after the page has changed: the
-// page must not be treated as redacted. The check costs one more
-// extraction of the page.
+// those extraction makes up for gaps), and ligature trailing components and
+// zero-advance marks at the next glyph's origin, are not checked.
+//
+// It also fails, with errors.Is ErrTextMoved, when the page has more
+// characters after redacting than it had outside every redaction before
+// (RedactionCheckError.Excess): redaction only removes glyphs, so the
+// excess is redacted text that survived, whatever it now extracts as and
+// wherever it went, or text MuPDF's rewriting re-encoded. Both come from
+// content whose font MuPDF's rewritten copy cannot find (above): its
+// redacted glyphs can come out as other characters (the /ToUnicode lost) or
+// pushed beyond the nearby band, which the rules above miss; and its kept
+// text, drawn with a fallback font, can extract as more characters (each
+// two-byte code as two; pymupdf test_3072.pdf doubles that way). Either way
+// the removal measured that text with the wrong font, so the page cannot be
+// trusted. The count skips what the rules above skip, and also every
+// character with no advance (a genuinely zero-width glyph is left to the
+// rules above), so it counts one per glyph drawn. Its limit: glyphs wrongly
+// removed elsewhere on the same page offset survivors one for one, which is
+// why the rules above stay. A redaction over empty space keeps the count
+// equal and is no error.
+//
+// Every failure comes after the page has changed: the page must not be
+// treated as redacted. The check costs one more extraction of the page.
 //
 // Changed from upstream: it takes ApplyOptions. Upstream passed zeroed MuPDF
 // options, so no box was drawn, and always removed overlapping images whole.
@@ -328,7 +358,8 @@ func (e *RedactionCheckError) Unwrap() []error {
 // bounds against each glyph's box), since the per-glyph pass records each
 // one; unlike the region limit, that is bounded by the page's own content,
 // so it falls back rather than fails (the check after redacting still
-// applies, except for characters that moved, which it then cannot tell).
+// applies, the count included, except for characters that moved next to
+// their redaction, which it then cannot tell).
 func (p *Page) ApplyRedactions(opts ApplyOptions) (int, error) {
 	d := p.doc
 	d.mu.Lock()
