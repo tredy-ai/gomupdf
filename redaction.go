@@ -88,7 +88,9 @@ func (p *Page) AddRedaction(rect geometry.Rect, opts RedactOptions) error {
 //
 // Precision: ApplyRedactions (with TextRemove) removes a glyph when the
 // glyph's own quad, shrunk towards its centre by a tenth of its advance and
-// of its height on each side, overlaps a quad's shape. So on rotated or
+// of its height on each side, overlaps a quad's shape, or when extraction
+// puts a character under the quad at the glyph's origin (see
+// ApplyRedactions). So on rotated or
 // skewed text, redacting the quads of a word's characters removes that word
 // and keeps its neighbours. Stock MuPDF instead tests the glyph's axis-aligned
 // box against each quad's axis-aligned bounds, which also removes neighbours;
@@ -138,27 +140,36 @@ func isFinite32(f float32) bool {
 // options, so no box was drawn, and always removed overlapping images whole.
 // Out-of-range enum values return an error.
 //
-// Also changed: when some redaction on the page has quads (AddRedactionQuads)
-// and opts.Text is TextRemove, text is removed per glyph before MuPDF applies
-// the rest. A glyph goes when its shrunk quad overlaps a quad's shape (see
-// AddRedactionQuads), or when its shrunk axis-aligned box overlaps the rect of
-// a rect redaction, exactly as stock MuPDF tests rects. The removal reaches
-// what stock MuPDF's reaches: the page's content streams and the form
-// XObjects they draw, but not patterns, soft masks, Type3 glyph procedures or
-// annotation appearances. Removed glyphs leave a gap; the rest of the text
-// does not move. MuPDF then draws the boxes, handles images and line art,
-// removes overlapping links and FreeText annotations and deletes the
-// redaction annotations, without its own text removal. Pages whose
-// redactions are all rects, and TextNone, go through stock MuPDF unchanged.
-// So does a page whose redactions have more than 65536 quads and rects in
-// all (annotations in a file can share one huge /QuadPoints array): the
-// per-glyph pass would need memory per quad, so that page gets MuPDF's text
-// removal by each quad's bounds, which removes at least as much.
+// Also changed: with opts.Text TextRemove, text is removed glyph by glyph
+// before MuPDF applies the rest. A glyph goes when either:
+//   - its box hits a redaction: the box (the font's own advance by its
+//     ascender and descender), shrunk towards its centre by a tenth of each
+//     side, overlaps a quad's shape (see AddRedactionQuads), or its shrunk
+//     axis-aligned bounds overlap a rect redaction (stock MuPDF's rule); or
+//   - text extraction (as RawDict does it by default) puts a character at the
+//     glyph's origin whose quad, shrunk the same way, overlaps a redaction.
 //
-// A glyph's extent is its font's own advance by the font's ascender and
-// descender, as in stock MuPDF, while RawDict quads follow the PDF's /Widths.
-// Where /Widths are under a tenth of the font's advance, a glyph's own
-// RawDict quad can miss it; stock MuPDF misses it too on horizontal text.
+// The second rule is new relative to stock MuPDF. Extraction places glyphs by
+// the PDF's /Widths and MuPDF's glyph box uses the font's own advance, so a
+// glyph whose /Widths are far narrower than its outline, or a glyph in
+// vertical writing, can lie where its RawDict quad says without its box
+// overlapping that quad; stock MuPDF then keeps it. Every character RawDict
+// reports under a redaction is now removed, for rects and quads alike. In
+// vertical writing MuPDF 1.26 extraction puts each quad one advance past the
+// glyph's ink, over the next glyph, so redacting a glyph by its quad also
+// removes the next glyph (whose ink the black box covers).
+//
+// The removal reaches what stock MuPDF's reaches: the page's content streams
+// and the form XObjects they draw, but not patterns, soft masks, Type3 glyph
+// procedures or annotation appearances. Removed glyphs leave a gap; the rest
+// of the text does not move. MuPDF then draws the boxes, handles images and
+// line art, removes overlapping links and FreeText annotations and deletes the
+// redaction annotations, without its own text removal. TextNone goes through
+// stock MuPDF unchanged. A page whose redactions have more than 65536 quads
+// and rects in all (annotations in a file can share one huge /QuadPoints
+// array), or more than 1048576 extracted characters under them, gets MuPDF's
+// own text removal instead (each quad's bounds against each glyph's box): the
+// per-glyph pass would need memory per quad or character.
 func (p *Page) ApplyRedactions(opts ApplyOptions) (int, error) {
 	d := p.doc
 	d.mu.Lock()

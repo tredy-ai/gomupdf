@@ -10,6 +10,7 @@ package gomupdf
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include "gomupdf_stext.h"
 
 static int gomupdf_add_redaction(fz_context *ctx, fz_document *doc, int pageno,
                                  float x0, float y0, float x1, float y1,
@@ -73,22 +74,25 @@ static int gomupdf_add_redaction_quads(fz_context *ctx, fz_document *doc, int pa
     return 0;
 }
 
-// --- per-glyph text removal for quad redactions ---------------------------
+// --- per-glyph text removal ------------------------------------------------
 //
 // pdf_redact_page tests each glyph's axis-aligned box against each quad's
 // axis-aligned bounds, so a quad redaction over rotated text also removes
-// neighbours. gomupdf_redact_text_per_glyph runs MuPDF's sanitize filter over
-// the page contents (the same filter and recursion pdf_redact_page uses) with
-// its own text_filter, which tests each glyph's own quad against each quad's
-// polygon. Everything is compared in PDF user space: the page is filtered
-// with the identity transform, as pdf_redact_page does, and /QuadPoints and
-// /Rect are read raw (pdf_to_quad, pdf_dict_get_rect), not through the page
-// transform.
+// neighbours; and its glyph box (the font's own advance) is not always where
+// extraction puts the character, so a redaction drawn from extracted geometry
+// can miss its glyph. gomupdf_redact_text runs MuPDF's sanitize filter over the
+// page contents (the same filter and recursion pdf_redact_page uses) with its
+// own text_filter, which removes a glyph when its box hits a region (by shape
+// for quads) or when extraction placed a character at the glyph's origin
+// under a region. Everything is compared in PDF user space: the page is
+// filtered with the identity transform, as pdf_redact_page does, /QuadPoints
+// and /Rect are read raw (pdf_to_quad, pdf_dict_get_rect), and extraction's
+// page-space geometry is brought back with the inverse page transform.
 
-// A redaction region. poly = 1: a convex quad, corners as a ring
-// (ul ur lr ll), tested exactly. poly = 0: bounds only, with MuPDF's own rule
-// (rect redactions, and quads that are degenerate, self-crossing or not
-// finite).
+// A redaction region, as a ring of corners (ul ur lr ll) and its bounds.
+// poly = 1: a convex quad, tested by shape. poly = 0: tested by bounds with
+// MuPDF's own rule (rect redactions, and quads that are degenerate,
+// self-crossing or not finite); the ring is then the bounds' corners.
 typedef struct {
     int poly;
     fz_rect bounds;
@@ -96,9 +100,31 @@ typedef struct {
 } gomupdf_region;
 
 typedef struct {
+    double x, y;
+} gomupdf_origin;
+
+typedef struct {
     int n;
     gomupdf_region *r;
+    int no;                // origins of the characters extraction found under a region,
+    gomupdf_origin *o;     // sorted by x
 } gomupdf_regions;
+
+// GOMUPDF_MAX_REDACT_REGIONS bounds the regions (quads plus rect-only
+// redactions) gomupdf_collect_regions builds for one page. Annotations in a
+// file can share one huge /QuadPoints array, so the sum is unbounded;
+// beyond the limit the page takes MuPDF's own text removal, which reads the
+// quads in place and never removes less than the box rule.
+#define GOMUPDF_MAX_REDACT_REGIONS (1 << 16)
+
+// GOMUPDF_MAX_REDACT_ORIGINS bounds the characters under redactions one page
+// may record; beyond it the page takes MuPDF's own text removal.
+#define GOMUPDF_MAX_REDACT_ORIGINS (1 << 20)
+
+// Two origins match when they agree to GOMUPDF_ORIGIN_TOL user units plus a
+// relative 1e-6. Both come from the same text matrices; only float rounding
+// (and the page transform and its inverse) separates them.
+#define GOMUPDF_ORIGIN_TOL 0.01
 
 // gomupdf_ring_convex reports whether the ring is a strictly convex
 // quadrilateral (either winding) with finite corners.
@@ -115,32 +141,62 @@ static int gomupdf_ring_convex(const double *x, const double *y) {
     return pos == 4 || neg == 4;
 }
 
-// gomupdf_separated reports whether some edge normal of ring a or ring b
-// separates them (separating axis theorem, exact for convex sets, including
-// degenerate rings such as segments and points). Zero-length edges give no
-// axis. Touching is not separation, and a NaN never separates, so doubt
+// gomupdf_separated_on reports whether the axis (nx, ny) separates rings a
+// and b. Touching is not separation, and a NaN never separates.
+static int gomupdf_separated_on(double nx, double ny, const double *ax, const double *ay,
+                                const double *bx, const double *by) {
+    double amin, amax, bmin, bmax;
+    int k;
+    amin = amax = ax[0] * nx + ay[0] * ny;
+    bmin = bmax = bx[0] * nx + by[0] * ny;
+    for (k = 1; k < 4; k++) {
+        double pa = ax[k] * nx + ay[k] * ny, pb = bx[k] * nx + by[k] * ny;
+        if (pa < amin) amin = pa;
+        if (pa > amax) amax = pa;
+        if (pb < bmin) bmin = pb;
+        if (pb > bmax) bmax = pb;
+    }
+    return amax < bmin || bmax < amin;
+}
+
+// gomupdf_separated reports whether rings a and b are disjoint: the x and y
+// axes first (a cheap bounds test), then every edge normal of either ring
+// (separating axis theorem, exact for convex sets, including degenerate
+// rings such as segments and points). Zero-length edges give no axis. Doubt
 // counts as overlap.
 static int gomupdf_separated(const double *ax, const double *ay, const double *bx, const double *by) {
     const double *px[2] = { ax, bx }, *py[2] = { ay, by };
-    int s, i, k;
+    int s, i;
+    if (gomupdf_separated_on(1, 0, ax, ay, bx, by) || gomupdf_separated_on(0, 1, ax, ay, bx, by))
+        return 1;
     for (s = 0; s < 2; s++) {
         for (i = 0; i < 4; i++) {
             int j = (i + 1) % 4;
             double nx = py[s][i] - py[s][j], ny = px[s][j] - px[s][i];
-            double amin, amax, bmin, bmax;
             if (nx == 0 && ny == 0) continue;
-            amin = amax = ax[0] * nx + ay[0] * ny;
-            bmin = bmax = bx[0] * nx + by[0] * ny;
-            for (k = 1; k < 4; k++) {
-                double pa = ax[k] * nx + ay[k] * ny, pb = bx[k] * nx + by[k] * ny;
-                if (pa < amin) amin = pa;
-                if (pa > amax) amax = pa;
-                if (pb < bmin) bmin = pb;
-                if (pb > bmax) bmax = pb;
-            }
-            if (amax < bmin || bmax < amin) return 1;
+            if (gomupdf_separated_on(nx, ny, ax, ay, bx, by)) return 1;
         }
     }
+    return 0;
+}
+
+static int gomupdf_cmp_origin(const void *a, const void *b) {
+    double x = ((const gomupdf_origin *)a)->x, y = ((const gomupdf_origin *)b)->x;
+    return x < y ? -1 : x > y ? 1 : 0;
+}
+
+// gomupdf_origin_hit reports whether (x, y) matches a recorded origin.
+static int gomupdf_origin_hit(const gomupdf_regions *rs, double x, double y) {
+    double tol = GOMUPDF_ORIGIN_TOL + 1e-6 * (fabs(x) + fabs(y));
+    int lo = 0, hi = rs->no, i;
+    if (!(x == x) || !(y == y)) return 0; // NaN: left to the box rule
+    while (lo < hi) { // first origin with ox >= x - tol
+        int mid = lo + (hi - lo) / 2;
+        if (rs->o[mid].x < x - tol) lo = mid + 1;
+        else hi = mid;
+    }
+    for (i = lo; i < rs->no && rs->o[i].x <= x + tol; i++)
+        if (fabs(rs->o[i].y - y) <= tol) return 1;
     return 0;
 }
 
@@ -166,6 +222,10 @@ static int gomupdf_glyph_filter(fz_context *ctx, void *opaque, int *ucsbuf, int 
     float w = r.x1 - r.x0, h = r.y1 - r.y0;
     double gx[4], gy[4], bx0, by0, bx1, by1;
     int i;
+    (void)ctx; (void)ucsbuf; (void)ucslen;
+    // Extraction put a character under a region at this glyph's origin.
+    if (gomupdf_origin_hit(rs, m.e, m.f))
+        return 1;
     r.x0 += w / 10; r.x1 -= w / 10;
     r.y0 += h / 10; r.y1 -= h / 10;
     // The glyph's own quad, shrunk the same way in glyph space (a tenth of
@@ -182,7 +242,6 @@ static int gomupdf_glyph_filter(fz_context *ctx, void *opaque, int *ucsbuf, int 
             gy[i] = cx[i] * m.b + cy[i] * m.d + m.f;
         }
     }
-    (void)ctx; (void)ucsbuf; (void)ucslen;
     for (i = 0; i < rs->n; i++) {
         const gomupdf_region *g = &rs->r[i];
         if (g->poly) {
@@ -196,22 +255,13 @@ static int gomupdf_glyph_filter(fz_context *ctx, void *opaque, int *ucsbuf, int 
     return 0;
 }
 
-// GOMUPDF_MAX_REDACT_REGIONS bounds the regions (quads plus rect-only
-// redactions) gomupdf_collect_regions builds for one page. Annotations in a
-// file can share one huge /QuadPoints array, so the sum is unbounded;
-// beyond the limit the page takes MuPDF's own text removal, which reads the
-// quads in place and never removes less.
-#define GOMUPDF_MAX_REDACT_REGIONS (1 << 16)
-
-// gomupdf_collect_regions fills *rs from the page's redaction annotations,
+// gomupdf_collect_regions fills rs->r from the page's redaction annotations,
 // mirroring pdf_redact_page's reading of them: /QuadPoints when the array is
 // non-empty (8 numbers per quad, pdf_to_quad's ul ur ll lr order), else
-// /Rect. Returns 1 if any annotation had /QuadPoints, 0 if none did, and -1
-// (building nothing) if the page has more than GOMUPDF_MAX_REDACT_REGIONS
-// regions. Caller frees rs->r.
+// /Rect. Returns the number of regions, or -1 (building nothing) if the page
+// has more than GOMUPDF_MAX_REDACT_REGIONS. Caller frees rs->r.
 static int gomupdf_collect_regions(fz_context *ctx, pdf_page *page, gomupdf_regions *rs) {
     pdf_annot *a;
-    int any_quads = 0;
     size_t cap = 0;
     rs->n = 0;
     rs->r = NULL;
@@ -224,7 +274,9 @@ static int gomupdf_collect_regions(fz_context *ctx, pdf_page *page, gomupdf_regi
                 return -1;
         }
     }
-    rs->r = fz_malloc_array(ctx, cap > 0 ? (int)cap : 1, gomupdf_region);
+    if (cap == 0)
+        return 0;
+    rs->r = fz_malloc_array(ctx, (int)cap, gomupdf_region);
     for (a = pdf_first_annot(ctx, page); a; a = pdf_next_annot(ctx, a)) {
         pdf_obj *obj = pdf_annot_obj(ctx, a);
         pdf_obj *qp;
@@ -239,11 +291,15 @@ static int gomupdf_collect_regions(fz_context *ctx, pdf_page *page, gomupdf_regi
             return -1;
         if (n <= 0) {
             gomupdf_region *g = &rs->r[rs->n++];
+            fz_rect b = pdf_dict_get_rect(ctx, obj, PDF_NAME(Rect));
             memset(g, 0, sizeof *g);
-            g->bounds = pdf_dict_get_rect(ctx, obj, PDF_NAME(Rect));
+            g->bounds = b;
+            g->x[0] = b.x0; g->y[0] = b.y0;
+            g->x[1] = b.x1; g->y[1] = b.y0;
+            g->x[2] = b.x1; g->y[2] = b.y1;
+            g->x[3] = b.x0; g->y[3] = b.y1;
             continue;
         }
-        any_quads = 1;
         for (i = 0; i < n; i += 8) {
             fz_quad q = pdf_to_quad(ctx, qp, i);
             gomupdf_region *g = &rs->r[rs->n++];
@@ -254,20 +310,113 @@ static int gomupdf_collect_regions(fz_context *ctx, pdf_page *page, gomupdf_regi
             g->x[2] = q.lr.x; g->y[2] = q.lr.y;
             g->x[3] = q.ll.x; g->y[3] = q.ll.y;
             g->poly = gomupdf_ring_convex(g->x, g->y);
+            if (!g->poly) {
+                fz_rect b = g->bounds;
+                g->x[0] = b.x0; g->y[0] = b.y0;
+                g->x[1] = b.x1; g->y[1] = b.y0;
+                g->x[2] = b.x1; g->y[2] = b.y1;
+                g->x[3] = b.x0; g->y[3] = b.y1;
+            }
         }
     }
-    return any_quads;
+    return rs->n;
 }
 
-// gomupdf_redact_text_per_glyph removes the text under the page's redaction
+// gomupdf_char_hits reports whether an extracted character's quad (PDF user
+// space), shrunk towards its centre by a tenth of each side, overlaps a
+// region. A zero-width or zero-height quad lying in or on a region counts.
+static int gomupdf_char_hits(const gomupdf_regions *rs, fz_quad q) {
+    // Bilinear in (u, v) with u, v in [0.1, 0.9]: for the parallelograms
+    // extraction produces, a tenth off each side.
+    static const double uv[4][2] = { {0.1, 0.1}, {0.9, 0.1}, {0.9, 0.9}, {0.1, 0.9} };
+    double cx[4], cy[4];
+    int i;
+    for (i = 0; i < 4; i++) {
+        double u = uv[i][0], v = uv[i][1];
+        cx[i] = (1 - u) * (1 - v) * q.ul.x + u * (1 - v) * q.ur.x + (1 - u) * v * q.ll.x + u * v * q.lr.x;
+        cy[i] = (1 - u) * (1 - v) * q.ul.y + u * (1 - v) * q.ur.y + (1 - u) * v * q.ll.y + u * v * q.lr.y;
+    }
+    for (i = 0; i < rs->n; i++)
+        if (!gomupdf_separated(cx, cy, rs->r[i].x, rs->r[i].y))
+            return 1;
+    return 0;
+}
+
+// gomupdf_collect_origins extracts the page's text as RawDict does by default
+// (no flags, /ActualText ignored) and records, in PDF user space, the origin
+// of every character whose quad hits a region: the point the text_filter
+// sees as the glyph's origin (trm's translation). For vertical writing,
+// extraction reports the point the glyph advanced from, so the origin is that
+// point moved along the advance (the quad's ll->lr edge). Returns 0, or -1
+// (recording nothing usable) past GOMUPDF_MAX_REDACT_ORIGINS. Caller frees
+// rs->o.
+static int gomupdf_collect_origins(fz_context *ctx, pdf_page *page, gomupdf_regions *rs) {
+    fz_stext_page *text = NULL;
+    fz_stext_options so;
+    fz_matrix page_ctm, inv;
+    int cap = 0, over = 0;
+    fz_var(text);
+    fz_var(cap);
+    fz_var(over);
+    memset(&so, 0, sizeof so);
+    so.flags = FZ_STEXT_IGNORE_ACTUALTEXT;
+    rs->no = 0;
+    rs->o = NULL;
+    fz_try(ctx) {
+        fz_stext_block *b;
+        pdf_page_transform(ctx, page, NULL, &page_ctm);
+        inv = fz_invert_matrix(page_ctm);
+        text = gomupdf_new_stext_page(ctx, (fz_page *)page, &so);
+        for (b = text->first_block; b && !over; b = b->next) {
+            fz_stext_line *l;
+            if (b->type != FZ_STEXT_BLOCK_TEXT)
+                continue;
+            for (l = b->u.t.first_line; l && !over; l = l->next) {
+                fz_stext_char *ch;
+                for (ch = l->first_char; ch; ch = ch->next) {
+                    fz_point o = ch->origin;
+                    if (!gomupdf_char_hits(rs, fz_transform_quad(ch->quad, inv)))
+                        continue;
+                    if (l->wmode) {
+                        o.x += ch->quad.lr.x - ch->quad.ll.x;
+                        o.y += ch->quad.lr.y - ch->quad.ll.y;
+                    }
+                    o = fz_transform_point(o, inv);
+                    if (rs->no == cap) {
+                        if (cap >= GOMUPDF_MAX_REDACT_ORIGINS) { over = 1; break; }
+                        cap = cap ? cap * 2 : 64;
+                        rs->o = fz_realloc_array(ctx, rs->o, cap, gomupdf_origin);
+                    }
+                    rs->o[rs->no].x = o.x;
+                    rs->o[rs->no].y = o.y;
+                    rs->no++;
+                }
+            }
+        }
+        if (rs->no > 1)
+            qsort(rs->o, rs->no, sizeof *rs->o, gomupdf_cmp_origin);
+    }
+    fz_always(ctx) {
+        fz_drop_stext_page(ctx, text);
+    }
+    fz_catch(ctx) {
+        fz_rethrow(ctx);
+    }
+    return over ? -1 : 0;
+}
+
+// gomupdf_redact_text removes the text under the page's redaction
 // annotations, glyph by glyph, without touching anything else. Returns 1 if
-// it ran (some redaction has /QuadPoints), 0 if it did nothing. Throws.
-static int gomupdf_redact_text_per_glyph(fz_context *ctx, pdf_document *pdf, pdf_page *page) {
-    gomupdf_regions rs = { 0, NULL };
+// it did, 0 if the page is over a limit and needs MuPDF's own text removal.
+// Throws.
+static int gomupdf_redact_text(fz_context *ctx, pdf_document *pdf, pdf_page *page) {
+    gomupdf_regions rs;
     int ran = 0;
+    memset(&rs, 0, sizeof rs);
     fz_var(rs);
     fz_try(ctx) {
-        if (gomupdf_collect_regions(ctx, page, &rs) > 0) {
+        if (gomupdf_collect_regions(ctx, page, &rs) >= 0 &&
+            gomupdf_collect_origins(ctx, page, &rs) == 0) {
             pdf_sanitize_filter_options sopts;
             pdf_filter_factory filters[2];
             pdf_filter_options fopts;
@@ -291,6 +440,7 @@ static int gomupdf_redact_text_per_glyph(fz_context *ctx, pdf_document *pdf, pdf
     }
     fz_always(ctx) {
         fz_free(ctx, rs.r);
+        fz_free(ctx, rs.o);
     }
     fz_catch(ctx) {
         fz_rethrow(ctx);
@@ -340,11 +490,11 @@ static int gomupdf_apply_redactions(fz_context *ctx, fz_document *doc, int pagen
             }
         }
         if (count > 0) {
-            // With quads, our pass removes the text glyph by glyph and
-            // pdf_redact_page does the rest (boxes, images, line art, links,
-            // FreeText, deleting the annotations) without its coarser text
-            // removal.
-            if (opts.text == PDF_REDACT_TEXT_REMOVE && gomupdf_redact_text_per_glyph(ctx, pdf, page))
+            // Our pass removes the text glyph by glyph and pdf_redact_page
+            // does the rest (boxes, images, line art, links, FreeText,
+            // deleting the annotations) without its own text removal. Past
+            // a limit, MuPDF's text removal stays on.
+            if (opts.text == PDF_REDACT_TEXT_REMOVE && gomupdf_redact_text(ctx, pdf, page))
                 opts.text = PDF_REDACT_TEXT_NONE;
             pdf_redact_page(ctx, pdf, page, &opts);
         }
