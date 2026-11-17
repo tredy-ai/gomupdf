@@ -10,10 +10,9 @@ jobs:
   test:
     name: build · vet · test · coverage
     runs-on: ubuntu-latest
-    # Alpine 3.22 userland (MuPDF 1.25.6 from apk, musl). Alpine's own `go`
-    # package (1.24) is older than go.mod's `go 1.25`, so use the official Go
-    # image built on Alpine 3.22.
-    container: golang:1.25-alpine3.22
+    # Alpine 3.23 userland (MuPDF 1.26.11 from apk, musl), with the official Go
+    # 1.27 image built on Alpine 3.23 to match go.mod's `go 1.27`.
+    container: golang:1.27-alpine3.23
     steps:
       - name: Install build dependencies
         # git for actions/checkout; bash, curl and gnupg for codecov-action,

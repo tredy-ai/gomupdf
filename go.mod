@@ -1,3 +1,3 @@
 module github.com/tredy-ai/gomupdf
 
-go 1.25
+go 1.27

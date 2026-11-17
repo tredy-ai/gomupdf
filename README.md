@@ -77,14 +77,15 @@ gomupdf links against the MuPDF C library via cgo, so a **C toolchain** and
 
 | Platform | Install MuPDF |
 |---|---|
-| Alpine (3.22, the tested target) | `apk add build-base pkgconf mupdf-dev` |
+| Alpine (3.23, the tested target) | `apk add build-base pkgconf mupdf-dev` |
 | macOS (Homebrew) | `brew install mupdf` |
 | Debian / Ubuntu | `sudo apt-get install libmupdf-dev mupdf-tools` |
 | Fedora / RHEL | `sudo dnf install mupdf-devel` |
 | Arch | `sudo pacman -S libmupdf` |
 
-**Alpine / musl.** This fork is built and tested on Alpine 3.22 with its
-packaged MuPDF 1.25.6 (MuPDF 1.25 or newer is required). On linux the link
+**Alpine / musl.** This fork is built and tested on Alpine 3.23 with its
+packaged MuPDF 1.26.11 and Go 1.27 (MuPDF 1.25 or newer is required; the code
+also builds and passes on 1.25.6). On linux the link
 flags come from `pkg-config --libs mupdf`, so nothing else needs configuring:
 
 ```sh
@@ -92,6 +93,9 @@ apk add build-base pkgconf mupdf-dev
 go build ./...
 ```
 
+- Extraction output depends on the MuPDF version. On Homebrew's MuPDF 1.28.6
+  the suite builds and passes except `TestRawDictWithOptionsDehyphenate`,
+  because 1.28 dehyphenates differently.
 - MuPDF links **dynamically** on Alpine (`mupdf-dev` ships `libmupdf.so` and no
   static archive), so runtime images must install `mupdf-libs`, which pulls in
   MuPDF's shared dependencies (freetype, harfbuzz, jbig2dec, openjpeg, ...).

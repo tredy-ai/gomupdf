@@ -13,7 +13,7 @@ below fix bugs and add the APIs we need.
 - The patch series is applied on fork `main` at `f3b7339`, which is `v1.1.0`
   plus one upstream README-only commit ("docs: add Built with Claude Code badge
   to README").
-- MuPDF target: Alpine 3.22's packaged MuPDF 1.25.6, on musl.
+- Build and test target: Go 1.27 on Alpine 3.23 with its packaged MuPDF 1.26.11, on musl.
 - `LICENSE` (AGPL-3.0) is unchanged.
 
 ## Patch list
@@ -57,7 +57,7 @@ n, err := page.ApplyRedactions(gomupdf.ApplyOptions{Images: gomupdf.ImageRemove}
   regardless of the field), `ImagePixels` (the zero value) blanks only the
   covered pixels, `ImageNone` leaves images alone.
 - `RedactOptions.Fill` is gone. MuPDF's black box is always black and ignores the
-  annotation's colour (re-checked on MuPDF 1.25.6), so the field never did
+  annotation's colour (observed on MuPDF 1.25.6; not re-checked on later versions), so the field never did
   anything. `ApplyOptions.NoBox` suppresses the box.
 - The zero `ApplyOptions` now draws the box (upstream drew none), removes text,
   and leaves line art alone. `LineArt` and `Text` select the other MuPDF modes;
@@ -65,12 +65,17 @@ n, err := page.ApplyRedactions(gomupdf.ApplyOptions{Images: gomupdf.ImageRemove}
 - `RedactOptions` has no fields now but is kept as the parameter type of
   `AddRedaction`.
 
+### Go 1.27
+
+Consumers need Go 1.27 or newer (`go.mod` says `go 1.27`).
+
 ## Known limitations
 
 - Encrypted saves (`SaveEncryptedBytes`, `SaveOptions.Encrypt`) and incremental
   saves stay buffered in memory; only plain `SaveWithOptions` streams to disk.
 - `AddRedactionQuads` is no more precise than rects for removing content on
-  MuPDF 1.25.6: a glyph is removed when its axis-aligned bbox (shrunk 10% per
+  MuPDF (observed on 1.25.6; the quad limitation tests also pass on 1.26.11 and
+  1.28.6): a glyph is removed when its axis-aligned bbox (shrunk 10% per
   side) overlaps any quad's axis-aligned bounds. On rotated text, redacting a
   word's character quads still removes the neighbouring characters, outside the
   drawn box, which does follow the quads. Quads only spare content in the
@@ -85,6 +90,9 @@ n, err := page.ApplyRedactions(gomupdf.ApplyOptions{Images: gomupdf.ImageRemove}
   new upstream release or MuPDF version is a deliberate project, done only for a
   reason (a security fix that affects us, or a feature we need). It is gated by
   consumers' extraction-diff tests on their fixture corpora.
+- The pin is Alpine 3.23 with MuPDF 1.26.11. The code is guarded at compile
+  time by `MuPDF >= 1.25`; it builds and passes on 1.25.6, 1.26.11 and 1.28.6
+  (except `TestRawDictWithOptionsDehyphenate` on 1.28.6).
 - Patches 4, 7, 8 and 9 fix upstream bugs. Offering them upstream as PRs is
   optional goodwill, not something we wait on.
 
