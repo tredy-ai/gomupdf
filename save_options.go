@@ -104,10 +104,12 @@ func (d *Document) SaveWithOptions(path string, opts SaveOptions) error {
 		}
 		path = r
 	}
-	// The temp file is created 0644 so the kernel applies the umask (no
-	// process-global syscall.Umask); an existing destination's mode is
-	// copied over it below instead.
-	tmp, err := createSaveTemp(filepath.Dir(path))
+	// A new destination's temp file is created 0644 so the kernel applies the
+	// umask (no process-global syscall.Umask). An existing destination's is
+	// created 0600, so the document is never more readable than before, and
+	// gets the destination's mode just before the rename.
+	_, statErr := os.Stat(path)
+	tmp, err := createSaveTemp(filepath.Dir(path), saveTempMode(statErr == nil))
 	if err != nil {
 		return err
 	}
@@ -134,14 +136,23 @@ func (d *Document) SaveWithOptions(path string, opts SaveOptions) error {
 	return nil
 }
 
-// createSaveTemp creates ".gomupdf-<random>" in dir with mode 0644 & ^umask,
+// saveTempMode is the creation mode of SaveWithOptions' temp file: 0600 when
+// it will replace an existing file, 0644 (before the umask) for a new one.
+func saveTempMode(destExists bool) os.FileMode {
+	if destExists {
+		return 0o600
+	}
+	return 0o644
+}
+
+// createSaveTemp creates ".gomupdf-<random>" in dir with mode & ^umask,
 // retrying a few times if the random name is taken.
-func createSaveTemp(dir string) (*os.File, error) {
+func createSaveTemp(dir string, mode os.FileMode) (*os.File, error) {
 	var err error
 	for range 10 {
 		var f *os.File
 		name := filepath.Join(dir, fmt.Sprintf(".gomupdf-%016x", rand.Uint64()))
-		f, err = os.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
+		f, err = os.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, mode)
 		if !os.IsExist(err) {
 			return f, err
 		}

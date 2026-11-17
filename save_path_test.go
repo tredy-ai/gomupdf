@@ -113,6 +113,29 @@ func TestSaveWithOptionsAppliesUmask(t *testing.T) {
 	}
 }
 
+// While MuPDF writes, the temp file must be private (0600) if it will replace
+// an existing file, whatever that file's final mode; only a new destination
+// gets 0644 (so the umask decides). The write itself is not observable
+// without a hook, so test the choice and the creation separately.
+func TestSaveTempMode(t *testing.T) {
+	if got := saveTempMode(true); got != 0o600 {
+		t.Errorf("existing destination: temp mode %v, want 0600", got)
+	}
+	if got := saveTempMode(false); got != 0o644 {
+		t.Errorf("new destination: temp mode %v, want 0644", got)
+	}
+	old := syscall.Umask(0)
+	t.Cleanup(func() { syscall.Umask(old) })
+	f, err := createSaveTemp(t.TempDir(), saveTempMode(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if info, err := f.Stat(); err != nil || info.Mode().Perm() != 0o600 {
+		t.Errorf("temp file for an existing destination: %v, %v; want 0600", info.Mode().Perm(), err)
+	}
+}
+
 func TestSaveWithOptionsRejectsSourcePath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "src.pdf")
 	b, err := os.ReadFile(res + "small-table.pdf")
