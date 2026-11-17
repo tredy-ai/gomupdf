@@ -3,6 +3,7 @@ package gomupdf
 import (
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 )
@@ -66,8 +67,9 @@ func (d *Document) SaveBytesWithOptions(opts SaveOptions) ([]byte, error) {
 // Incremental saves and saves with opts.Encrypt stay buffered in memory, as
 // before.
 //
-// The result's mode is that of the file it replaces, or 0644 for a new file
-// (the umask is not applied), matching the old os.WriteFile(path, data, 0o644).
+// The result's mode is that of the file it replaces, or 0644 with the process
+// umask applied for a new file, matching the old os.WriteFile(path, data,
+// 0o644): under umask 077 a new file is 0600.
 // If the document was opened by Open from the same file as path, an error is
 // returned and nothing is written: MuPDF is still reading that file lazily.
 // This holds for the buffered (Encrypt, Incremental) paths too. A destination
@@ -102,11 +104,10 @@ func (d *Document) SaveWithOptions(path string, opts SaveOptions) error {
 		}
 		path = r
 	}
-	mode := os.FileMode(0o644)
-	if dst, err := os.Stat(path); err == nil {
-		mode = dst.Mode().Perm()
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".gomupdf-*")
+	// The temp file is created 0644 so the kernel applies the umask (no
+	// process-global syscall.Umask); an existing destination's mode is
+	// copied over it below instead.
+	tmp, err := createSaveTemp(filepath.Dir(path))
 	if err != nil {
 		return err
 	}
@@ -120,15 +121,32 @@ func (d *Document) SaveWithOptions(path string, opts SaveOptions) error {
 		os.Remove(name)
 		return err
 	}
-	if err := os.Chmod(name, mode); err != nil {
-		os.Remove(name)
-		return err
+	if dst, err := os.Stat(path); err == nil {
+		if err := os.Chmod(name, dst.Mode().Perm()); err != nil {
+			os.Remove(name)
+			return err
+		}
 	}
 	if err := os.Rename(name, path); err != nil {
 		os.Remove(name)
 		return err
 	}
 	return nil
+}
+
+// createSaveTemp creates ".gomupdf-<random>" in dir with mode 0644 & ^umask,
+// retrying a few times if the random name is taken.
+func createSaveTemp(dir string) (*os.File, error) {
+	var err error
+	for range 10 {
+		var f *os.File
+		name := filepath.Join(dir, fmt.Sprintf(".gomupdf-%016x", rand.Uint64()))
+		f, err = os.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
+		if !os.IsExist(err) {
+			return f, err
+		}
+	}
+	return nil, err
 }
 
 // checkNotSource returns an error if path is the file d was opened from by

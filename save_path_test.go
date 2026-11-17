@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -73,6 +74,42 @@ func TestSaveWithOptionsStreams(t *testing.T) {
 	}
 	if info, _ = os.Stat(filepath.Join(dir, "out.pdf")); info.Mode().Perm() != 0o600 {
 		t.Errorf("replaced file mode = %v, want 0600", info.Mode().Perm())
+	}
+}
+
+// SaveWithOptions must apply the process umask to a new file, like
+// os.WriteFile(path, data, 0o644) did. Not parallel: the umask is
+// process-wide.
+func TestSaveWithOptionsAppliesUmask(t *testing.T) {
+	src := openFixture(t, "small-table.pdf")
+	defer src.Close()
+	for _, tc := range []struct {
+		umask int
+		want  os.FileMode
+	}{{0o077, 0o600}, {0o022, 0o644}} {
+		old := syscall.Umask(tc.umask)
+		t.Cleanup(func() { syscall.Umask(old) })
+		path := filepath.Join(t.TempDir(), "out.pdf")
+		if err := src.EzSave(path); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != tc.want {
+			t.Errorf("umask %04o: mode %v, want %v", tc.umask, info.Mode().Perm(), tc.want)
+		}
+		// An existing destination keeps its mode whatever the umask.
+		if err := os.Chmod(path, 0o640); err != nil {
+			t.Fatal(err)
+		}
+		if err := src.EzSave(path); err != nil {
+			t.Fatal(err)
+		}
+		if info, _ = os.Stat(path); info.Mode().Perm() != 0o640 {
+			t.Errorf("umask %04o: replaced mode %v, want 0640", tc.umask, info.Mode().Perm())
+		}
 	}
 }
 
