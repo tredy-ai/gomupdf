@@ -3107,6 +3107,140 @@ func TestScrubOrphanPages(t *testing.T) {
 	}
 }
 
+// scrubOrphanCase checks pdf (whose real page 0 shows scrubPageText and
+// shares resources or content with the content it hides) before Scrub
+// against before, then for each opts that a Scrub keeps page 0's text and
+// rendering, leaves none of tokens in a Garbage 1 save and reads after.
+func scrubOrphanCase(t *testing.T, pdf []byte, before, after HiddenContent, tokens ...string) {
+	t.Helper()
+	scrubControl(t, pdf, tokens...)
+	d, err := OpenStream(pdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if h := scrubHidden(t, d); h != before {
+		t.Errorf("before scrub:\n got %+v\nwant %+v", h, before)
+	}
+	re := scrubCheckKept(t, pdf, ScrubOptions{})
+	out, err := re.SaveBytesWithOptions(scrubSaveOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scrubNoTokens(t, "scrubbed", out, tokens...)
+	if h := scrubHidden(t, re); h != after {
+		t.Errorf("after scrub:\n got %+v\nwant %+v", h, after)
+	}
+}
+
+// An orphan page's content goes beyond its own /Contents and /Resources: the
+// resources it inherits through a /Parent outside the page tree, and forms
+// nested in its forms, are destroyed too, although the structure tree
+// references them; the real page, which shares the font and draws one of the
+// same forms, renders and extracts as before.
+func TestScrubOrphanPageClosure(t *testing.T) {
+	const inheritTok, nestedTok = "GomupdfOrphanInherited5d2c", "GomupdfOrphanNested8a1f"
+	text := func(s string) string { return "\nstream\nBT /F1 12 Tf 20 60 Td (" + s + ") Tj ET" }
+	form := func(res, body string) string {
+		return "/Type /XObject /Subtype /Form /BBox [0 0 300 200] /Resources " + res + body
+	}
+	pdf := scrubBuildPDF([]string{
+		/* 1 */ `<< /Type /Catalog /Pages 2 0 R /MarkInfo << /Marked true >> /StructTreeRoot 8 0 R >>`,
+		/* 2 */ `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+		/* 3 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> /XObject << /Sh 15 0 R >> >> /Contents 4 0 R >>`,
+		/* 4 */ "\nstream\nBT /F1 12 Tf 20 150 Td (" + scrubPageText + ") Tj ET /Sh Do",
+		/* 5 */ `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>`,
+		// Orphan A inherits its resources from the /Pages node 7, outside the tree.
+		/* 6 */ `<< /Type /Page /Parent 7 0 R /MediaBox [0 0 300 200] /Contents 10 0 R >>`,
+		/* 7 */ `<< /Type /Pages /Kids [6 0 R] /Count 1 /Resources << /Font << /F1 5 0 R >> /XObject << /Fm1 9 0 R >> >> >>`,
+		/* 8 */ `<< /Type /StructTreeRoot /K [11 0 R] >>`,
+		/* 9 */ form(`<< /Font << /F1 5 0 R >> >>`, text(inheritTok)),
+		/* 10 */ "\nstream\n/Fm1 Do",
+		/* 11 */ `<< /Type /StructElem /S /P /P 8 0 R /Pg 6 0 R /K [<< /Type /OBJR /Obj 12 0 R >> << /Type /MCR /Pg 12 0 R /Stm 14 0 R /MCID 0 >>]
+   /GomupdfRefs [9 0 R 13 0 R] >>`,
+		// Orphan B draws the form 13, which draws the form 14 and the
+		// real page's form 15.
+		/* 12 */ `<< /Type /Page /MediaBox [0 0 300 200] /Resources << /XObject << /Fm1 13 0 R >> >> /Contents 10 0 R >>`,
+		/* 13 */ form(`<< /XObject << /Fm2 14 0 R /Sh 15 0 R >> >>`, "\nstream\n/Fm2 Do /Sh Do"),
+		/* 14 */ form(`<< /Font << /F1 5 0 R >> >>`, text(nestedTok)),
+		/* 15 */ form(`<< >>`, "\nstream\n0 0 1 rg 200 20 30 30 re f"),
+	}, "")
+	scrubOrphanCase(t, pdf, HiddenContent{OrphanPages: 2}, HiddenContent{}, inheritTok, nestedTok)
+}
+
+// Page-tree nodes MuPDF does not serve are not part of the document: a page
+// past a /Count that is too small is an orphan page, and the annotations on
+// an intermediate /Pages node are annotations on no page. Their text, the
+// note's /Contents and the attachment's embedded file are destroyed, while
+// a page listed twice, which MuPDF serves, is not an orphan.
+func TestScrubUncountedPageTreeNodes(t *testing.T) {
+	const pageTok, noteTok, fileTok = "GomupdfUncountedPage3c7e", "GomupdfUncountedNote6b2a", "GomupdfNodeAttachBody1f8d"
+	pdf := scrubBuildPDF([]string{
+		/* 1 */ `<< /Type /Catalog /Pages 2 0 R >>`,
+		/* 2 */ `<< /Type /Pages /Kids [10 0 R] /Count 1 >>`,
+		/* 3 */ `<< /Type /Page /Parent 10 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>`,
+		/* 4 */ "\nstream\nBT /F1 12 Tf 20 150 Td (" + scrubPageText + ") Tj ET",
+		/* 5 */ `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>`,
+		/* 6 */ `<< /Type /Page /Parent 10 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> >> /Contents 7 0 R /Annots [8 0 R] >>`,
+		/* 7 */ "\nstream\nBT /F1 12 Tf 20 100 Td (" + pageTok + ") Tj ET",
+		/* 8 */ `<< /Type /Annot /Subtype /Text /Rect [10 10 30 30] /Contents (` + noteTok + `) >>`,
+		/* 9 */ `<< /Type /Annot /Subtype /FileAttachment /Rect [0 0 10 10] /FS << /Type /Filespec /F (a.txt) /EF << /F 11 0 R >> >> >>`,
+		/* 10 */ `<< /Type /Pages /Parent 2 0 R /Kids [3 0 R 6 0 R] /Count 1 /Annots [9 0 R] >>`,
+		/* 11 */ "/Type /EmbeddedFile\nstream\n" + fileTok,
+	}, "")
+	scrubOrphanCase(t, pdf, HiddenContent{OrphanPages: 1, NonLinkAnnotations: 2}, HiddenContent{}, pageTok, noteTok, fileTok)
+
+	// The real page listed twice under a /Count of 2: both entries are the
+	// page MuPDF serves, so nothing is an orphan and the page keeps its text.
+	twice := scrubBuildPDF([]string{
+		`<< /Type /Catalog /Pages 2 0 R >>`,
+		`<< /Type /Pages /Kids [3 0 R 3 0 R] /Count 2 >>`,
+		`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>`,
+		"\nstream\nBT /F1 12 Tf 20 150 Td (" + scrubPageText + ") Tj ET",
+		`<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>`,
+	}, "")
+	scrubOrphanCase(t, twice, HiddenContent{}, HiddenContent{})
+}
+
+// Thousands of orphan pages sharing one large /Contents array cost one walk
+// of it, not one per page.
+func TestScrubOrphanPagesSharedContents(t *testing.T) {
+	const orphans, entries = 5000, 50000
+	objs := []string{
+		/* 1 */ `<< /Type /Catalog /Pages 2 0 R >>`,
+		/* 2 */ `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+		/* 3 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>`,
+		/* 4 */ "\nstream\nBT /F1 12 Tf 20 150 Td (" + scrubPageText + ") Tj ET",
+		/* 5 */ `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>`,
+		/* 6 */ `[` + strings.Repeat("4 0 R ", entries) + `]`,
+	}
+	for range orphans {
+		objs = append(objs, `<< /Type /Page /MediaBox [0 0 300 200] /Contents 6 0 R >>`)
+	}
+	pdf := scrubBuildPDF(objs, "")
+	d, err := OpenStream(pdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	start := time.Now()
+	if h := scrubHidden(t, d); h.OrphanPages != orphans {
+		t.Errorf("OrphanPages %d, want %d", h.OrphanPages, orphans)
+	}
+	if err := d.Scrub(ScrubOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if el := time.Since(start); el > 2*time.Second {
+		t.Errorf("HiddenContent and Scrub took %v", el)
+	}
+	if h := scrubHidden(t, d); h != (HiddenContent{}) {
+		t.Errorf("after scrub: %+v", h)
+	}
+	if s := scrubText(t, d); !strings.Contains(s, scrubPageText) {
+		t.Errorf("page text after scrub = %q", s)
+	}
+}
+
 // Tokens of scrubPrivateDataPDF, each in exactly one object.
 const (
 	pvFontXMP   = "GomupdfPvFontXMP3a1b"

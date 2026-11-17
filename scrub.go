@@ -109,11 +109,12 @@ type HiddenContent struct {
 	// dictionaries except /Subtype /Link (Popups included). An /Annots array
 	// shared by several pages counts once per page. They also count the
 	// annotations and form fields on no page: indirect dictionaries in no
-	// page-tree node's /Annots and not in the form (the nodes reached down
-	// /Kids from /AcroForm /Fields and from the fields above each widget on a
-	// page), which only a structure element's /OBJR or a /Popup or /IRT
-	// reaches; Widgets the widgets and fields, NonLinkAnnotations the rest but
-	// Links. An annotation is a dictionary with /Type /Annot, or with no
+	// /Annots of a page MuPDF serves (those of an orphan page or of an
+	// intermediate /Pages node included) and not in the form (the nodes
+	// reached down /Kids from /AcroForm /Fields and from the fields above each
+	// widget on a page), which only a structure element's /OBJR or a /Popup or
+	// /IRT reaches; Widgets the widgets and fields, NonLinkAnnotations the
+	// rest but Links. An annotation is a dictionary with /Type /Annot, or with no
 	// /Type, a /Subtype that names an annotation type and a /Rect array; a
 	// field is one with no /Type other than /Annot and an /FT name, or a /T
 	// string and a /Kids array. One that is also page content (a resource
@@ -141,15 +142,16 @@ type HiddenContent struct {
 	// hold a page's content stream from before a redaction).
 	TrailerKeys int
 
-	// OrphanPages counts the page dictionaries that are not in the page tree
-	// but still hold content (any key Scrub removes from them). A page
-	// dictionary is one with /Type /Page or /Type /Template (a template
-	// /Names/Templates lists), or with no /Type, a /MediaBox and a /Contents
-	// or /Parent; one with /Kids is a page-tree node and never counts. The
-	// page tree is every node reached from the catalog /Pages down /Kids and
-	// up /Parent from each page PageCount counts. Such a page is never
-	// extracted, rendered or redacted, while a structure element's /Pg, a
-	// destination or a template can still reach it.
+	// OrphanPages counts the page dictionaries that are not pages MuPDF
+	// serves (the PageCount pages) but still hold content (any key Scrub
+	// removes from them, /Parent included). A page dictionary is one with
+	// /Type /Page or /Type /Template (a template /Names/Templates lists), or
+	// with no /Type, a /MediaBox and a /Contents or /Parent; one with /Kids
+	// is a page-tree node and never counts. A page outside the page tree
+	// counts, and so does one in it that MuPDF does not serve (a /Kids entry
+	// past a /Count that is too small). Such a page is never extracted,
+	// rendered or redacted, while a structure element's /Pg, a destination
+	// or a template can still reach it.
 	OrphanPages int
 
 	// ObjectMetadata counts the objects other than the catalog, pages and
@@ -279,11 +281,13 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 //     outline item) has an /AF array holding one, and the /AF key too when
 //     every entry is one; a direct dictionary nested inside another object
 //     is not searched;
-//   - on every page dictionary that is not in the page tree (see
+//   - on every page dictionary that is not a page MuPDF serves (see
 //     HiddenContent's OrphanPages; a structure element's /Pg, a destination
 //     or /Names/Templates can still reach one), /Contents, /Resources,
-//     /Annots, /B, /Group, /StructParents and the keys removed from pages
-//     above; the dictionary itself stays, page-shaped, for those references;
+//     /Annots, /B, /Group, /StructParents, /Parent and the keys removed from
+//     pages above, and the same on each /Type /Pages node outside the page
+//     tree it inherits from (32 levels); the dictionary itself stays, with
+//     its /Type and /MediaBox, for those references;
 //   - every annotation and form field on no page and not in the form (see
 //     HiddenContent's NonLinkAnnotations; pdf.js bug1722036.pdf has widgets
 //     only its structure tree reaches) that the options would remove from a
@@ -311,9 +315,10 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // not (and widgets and fields, unless opts.KeepFormFields), with their
 // /Popup and their /FS and /AF
 // filespecs, and, unless the form stays, the /AcroForm dictionary with its
-// field tree; in every case it is the content streams of a page that is not
-// in the page tree, the forms and images in its own /Resources /XObject, and
-// the annotations on it that the options remove as on a page, /Info, every
+// field tree; in every case it is the content streams of a page MuPDF does
+// not serve, the forms and images its own and inherited /Resources /XObject
+// reach, down through the /Resources of each such form, and the annotations
+// on it that the options remove as on a page, /Info, every
 // removed /Metadata XMP stream, every removed /PieceInfo page-piece
 // dictionary with its data dictionaries, their /Private values and the
 // untyped streams a /Private dictionary holds, unless the form stays the
@@ -342,7 +347,8 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // Scrub never destroys kept content. Before it changes anything it loads
 // every object (so that an xref repair MuPDF needs happens first) and marks
 // as kept the catalog and every page-tree node (down /Kids from /Pages, and
-// up /Parent from every page); everything referenced, directly or not, from
+// up /Parent from every page MuPDF serves; a page dictionary MuPDF does not
+// serve is an orphan page, not a node); everything referenced, directly or not, from
 // each node's /Contents, /Resources and /Group (so the content streams and
 // the own and inherited resources of every page), from /Encrypt and from
 // /OCProperties; and the annotations that stay (Links, widgets with
@@ -362,7 +368,7 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // may carry one; Scrub removes them in place, which does not change the
 // drawing, and a resource named /AF never holds a file specification). A
 // kept form keeps /Perms and /DSS with all they reference. A page dictionary
-// that is not in the page tree and is reached other than as page content (a
+// that is not a page MuPDF serves and is reached other than as page content (a
 // kept Link's or outline item's destination) is kept but not walked, so what
 // it holds is still destroyed. Outside page content, an annotation or form
 // field is kept only in its own right (a kept annotation, a node of a kept

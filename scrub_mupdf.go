@@ -65,7 +65,8 @@ static int gomupdf_name_in(const char *name, const char **list) {
 // Scrub keeps an int of marks per object number. Before it changes anything
 // it marks kept content (GM_KEEP): the trailer /Root and /Encrypt, every
 // page-tree node (from /Root /Pages down /Kids, and from every page MuPDF
-// counts up /Parent), the full closures of each node's /Contents, /Resources
+// serves up /Parent; a page dictionary MuPDF does not serve is an orphan
+// page instead, gomupdf_push_node), the full closures of each node's /Contents, /Resources
 // and /Group, of /Encrypt and /OCProperties, and the closures of the kept
 // annotations (Links, widgets with KeepFormFields, or all of them with
 // KeepAnnotations), with KeepOutlines of /Outlines and with KeepFormFields or
@@ -122,8 +123,9 @@ static int gomupdf_name_in(const char *name, const char **list) {
 #define GM_ONPAGE 0x80000 // an entry of a page-tree node's /Annots
 #define GM_FORM 0x100000  // a node of the form (gomupdf_mark_form)
 #define GM_FKIDS 0x200000 // an indirect array gomupdf_mark_form has expanded as /Kids
+#define GM_OWALK 0x400000 // walked by gomupdf_orphan_page (gomupdf_orphan_closure)
 
-enum { GS_WALK, GS_TOP, GS_DOWN, GS_UP, GS_LINK, GS_FORM, GS_COUNT };
+enum { GS_WALK, GS_TOP, GS_DOWN, GS_UP, GS_LINK, GS_FORM, GS_ORPHAN, GS_COUNT };
 
 // Pending objects of the marking walk; every entry holds a reference.
 typedef struct { pdf_obj **v; size_t n, cap; } gomupdf_stack;
@@ -517,7 +519,7 @@ static int gomupdf_private_key(fz_context *ctx, gomupdf_marks *mk, const char *n
 // role, and is left as it is) and on the catalog, and the file
 // specifications of an associated-files /AF on any object
 // (gomupdf_keep_value), which Scrub removes everywhere. A page dictionary
-// that is not in the page tree (an orphan page, which Scrub empties), reached
+// that is not a page MuPDF serves (an orphan page, which Scrub empties), reached
 // other than as page content (a kept Link's destination, say), is kept but
 // not expanded, so what it holds is not kept through it. On an indirect
 // private-data holder (gomupdf_private_holder) it skips the keys Scrub
@@ -554,11 +556,16 @@ static void gomupdf_keep_walk(fz_context *ctx, gomupdf_marks *mk) {
 }
 
 // gomupdf_push_node marks node as a kept page-tree node and queues it on the
-// DOWN or UP stack, once.
+// DOWN or UP stack, once. A page dictionary that is not one of the pages
+// MuPDF serves (GM_PAGE, set first: a page past a /Count that is too small,
+// say) is not a page-tree node but an orphan page, and is not queued; the
+// served pages are authoritative, so a page listed twice or under a damaged
+// /Count is still a page as long as MuPDF serves it.
 static void gomupdf_push_node(fz_context *ctx, gomupdf_marks *mk, int which, pdf_obj *node) {
     if (pdf_is_indirect(ctx, node)) {
         unsigned int *m = gomupdf_mark(ctx, mk, node);
         if (!m || (*m & GM_NODE)) return;
+        if (!(*m & GM_PAGE) && gomupdf_page_shaped(ctx, node)) return;
         *m |= GM_NODE | GM_KEEP;
     } else if (!pdf_is_dict(ctx, node)) {
         return;
@@ -591,14 +598,18 @@ static void gomupdf_push_entries(fz_context *ctx, gomupdf_marks *mk, int which, 
 
 // gomupdf_keep_nodes expands the queued page-tree nodes: it keeps what
 // rendering takes from a node (/Contents, /Resources, which the pages below a
-// /Pages node inherit, and /Group), queues its /Annots entries as candidate
+// /Pages node inherit, and /Group), queues the /Annots entries of a page
+// (GM_PAGE, or a direct page dictionary, which cannot be marked) as candidate
 // kept annotations, and queues /Parent (up) and, on the DOWN stack, /Kids.
-// The node is held while expanding it, as pdf_array_len below resolves other
-// objects.
+// The /Annots of any other node are on no page MuPDF shows, and are left to
+// gomupdf_sweep as annotations on no page. The node is held while expanding
+// it, as pdf_array_len below resolves other objects.
 static void gomupdf_keep_nodes(fz_context *ctx, gomupdf_marks *mk, int which) {
     gomupdf_stack *s = &mk->s[which];
     while (s->n) {
         mk->cur = s->v[--s->n];
+        unsigned int *m = gomupdf_mark(ctx, mk, mk->cur);
+        int page = m ? (*m & GM_PAGE) != 0 : gomupdf_page_shaped(ctx, mk->cur);
         pdf_obj *o = pdf_keep_obj(ctx, pdf_resolve_indirect(ctx, mk->cur));
         pdf_drop_obj(ctx, mk->cur);
         mk->cur = o;
@@ -606,7 +617,7 @@ static void gomupdf_keep_nodes(fz_context *ctx, gomupdf_marks *mk, int which) {
             gomupdf_keep(ctx, mk, pdf_dict_get(ctx, o, PDF_NAME(Contents)));
             gomupdf_keep(ctx, mk, pdf_dict_get(ctx, o, PDF_NAME(Resources)));
             gomupdf_keep(ctx, mk, pdf_dict_get(ctx, o, PDF_NAME(Group)));
-            gomupdf_push_entries(ctx, mk, GS_LINK, pdf_dict_get(ctx, o, PDF_NAME(Annots)));
+            if (page) gomupdf_push_entries(ctx, mk, GS_LINK, pdf_dict_get(ctx, o, PDF_NAME(Annots)));
             if (which == GS_DOWN) gomupdf_push_entries(ctx, mk, GS_DOWN, pdf_dict_get(ctx, o, PDF_NAME(Kids)));
             gomupdf_push_node(ctx, mk, GS_UP, pdf_dict_get(ctx, o, PDF_NAME(Parent)));
         }
@@ -674,11 +685,12 @@ static void gomupdf_mark_form(fz_context *ctx, pdf_document *pdf, gomupdf_marks 
 }
 
 // gomupdf_mark_tree marks the page tree (GM_NODE): the catalog, every node
-// from /Root /Pages down /Kids, every page MuPDF counts (also GM_PAGE) and
-// the nodes up /Parent from each (GM_INODE between a page and the catalog).
-// It keeps what rendering takes from each node (gomupdf_keep_nodes, which
-// also queues their /Annots entries on the LINK stack, GM_ONPAGE), then marks
-// the form (gomupdf_mark_form). Scrub's marking pass calls it with
+// from /Root /Pages down /Kids except page dictionaries MuPDF does not serve,
+// every page MuPDF serves (also GM_PAGE) and the nodes up /Parent from each
+// (GM_INODE between a page and the catalog). It keeps what rendering takes
+// from each node (gomupdf_keep_nodes, which also queues the pages' /Annots
+// entries on the LINK stack, GM_ONPAGE), then marks the form
+// (gomupdf_mark_form). Scrub's marking pass calls it with
 // mk->content set and walks those closures; HiddenContent only reads the
 // marks.
 static void gomupdf_mark_tree(fz_context *ctx, pdf_document *pdf, gomupdf_marks *mk) {
@@ -686,14 +698,14 @@ static void gomupdf_mark_tree(fz_context *ctx, pdf_document *pdf, gomupdf_marks 
     unsigned int *m = gomupdf_mark(ctx, mk, root);
     if (m) *m |= GM_NODE | GM_KEEP;
     mk->root = m ? pdf_to_num(ctx, root) : 0;
+    // The served pages first: gomupdf_push_node tells the other page
+    // dictionaries (orphan pages) by them.
+    int npages = pdf_count_pages(ctx, pdf);
+    for (int p = 0; p < npages; p++)
+        if ((m = gomupdf_mark(ctx, mk, pdf_lookup_page_obj(ctx, pdf, p)))) *m |= GM_PAGE;
     gomupdf_push_node(ctx, mk, GS_DOWN, pdf_dict_get(ctx, root, PDF_NAME(Pages)));
     gomupdf_keep_nodes(ctx, mk, GS_DOWN);
-    int npages = pdf_count_pages(ctx, pdf);
-    for (int p = 0; p < npages; p++) {
-        pdf_obj *page = pdf_lookup_page_obj(ctx, pdf, p);
-        if ((m = gomupdf_mark(ctx, mk, page))) *m |= GM_PAGE;
-        gomupdf_push_node(ctx, mk, GS_UP, page);
-    }
+    for (int p = 0; p < npages; p++) gomupdf_push_node(ctx, mk, GS_UP, pdf_lookup_page_obj(ctx, pdf, p));
     // Every page is GM_PAGE before the nodes above them are marked.
     for (int p = 0; p < npages; p++)
         gomupdf_page_nodes(ctx, mk, pdf_lookup_page_obj(ctx, pdf, p), GM_INODE, NULL, NULL);
@@ -909,12 +921,12 @@ static void gomupdf_destroy_filespec(fz_context *ctx, gomupdf_marks *mk, pdf_obj
 }
 
 // gomupdf_walked reports whether obj is indirect and was already walked
-// (GM_PIWALK), marking it walked.
-static int gomupdf_walked(fz_context *ctx, gomupdf_marks *mk, pdf_obj *obj) {
+// (bit: GM_PIWALK or GM_OWALK, one per walk), marking it walked.
+static int gomupdf_walked(fz_context *ctx, gomupdf_marks *mk, pdf_obj *obj, unsigned int bit) {
     unsigned int *m = gomupdf_mark(ctx, mk, obj);
     if (!m) return 0;
-    if (*m & GM_PIWALK) return 1;
-    *m |= GM_PIWALK;
+    if (*m & bit) return 1;
+    *m |= bit;
     return 0;
 }
 
@@ -926,14 +938,14 @@ static int gomupdf_walked(fz_context *ctx, gomupdf_marks *mk, pdf_obj *obj) {
 // indirect object is walked once (GM_PIWALK), so private data shared by many
 // objects costs one walk.
 static void gomupdf_destroy_pieceinfo(fz_context *ctx, gomupdf_marks *mk, pdf_obj *pi) {
-    if (!mk || !gomupdf_pieceinfo(ctx, mk, pi) || gomupdf_walked(ctx, mk, pi)) return;
+    if (!mk || !gomupdf_pieceinfo(ctx, mk, pi) || gomupdf_walked(ctx, mk, pi, GM_PIWALK)) return;
     gomupdf_destroy(ctx, mk, pi, GK_PIECEINFO);
     for (int i = 0; i < pdf_dict_len(ctx, pi); i++) {
         pdf_obj *d = pdf_dict_get_val(ctx, pi, i);
-        if (gomupdf_walked(ctx, mk, d)) continue;
+        if (gomupdf_walked(ctx, mk, d, GM_PIWALK)) continue;
         gomupdf_destroy(ctx, mk, d, GK_EF);
         pdf_obj *p = pdf_dict_get(ctx, d, PDF_NAME(Private));
-        if (gomupdf_walked(ctx, mk, p) || !gomupdf_is_kind(ctx, p, GK_PRIVATE)) continue;
+        if (gomupdf_walked(ctx, mk, p, GM_PIWALK) || !gomupdf_is_kind(ctx, p, GK_PRIVATE)) continue;
         gomupdf_destroy(ctx, mk, p, GK_PRIVATE);
         if (pdf_is_stream(ctx, p)) continue;
         for (int j = 0; j < pdf_dict_len(ctx, p); j++)
@@ -1310,18 +1322,61 @@ static int gomupdf_hidden_content(fz_context *ctx, fz_document *doc, int *out,
     return failed ? -1 : 0;
 }
 
+// gomupdf_kept reports whether obj is indirect and kept (GM_KEEP).
+static int gomupdf_kept(fz_context *ctx, gomupdf_marks *mk, pdf_obj *obj) {
+    unsigned int *m = gomupdf_mark(ctx, mk, obj);
+    return m && (*m & GM_KEEP);
+}
+
+// gomupdf_orphan_closure records for destruction the forms and images an
+// orphan page's resource dictionary res reaches through /XObject, and those
+// that the /Resources of each such form reach in turn, iteratively (the
+// ORPHAN stack). Each indirect object is walked once (GM_OWALK: resource
+// dictionaries, /XObject dictionaries, forms), and nothing kept (GM_KEEP) is
+// walked: all a kept object reaches is kept too. What is recorded and kept
+// is only unlinked.
+static void gomupdf_orphan_closure(fz_context *ctx, gomupdf_marks *mk, pdf_obj *res) {
+    gomupdf_stack *s = &mk->s[GS_ORPHAN];
+    if (pdf_is_dict(ctx, res)) gomupdf_push(ctx, mk, GS_ORPHAN, res);
+    while (s->n) {
+        mk->cur = s->v[--s->n];
+        pdf_obj *xo = pdf_dict_get(ctx, mk->cur, PDF_NAME(XObject));
+        if (!gomupdf_kept(ctx, mk, mk->cur) && !gomupdf_walked(ctx, mk, mk->cur, GM_OWALK)
+            && !gomupdf_kept(ctx, mk, xo) && !gomupdf_walked(ctx, mk, xo, GM_OWALK)) {
+            int n = pdf_dict_len(ctx, xo);
+            for (int i = 0; i < n; i++) {
+                pdf_obj *v = pdf_dict_get_val(ctx, xo, i);
+                gomupdf_destroy(ctx, mk, v, GK_XOBJECT);
+                if (gomupdf_kept(ctx, mk, v) || !gomupdf_is_kind(ctx, v, GK_XOBJECT)
+                    || !pdf_name_eq(ctx, pdf_dict_get(ctx, v, PDF_NAME(Subtype)), PDF_NAME(Form))
+                    || gomupdf_walked(ctx, mk, v, GM_OWALK))
+                    continue;
+                pdf_obj *r = pdf_dict_get(ctx, v, PDF_NAME(Resources));
+                if (pdf_is_dict(ctx, r)) gomupdf_push(ctx, mk, GS_ORPHAN, r);
+            }
+        }
+        pdf_drop_obj(ctx, mk->cur);
+        mk->cur = NULL;
+    }
+}
+
 // gomupdf_orphan_page counts into out (HiddenContent) or empties (Scrub, mk)
-// the page dictionary page, which is not in the page tree: it removes
-// /Contents, /Resources, /Annots, /B, /Group, /StructParents and the keys
-// gomupdf_page_keys removes, recording for destruction the content streams
-// (/Contents or the entries of a /Contents array), the forms and images of
-// its own /Resources /XObject and what gomupdf_page_keys records. Its
-// annotations are then on no page, and gomupdf_sweep handles them as such.
-// The dictionary stays, page-shaped, for the destinations and structure
-// elements that reference it. HiddenContent counts it only if it holds one of
-// those keys, so an emptied one reads clean.
+// the page dictionary page, which is not a page MuPDF serves: it removes
+// /Contents, /Resources, /Annots, /B, /Group, /StructParents, /Parent and the
+// keys gomupdf_page_keys removes, recording for destruction the content
+// streams (/Contents or the entries of a /Contents array, walked once however
+// many orphan pages share it), the forms and images its /Resources reach
+// (gomupdf_orphan_closure) and what gomupdf_page_keys records. A /Pages node
+// it inherits from that is outside the page tree (/Type /Pages, not GM_NODE
+// and not page content), and each such node above that one, up to
+// GOMUPDF_MAX_DEPTH levels, is orphan content too and emptied the same way,
+// once. Its annotations are then on no page, and gomupdf_sweep handles them
+// as such. The dictionary stays, with its other keys (/Type, /MediaBox), for
+// the destinations and structure elements that reference it. HiddenContent
+// counts it only if it holds one of those keys, so an emptied one reads
+// clean.
 static void gomupdf_orphan_page(fz_context *ctx, gomupdf_marks *mk, pdf_obj *page, int *out) {
-    static const char *keys[] = {"Contents", "Resources", "Annots", "B", "Group", "StructParents",
+    static const char *keys[] = {"Contents", "Resources", "Annots", "B", "Group", "StructParents", "Parent",
                                  "Thumb", "AA", "AF", "Metadata", "PieceInfo", "LastModified", NULL};
     if (out) {
         for (const char **k = keys; *k; k++)
@@ -1331,13 +1386,36 @@ static void gomupdf_orphan_page(fz_context *ctx, gomupdf_marks *mk, pdf_obj *pag
             }
         return;
     }
-    gomupdf_page_keys(ctx, mk, page, NULL, mk);
-    pdf_obj *c = pdf_dict_get(ctx, page, PDF_NAME(Contents));
-    gomupdf_destroy(ctx, mk, c, GK_CONTENTS);
-    for (int i = 0; i < pdf_array_len(ctx, c); i++) gomupdf_destroy(ctx, mk, pdf_array_get(ctx, c, i), GK_CONTENTS);
-    pdf_obj *xo = pdf_dict_getp(ctx, page, "Resources/XObject");
-    for (int i = 0; i < pdf_dict_len(ctx, xo); i++) gomupdf_destroy(ctx, mk, pdf_dict_get_val(ctx, xo, i), GK_XOBJECT);
-    for (const char **k = keys; *k; k++) pdf_dict_dels(ctx, page, *k);
+    pdf_obj *node = pdf_keep_obj(ctx, page), *up = NULL;
+    fz_var(node);
+    fz_var(up);
+    fz_try(ctx) {
+        for (int d = 0; node && d <= GOMUPDF_MAX_DEPTH; d++) {
+            up = pdf_keep_obj(ctx, pdf_dict_get(ctx, node, PDF_NAME(Parent))); // deleting /Parent drops it
+            gomupdf_page_keys(ctx, mk, node, NULL, mk);
+            pdf_obj *c = pdf_dict_get(ctx, node, PDF_NAME(Contents));
+            gomupdf_destroy(ctx, mk, c, GK_CONTENTS);
+            int n = gomupdf_walked(ctx, mk, c, GM_OWALK) ? 0 : pdf_array_len(ctx, c);
+            for (int i = 0; i < n; i++) gomupdf_destroy(ctx, mk, pdf_array_get(ctx, c, i), GK_CONTENTS);
+            gomupdf_orphan_closure(ctx, mk, pdf_dict_get(ctx, node, PDF_NAME(Resources)));
+            for (const char **k = keys; *k; k++) pdf_dict_dels(ctx, node, *k);
+            pdf_drop_obj(ctx, node);
+            node = NULL;
+            unsigned int *m = gomupdf_mark(ctx, mk, up);
+            if (m && !(*m & (GM_NODE | GM_CONTENT)) && gomupdf_type_is(ctx, up, "Pages")
+                && !gomupdf_walked(ctx, mk, up, GM_OWALK)) {
+                node = up;
+                up = NULL;
+            }
+            pdf_drop_obj(ctx, up);
+            up = NULL;
+        }
+    }
+    fz_always(ctx) {
+        pdf_drop_obj(ctx, node);
+        pdf_drop_obj(ctx, up);
+    }
+    fz_catch(ctx) fz_rethrow(ctx);
 }
 
 // gomupdf_annot_shaped returns 1 if ref (an indirect object) is an
@@ -1454,7 +1532,8 @@ static void gomupdf_layers(fz_context *ctx, pdf_document *pdf, int i, pdf_obj *r
 // filespec. A mixed array keeps its other entries, and its destroyed
 // filespecs become null. Among the objects the marks cover (not the copies
 // Scrub makes), it counts or empties (gomupdf_orphan_page, with the options)
-// each page dictionary that is not in the page tree (not GM_NODE) and, in
+// each page dictionary that is not in the page tree (not GM_NODE: an orphan
+// page, gomupdf_push_node) and, in
 // Scrub, not page content. On every other private-data holder
 // (gomupdf_private_holder) outside the catalog and page tree it counts or
 // removes the private keys (gomupdf_private_keys). HiddenContent, when the
