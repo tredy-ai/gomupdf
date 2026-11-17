@@ -79,11 +79,11 @@ type Document struct {
 //
 // Also new in this fork, here and in OpenStream and OpenAnyStream (or, for a
 // password-locked PDF, in Authenticate, which then fails): a PDF whose page
-// tree declares more pages than the file has objects is refused with an
-// error ("page tree declares N pages but the file has only M objects"). No
-// such file can hold those pages, and the first call that makes MuPDF build
-// its page map (AddRedactionQuads, say) would allocate an entry per declared
-// page: 11 GB for a /Count of 1,410,065,407.
+// tree declares more than 8,388,607 pages (MuPDF's maximum object number) is
+// refused with an error ("page tree declares N pages, more than the 8388607
+// this package accepts"). The first call that makes MuPDF build its page map
+// (AddRedactionQuads, say) allocates 16 bytes per declared page: 128 MiB at
+// that ceiling, 22 GB for a /Count of 1,410,065,407.
 func Open(filename string) (*Document, error) {
 	if defaultDriver == nil {
 		return nil, errNoBackend
@@ -103,7 +103,8 @@ func Open(filename string) (*Document, error) {
 // OpenStream opens a PDF from in-memory bytes. It does
 // not fail on encryption; the returned Document is left locked (NeedsPass()
 // true) until Authenticate succeeds, and until then answers nothing but
-// IsEncrypted, NeedsPass, Authenticate and Close (see Open).
+// IsEncrypted, NeedsPass, Authenticate and Close (see Open). Like Open, it
+// refuses a page tree that declares more than 8,388,607 pages.
 func OpenStream(pdf []byte) (*Document, error) {
 	if len(pdf) == 0 {
 		return nil, errors.New("gomupdf: empty input")

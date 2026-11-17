@@ -3878,60 +3878,116 @@ func TestScrubUnservedPageInTree(t *testing.T) {
 	}
 }
 
-// A page count larger than the file's number of objects is impossible: Open,
-// OpenStream and OpenAnyStream refuse it (it would make MuPDF allocate a page
-// map for every declared page, 11 GB for pdf.js poppler-67295-0.pdf's /Count
-// 1410065407), and HiddenContent and Scrub, on a document opened without
-// that check, refuse it at once rather than look up every declared page. A
-// count equal to the number of objects (one page listed in every /Kids
-// entry) opens.
-func TestScrubImpossiblePageCount(t *testing.T) {
-	pdf := scrubBuildPDF([]string{
-		`<< /Type /Catalog /Pages 2 0 R >>`,
-		`<< /Type /Pages /Kids [3 0 R] /Count 1048576 >>`,
-		`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>`,
-	}, "")
-	const msg = "page tree declares 1048576 pages but the file has only 4 objects"
-	path := filepath.Join(t.TempDir(), "count.pdf")
-	if err := os.WriteFile(path, pdf, 0o600); err != nil {
-		t.Fatal(err)
+// A page count above 8,388,607 (MuPDF's maximum object number) is refused:
+// Open, OpenStream and OpenAnyStream refuse it (the first call that makes
+// MuPDF build its page map would allocate 16 bytes per declared page, 22 GB
+// for pdf.js poppler-67295-0.pdf's /Count 1410065407), and HiddenContent and
+// Scrub, on a document opened without that check, refuse it at once rather
+// than look up every declared page. A count of 8,388,607 opens.
+func TestScrubPageCountCeiling(t *testing.T) {
+	countPDF := func(n int) []byte {
+		return scrubBuildPDF([]string{
+			`<< /Type /Catalog /Pages 2 0 R >>`,
+			fmt.Sprintf(`<< /Type /Pages /Kids [3 0 R] /Count %d >>`, n),
+			`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>`,
+		}, "")
 	}
-	for name, open := range map[string]func() (*Document, error){
-		"Open":          func() (*Document, error) { return Open(path) },
-		"OpenStream":    func() (*Document, error) { return OpenStream(pdf) },
-		"OpenAnyStream": func() (*Document, error) { return OpenAnyStream(pdf, "pdf") },
-	} {
-		if d, err := open(); err == nil || !strings.Contains(err.Error(), msg) {
-			t.Errorf("%s: %v, want %q", name, err, msg)
-			if d != nil {
-				d.Close()
+	for _, n := range []int{1410065407, 8388608} {
+		pdf := countPDF(n)
+		msg := fmt.Sprintf("page tree declares %d pages, more than the 8388607 this package accepts", n)
+		path := filepath.Join(t.TempDir(), "count.pdf")
+		if err := os.WriteFile(path, pdf, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for name, open := range map[string]func() (*Document, error){
+			"Open":          func() (*Document, error) { return Open(path) },
+			"OpenStream":    func() (*Document, error) { return OpenStream(pdf) },
+			"OpenAnyStream": func() (*Document, error) { return OpenAnyStream(pdf, "pdf") },
+		} {
+			if d, err := open(); err == nil || !strings.Contains(err.Error(), msg) {
+				t.Errorf("%s: %v, want %q", name, err, msg)
+				if d != nil {
+					d.Close()
+				}
 			}
 		}
-	}
-	if d, err := OpenStream(scrubBuildPDF([]string{
-		`<< /Type /Catalog /Pages 2 0 R >>`,
-		`<< /Type /Pages /Kids [3 0 R 3 0 R 3 0 R 3 0 R] /Count 4 >>`,
-		`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>`,
-	}, "")); err != nil {
-		t.Errorf("a count equal to the number of objects: %v", err)
-	} else {
-		if n := d.PageCount(); n != 4 {
-			t.Errorf("PageCount %d, want 4", n)
+		d := openLazy(t, pdf)
+		start := time.Now()
+		if _, err := d.HiddenContent(); err == nil || !strings.Contains(err.Error(), msg) {
+			t.Errorf("HiddenContent: %v, want %q", err, msg)
+		}
+		if err := d.Scrub(ScrubOptions{}); err == nil || !strings.Contains(err.Error(), msg) {
+			t.Errorf("Scrub: %v, want %q", err, msg)
+		}
+		if el := time.Since(start); el > time.Second {
+			t.Errorf("/Count %d: took %v", n, el)
 		}
 		d.Close()
 	}
+	d, err := OpenStream(countPDF(8388607))
+	if err != nil {
+		t.Fatalf("/Count 8388607: %v", err)
+	}
+	d.Close()
+}
 
-	d := openLazy(t, pdf)
-	defer d.Close()
-	start := time.Now()
-	if _, err := d.HiddenContent(); err == nil || !strings.Contains(err.Error(), "declares 1048576 pages") {
-		t.Errorf("HiddenContent: %v", err)
-	}
-	if err := d.Scrub(ScrubOptions{}); err == nil || !strings.Contains(err.Error(), "declares 1048576 pages") {
-		t.Errorf("Scrub: %v", err)
-	}
-	if el := time.Since(start); el > time.Second {
-		t.Errorf("took %v", el)
+// Page trees that declare more pages than the file has objects, which MuPDF
+// opens and serves, open and scrub: a /Kids array of 8 direct page
+// dictionaries in a file of 5 xref entries, and one page object listed 20
+// times in a file of 6.
+func TestScrubMorePagesThanObjects(t *testing.T) {
+	const page = `/MediaBox [0 0 300 200] /Resources << /Font << /F1 %d 0 R >> >> /Contents %d 0 R`
+	direct := strings.Repeat(`<< /Type /Page /Parent 2 0 R `+fmt.Sprintf(page, 3, 4)+` >> `, 8)
+	for _, c := range []struct {
+		name  string
+		pages int
+		pdf   []byte
+	}{
+		{"direct pages", 8, scrubBuildPDF([]string{
+			`<< /Type /Catalog /Pages 2 0 R >>`,
+			`<< /Type /Pages /Kids [` + direct + `] /Count 8 >>`,
+			`<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>`,
+			"\nstream\nBT /F1 12 Tf 20 150 Td (" + scrubPageText + ") Tj ET",
+		}, "")},
+		{"one page listed 20 times", 20, scrubBuildPDF([]string{
+			`<< /Type /Catalog /Pages 2 0 R >>`,
+			`<< /Type /Pages /Kids [` + strings.Repeat("3 0 R ", 20) + `] /Count 20 >>`,
+			`<< /Type /Page /Parent 2 0 R ` + fmt.Sprintf(page, 5, 4) + ` >>`,
+			"\nstream\nBT /F1 12 Tf 20 150 Td (" + scrubPageText + ") Tj ET",
+			`<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>`,
+		}, "")},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			check := func(where string, d *Document) {
+				t.Helper()
+				if n := d.PageCount(); n != c.pages {
+					t.Fatalf("%s: %d pages, want %d", where, n, c.pages)
+				}
+				for i := range c.pages {
+					p, err := d.LoadPage(i)
+					if err != nil {
+						t.Fatalf("%s: page %d: %v", where, i, err)
+					}
+					if s, err := p.GetText(); err != nil || !strings.Contains(s, scrubPageText) {
+						t.Errorf("%s: page %d text %q, %v", where, i, s, err)
+					}
+				}
+			}
+			d, err := OpenStream(c.pdf)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			check("opened", d)
+			if h := scrubHidden(t, d); h != (HiddenContent{}) {
+				t.Errorf("before scrub: %+v", h)
+			}
+			_, re := scrubRoundTrip(t, c.pdf, ScrubOptions{})
+			check("scrubbed", re)
+			if h := scrubHidden(t, re); h != (HiddenContent{}) {
+				t.Errorf("after scrub: %+v", h)
+			}
+		})
 	}
 }
 

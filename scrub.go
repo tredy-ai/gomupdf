@@ -486,7 +486,7 @@ func (d *Document) Scrub(opts ScrubOptions) error {
 // The pages it checks are those MuPDF serves: a page MuPDF cannot look up in a
 // damaged or cyclic page tree (and cannot load either) is skipped, not an
 // error, and a page dictionary it never serves counts as an orphan page. A
-// page count larger than the file's number of objects is impossible, and
+// page count above 8,388,607 is refused, as Open refuses it, and
 // HiddenContent and Scrub return an error for it.
 //
 // HiddenContent is new in this fork. It returns an error for non-PDF

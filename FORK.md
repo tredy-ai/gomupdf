@@ -231,12 +231,12 @@ stated. The exported doc comments carry the exact limits and the corner cases.
 - `Authenticate` loads every object on success; if that fails it returns false
   and the document stays locked.
 - `Open`, `OpenStream` and `OpenAnyStream` (and `Authenticate`, for a locked
-  file, which then fails) refuse a PDF whose page tree declares more pages than
-  the file has objects: `page tree declares N pages but the file has only M
-  objects`. No such file can hold those pages, and the first call that makes
-  MuPDF build its page map would allocate an entry per declared page (11 GB for
-  a `/Count` of 1,410,065,407). A page count MuPDF cannot read at all is left
-  to fail where it is used.
+  file, which then fails) refuse a PDF whose page tree declares more than
+  8,388,607 pages (MuPDF's maximum object number): `page tree declares N pages,
+  more than the 8388607 this package accepts`. The first call that makes
+  MuPDF build its page map allocates 16 bytes per declared page (128 MiB at the
+  ceiling, 22 GB for a `/Count` of 1,410,065,407). A page count MuPDF cannot
+  read at all is left to fail where it is used.
 - Errors from the C helpers never have an empty message; a helper that fails
   without one reports `unknown error (MuPDF gave no message)`. Out-of-memory
   is reported with the size asked for.
@@ -394,7 +394,7 @@ small, or a damaged file's extra pages). `Scrub` empties orphans completely
 inherited resources reach, down through nested forms), keeps the dictionary
 page-shaped for references to it, and `HiddenContent.OrphanPages` counts them.
 A page MuPDF cannot look up in a damaged or cyclic page tree is skipped, not an
-error. A page count above the object count is refused (4.2).
+error. A page count above 8,388,607 is refused (4.2).
 
 **Options:**
 
