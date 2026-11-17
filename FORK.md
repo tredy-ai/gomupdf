@@ -665,15 +665,42 @@ and returns an error; it does not remove them.
 - Deleting an object created in the same session breaks saves on 1.25.6; Scrub
   leaves an empty dictionary in its place.
 
-**Corpus results (from the run at `653d4c6`; superseded by the final run below).**
-On 5,347 public PDFs (kept outside the repo): 5,185 pass; 0 files where redacted text survives with success
-reported; 26 files where redaction is refused with an explicit error; 4 time
-out in MuPDF; 1 crashes only with `UseActualText`. MuPDF's content rewriter
-changes rendering outside the redaction areas on about 60 files and
-over-removes on about 27, on unusual constructs. This is the observed rate, not
-a bound.
+**Corpus results (final run, at `d381f88`, MuPDF 1.26.11 on Alpine 3.23, Go 1.27).**
+5,347 public test and real-world PDFs from the pdf.js, veraPDF, qpdf, PyMuPDF,
+Poppler, corkami and PDF Association suites (kept outside the repo), plus the
+163 committed regression files. Each file is opened, extracted, redacted by
+character quads and by rectangle, saved, reopened and checked, then scrubbed in
+three modes and compared with an unscrubbed save.
 
-<!-- CORPUS-FINAL -->
+| Outcome | Files |
+|---|---|
+| Passed every check | 5,189 |
+| Rejected at open | 30 |
+| Need a password | 46 |
+| Broke a cosmetic invariant (see below) | 77 |
+| Exceeded the 2-minute limit inside MuPDF | 4 |
+| Crashed MuPDF, only with `UseActualText` | 1 |
+| Redacted text extracted after a successful redaction and save | **0** |
+
+- **Refusals.** On 23 files the library refused a redaction it could not
+  guarantee: text in soft masks, transparency groups or patterns; glyphs MuPDF's
+  rewriter measures wrongly; empty rectangles; the per-page region limit. Every
+  save after a failed `ApplyRedactions` was refused.
+- **Cosmetic side effects.** Of the 2,421 files that had text to redact, 75
+  (3.1%) show a side effect outside the redaction areas: rendering changes on
+  61, neighbouring characters lost on 28, kept text shifted on 8. These come
+  from MuPDF's content rewriter on unusual constructs. This is the observed
+  rate, not a bound.
+- **Layers.** 71 files have optional content; `ShowAllLayers` revealed words on
+  6 of them and lost none. 48 of the 71 report `HiddenLayers >= 1`.
+- **One file cannot be saved after a rectangle redaction**: pixel redaction makes
+  MuPDF store its images uncompressed, and the uncompressed save needs 306 MB.
+- **What still sits in the bytes after redaction, default `Scrub` and a
+  garbage-collecting save** (a redacted word found somewhere in 40 files): font
+  programs, signatures and name tables (mostly coincidental matches), link
+  `/URI` strings and the `/Contents` of kept Link annotations, structure-tree
+  `/ID`, `/Summary` and `/T`, layer names, named-destination keys, and
+  hidden-layer content when `ShowAllLayers` is not called. See sections 7 and 8.
 
 **Gaps that remain in layers.** `HiddenLayers` does not read content streams: an
 inline `/OC << >> BDC` property list is not counted (section 4.6). Call
