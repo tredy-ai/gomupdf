@@ -16,12 +16,17 @@ type ScrubOptions struct {
 	// KeepAnnotations keeps every annotation, widget and the catalog
 	// /AcroForm. Their scripts still go: every annotation and every node of
 	// the field tree loses /AA, and its /A (and /PA) when that is or chains to
-	// a JavaScript or Launch action. The zero value removes all annotations
-	// except Link annotations, all widgets, and /AcroForm.
+	// a JavaScript or Launch action. /AcroForm /XFA is removed regardless:
+	// it is a second, XML copy of the form with its own scripts and values,
+	// which MuPDF ignores, so Page.Widgets and SetTextField never see or
+	// clear what it holds. The zero value removes all annotations except Link
+	// annotations, all widgets, and /AcroForm.
 	KeepAnnotations bool
 	// KeepFormFields keeps the form: every widget annotation and the catalog
 	// /AcroForm with its whole field tree (fields on no page included), with
-	// their scripts removed as under KeepAnnotations. Every other non-Link
+	// their scripts removed as under KeepAnnotations, and without /XFA, which
+	// Scrub always removes because its XML copy of the field values and its
+	// scripts are invisible to Page.Widgets and SetTextField. Every other non-Link
 	// annotation, popups and replies included, is still removed as by
 	// default. KeepAnnotations keeps the form too, whatever KeepFormFields
 	// says. Form field values are not reliably part of page text extraction
@@ -43,6 +48,7 @@ type HiddenContent struct {
 	Info     bool // trailer /Info dictionary
 	XMP      bool // catalog /Metadata stream
 	AcroForm bool // catalog /AcroForm
+	XFA      bool // /AcroForm /XFA, which Scrub always removes
 	Outlines bool // catalog /Outlines
 
 	// EmbeddedFiles is the number of entries in the /Names/EmbeddedFiles name
@@ -56,15 +62,20 @@ type HiddenContent struct {
 	// above a page, up to 32 levels, each counted once).
 	AssociatedFiles int
 
-	// JavaScript reports /Names/JavaScript, or a JavaScript or Launch action
-	// (directly or through its /Next chain) in the catalog /OpenAction, the
+	// JavaScript reports /Names/JavaScript, or a script action (directly or
+	// through its /Next chain) in the catalog /OpenAction, the
 	// catalog /AA, the /AA of a page or intermediate page-tree node, the /AA,
 	// /A or /PA of any entry in a page's /Annots (annotations, widgets and
 	// Links, including those a default Scrub removes), the /AA or /A of any
 	// node of the /AcroForm field tree or of any field above a widget (up
 	// /Parent, which reaches fields /Fields leaves out), or the /A of any
 	// outline item. It does not know which ScrubOptions a later Scrub uses, so
-	// it reports these wherever they are.
+	// it reports these wherever they are. A script action is one with /S
+	// /JavaScript or /S /Launch, one with a /JS entry whatever its /S (a
+	// Rendition action's, say), or a URI action whose /URI, after leading
+	// whitespace and control characters, starts with "javascript:" in any
+	// case; in this documentation "JavaScript or Launch action" means any of
+	// them.
 	//
 	// The field-tree and outline walks stop at 32 levels and at a /Kids or
 	// /First cycle, and after 65,536 units of work (one per /Fields or /Kids
@@ -96,8 +107,8 @@ type HiddenContent struct {
 // hiddenContentFromCounts maps the backend's counts, in HiddenContent field
 // order, to a HiddenContent.
 func hiddenContentFromCounts(c []int) (HiddenContent, error) {
-	if len(c) != 12 {
-		return HiddenContent{}, fmt.Errorf("gomupdf: hidden content: got %d counts, want 12", len(c))
+	if len(c) != 13 {
+		return HiddenContent{}, fmt.Errorf("gomupdf: hidden content: got %d counts, want 13", len(c))
 	}
 	return HiddenContent{
 		Info:               c[0] != 0,
@@ -112,6 +123,7 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 		Thumbnails:         c[9],
 		PageMetadata:       c[10],
 		PieceInfo:          c[11],
+		XFA:                c[12] != 0,
 	}, nil
 }
 
@@ -129,6 +141,9 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 //   - unless opts.KeepAnnotations, every annotation except Links and widgets,
 //     popups and replies included; unless opts.KeepAnnotations or
 //     opts.KeepFormFields, every widget and the catalog /AcroForm;
+//   - whatever the options, /AcroForm /XFA (a stream, or an array of
+//     name/stream pairs) and the catalog /NeedsRendering, while the rest of
+//     a kept /AcroForm stays;
 //   - on every annotation that stays, /AA, and each of /A and /PA that is or
 //     chains through /Next to a JavaScript or Launch action; when the form
 //     stays (opts.KeepAnnotations or opts.KeepFormFields), the same on every
@@ -149,13 +164,17 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // page and page-tree node /Metadata and /Thumb streams, the filespecs of
 // /Names/EmbeddedFiles and of catalog, page and node /AF, every such
 // filespec's /EF streams, the /Names/JavaScript actions with their script
-// strings and streams, the nodes of both name trees, and every JavaScript or
-// Launch action Scrub removes or removes the holder of (from /OpenAction, any
-// /AA, an /A or /PA, an outline item, a removed annotation or field) with its
-// /JS script string or stream and its /F filespec. Each is destroyed only if
-// it is recognisably of its kind (an /Info dictionary has no /Type, an XMP
-// stream has /Type /Metadata or /Subtype /XML, a filespec has /Type
-// /Filespec, an action has /S /JavaScript or /S /Launch, and so on).
+// strings and streams, the nodes of both name trees, the /XFA streams, and
+// every JavaScript or Launch action Scrub removes or removes the holder of
+// (from /OpenAction, any /AA, an /A or /PA, an outline item, a removed
+// annotation or field, the /Next chain of a /Names/JavaScript action) with
+// its /JS script string or stream, its /URI string, its /F file and a Launch
+// action's /Win, /Mac and /Unix dictionaries with their /F files. Each is
+// destroyed only if it is recognisably of its kind (an /Info dictionary has
+// no /Type, an XMP stream has /Type /Metadata or /Subtype /XML, a filespec
+// has /Type /Filespec, an action is a script action as HiddenContent's
+// JavaScript field defines it, an XFA stream has no /Type or /Subtype, and
+// so on).
 //
 // Scrub never destroys kept content. Before it changes anything it loads
 // every object (so that an xref repair MuPDF needs happens first) and marks
@@ -168,8 +187,8 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // form stays the /AcroForm dictionary and its field tree (through /Fields,
 // /Kids and /CO), and with
 // opts.KeepOutlines the outline items, with everything they reference other
-// than through their own /Parent, /P, /Popup, /AA and /SE and an /A or /PA
-// that Scrub removes. An object reached as kept content is walked through
+// than through their own /Parent, /P, /Popup, /AA, /SE and /XFA and an /A or
+// /PA that Scrub removes. An object reached as kept content is walked through
 // every key, whatever other role it has (page-tree node, kept annotation,
 // field, outline item), except on a page or an intermediate page-tree node
 // that Scrub edits, where the walk skips the keys Scrub removes there and
@@ -192,11 +211,10 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // counts as unsafe and is removed, so on a page of 65,537 Links with URI
 // actions the last one loses its URI (and so on, in page order, past that).
 //
-// Out of scope: /AcroForm /XFA (kept when the form stays; XFA can hold
-// scripts and form data), JavaScript reached other than through an action
-// Scrub checks (a Rendition action's /JS, a 3D or RichMedia annotation's
-// scripts, a javascript: URI), and actions of other kinds that reach outside
-// the file (URI, GoToR, GoToE, SubmitForm, ImportData).
+// Out of scope: the scripts of 3D and RichMedia annotations when annotations
+// are kept; actions of other kinds that reach outside the file (URI, GoToR,
+// GoToE, SubmitForm, ImportData); content beyond the limits above; and a
+// field-tree node, outline item or page-tree node that is also page content.
 //
 // Scrub is meaningful only followed by a non-incremental save with
 // SaveOptions.Garbage >= 1, which drops unreferenced objects and nulls
