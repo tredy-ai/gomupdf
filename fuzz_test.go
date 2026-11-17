@@ -59,11 +59,7 @@ func fuzzPipeline(data []byte) {
 		return
 	}
 	defer d.Close()
-	// ponytail: a bogus page count (/Count 1410065407 in
-	// testdata/corpus/misc/poppler-67295-0.pdf) makes AddRedactionQuads
-	// allocate 8 bytes per page; the fuzz worker has no memory cap, so such
-	// inputs are skipped here and left to TestCorpus's capped child process.
-	if d.NeedsPass() || d.PageCount() == 0 || d.PageCount() > 1<<20 {
+	if d.NeedsPass() || d.PageCount() == 0 {
 		return
 	}
 	p, err := d.LoadPage(0)
