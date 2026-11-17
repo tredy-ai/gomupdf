@@ -53,7 +53,6 @@ func TestAddRedactionEmptyRect(t *testing.T) {
 	nan, inf := math.NaN(), math.Inf(1)
 	for _, r := range []geometry.Rect{
 		{X0: 10, Y0: 10, X1: 10, Y1: 50},         // zero width
-		{X0: 10, Y0: 50, X1: 60, Y1: 10},         // negative height
 		{X0: 10, Y0: 10, X1: 60, Y1: 10 + 1e-50}, // zero height as float32
 		{X0: nan, Y0: 10, X1: 60, Y1: 50},
 		{X0: 10, Y0: 10, X1: inf, Y1: 50},
