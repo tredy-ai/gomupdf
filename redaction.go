@@ -264,7 +264,13 @@ func (e *RedactionCheckError) Unwrap() []error {
 // rewriting of the page can shift kept text slightly); when the call fails
 // anyway, the error counts it in MovedElsewhere. Spaces (real ones, and
 // those extraction makes up for gaps), and ligature trailing components and
-// zero-advance marks at the next glyph's origin, are not checked.
+// zero-advance marks at the next glyph's origin, are not checked on their
+// own: a character with no advance where the glyph before it ends belongs
+// to that glyph (the "i" of "fi", a mark on its letter) and is judged with
+// it, before and after redacting. So a kept "fi" right before a redaction
+// is no error, though its "i" lies on the redaction's edge; a mark on a
+// redacted letter must go too. A /Widths 0 glyph drawn right after another
+// one is treated the same way; with a gap before it, it is checked itself.
 //
 // It also fails, with errors.Is ErrTextMoved, when the page has more
 // characters after redacting than it had outside every redaction before

@@ -105,6 +105,7 @@ typedef struct {
     double x, y;
     int exclude;  // a glyph at this origin whose first character is this is not matched (0: none)
     int c;        // the character extraction found here
+    int redacted; // in rs->o: 0 for a kept glyph's trailing component (gomupdf_tail_of), which the check ignores
 } gomupdf_origin;
 
 typedef struct {
@@ -429,6 +430,25 @@ static int gomupdf_counted(const fz_stext_char *ch, const fz_stext_char *last, c
     return !gomupdf_zero_advance(ch) && gomupdf_checked(ch, last, next);
 }
 
+// gomupdf_tail_of reports whether ch is a trailing part of head's glyph:
+// ch has no advance and sits where head's advance ends, which is where
+// extraction puts a ligature's later components ("i" of "fi") and a
+// zero-advance mark after its base. head is the last real character with
+// an advance before ch on its line (l). Such a character belongs to head's
+// glyph: the check after redacting judges it with head, so a kept "fi"
+// whose "i" lies on the edge of (or, kerned, inside) a redaction that starts
+// at the next glyph is not redacted text, and a mark on a redacted letter
+// still is. The cost: a genuinely zero-width glyph (/Widths 0) drawn right
+// after another glyph cannot be told from a mark and goes with that glyph;
+// one with a gap before it is checked on its own. Vertical lines are left as
+// they were.
+static int gomupdf_tail_of(const fz_stext_char *ch, const fz_stext_char *head, const fz_stext_line *l) {
+    if (!head || l->wmode || (ch->flags & FZ_STEXT_SYNTHETIC) || !gomupdf_zero_advance(ch))
+        return 0;
+    return fabs(ch->origin.x - (head->origin.x + head->quad.lr.x - head->quad.ll.x)) < 0.01 &&
+        fabs(ch->origin.y - (head->origin.y + head->quad.lr.y - head->quad.ll.y)) < 0.01;
+}
+
 // gomupdf_char_origin returns ch's origin as the text_filter sees it, in
 // PDF user space (inv undoes the page transform).
 static fz_point gomupdf_char_origin(const fz_stext_char *ch, const fz_stext_line *l, fz_matrix inv) {
@@ -500,16 +520,25 @@ static int gomupdf_collect_origins(fz_context *ctx, pdf_page *page, gomupdf_regi
             if (b->type != FZ_STEXT_BLOCK_TEXT)
                 continue;
             for (l = b->u.t.first_line; l; l = l->next) {
-                fz_stext_char *ch, *prev = NULL;
+                fz_stext_char *ch, *prev = NULL, *head = NULL;
+                int head_hit = 0;
                 for (ch = l->first_char; ch; ch = ch->next) {
                     fz_point o = gomupdf_char_origin(ch, l, inv);
                     fz_stext_char *next = ch->next, *last = prev;
-                    int exclude = 0;
+                    int exclude = 0, hit, redacted;
                     while (next && (next->flags & FZ_STEXT_SYNTHETIC))
                         next = next->next;
                     if (!(ch->flags & FZ_STEXT_SYNTHETIC))
                         prev = ch;
-                    if (!gomupdf_char_hits(rs, fz_transform_quad(ch->quad, inv))) {
+                    hit = gomupdf_char_hits(rs, fz_transform_quad(ch->quad, inv));
+                    // For the check after redacting, a trailing component
+                    // is redacted when its glyph's first one is.
+                    redacted = gomupdf_tail_of(ch, head, l) ? head_hit : hit;
+                    if (!(ch->flags & FZ_STEXT_SYNTHETIC) && !gomupdf_zero_advance(ch)) {
+                        head = ch;
+                        head_hit = hit;
+                    }
+                    if (!hit) {
                         // Counted on every page, past the limit too.
                         if (gomupdf_counted(ch, last, next))
                             rs->kept++;
@@ -534,6 +563,7 @@ static int gomupdf_collect_origins(fz_context *ctx, pdf_page *page, gomupdf_regi
                     rs->o[rs->no].y = o.y;
                     rs->o[rs->no].exclude = exclude;
                     rs->o[rs->no].c = ch->c;
+                    rs->o[rs->no].redacted = redacted;
                     rs->no++;
                 }
             }
@@ -1332,7 +1362,7 @@ static int gomupdf_near_hit(const gomupdf_regions *rs, fz_quad q, fz_point o, in
     }
     for (i = lo; i < rs->no && rs->o[i].x <= o.x + reach; i++) {
         double dx = rs->o[i].x - o.x, dy = rs->o[i].y - o.y;
-        if (rs->o[i].c == c && fabs(dx * ux + dy * uy) <= GOMUPDF_BAND_ALONG * h &&
+        if (rs->o[i].redacted && rs->o[i].c == c && fabs(dx * ux + dy * uy) <= GOMUPDF_BAND_ALONG * h &&
             fabs(dx * vx + dy * vy) <= GOMUPDF_BAND_ACROSS * h)
             return 1;
     }
@@ -1351,7 +1381,9 @@ static int gomupdf_near_hit(const gomupdf_regions *rs, fz_quad q, fz_point o, in
 // filtered copy cannot find is measured, and then drawn, with a fallback
 // font, so its glyphs move and the box and origin rules miss the one
 // redacted. left[2] is layout MuPDF's filter shifted, not a failed
-// redaction. Only characters gomupdf_checked accepts are looked at.
+// redaction. Only characters gomupdf_checked accepts are looked at, and not
+// a trailing part of a glyph whose first character is there
+// (gomupdf_tail_of): that one is checked for the glyph.
 //
 // Returns the characters gomupdf_counted counts, for the count rule: the
 // passes only remove glyphs, so more than rs->kept (the same count over the
@@ -1383,7 +1415,7 @@ static long gomupdf_count_left(fz_context *ctx, pdf_page *page, const gomupdf_re
             if (b->type != FZ_STEXT_BLOCK_TEXT)
                 continue;
             for (l = b->u.t.first_line; l; l = l->next) {
-                fz_stext_char *ch, *prev = NULL;
+                fz_stext_char *ch, *prev = NULL, *head = NULL;
                 for (ch = l->first_char; ch; ch = ch->next) {
                     fz_stext_char *next = ch->next, *last = prev;
                     if (ch->flags & FZ_STEXT_SYNTHETIC)
@@ -1391,6 +1423,12 @@ static long gomupdf_count_left(fz_context *ctx, pdf_page *page, const gomupdf_re
                     prev = ch;
                     while (next && (next->flags & FZ_STEXT_SYNTHETIC))
                         next = next->next;
+                    // A trailing component is judged with its glyph's
+                    // first one, which is checked itself.
+                    if (gomupdf_tail_of(ch, head, l))
+                        continue;
+                    if (!gomupdf_zero_advance(ch))
+                        head = ch;
                     if (!gomupdf_checked(ch, last, next))
                         continue;
                     if (gomupdf_counted(ch, last, next))

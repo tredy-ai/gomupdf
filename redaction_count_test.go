@@ -142,32 +142,82 @@ func TestApplyRedactionsCountUnchanged(t *testing.T) {
 	}
 }
 
-// Ligatures, kerning and zero-advance marks keep the count: redacting a word
-// next to them leaves no excess, and only the word goes.
+// A redacted ligature that survives (in a tiling pattern, which removal
+// cannot reach) is still reported, though its trailing component is now
+// judged with it.
+func TestApplyRedactionsSurvivingLigature(t *testing.T) {
+	stream := func(dict, data string) string {
+		return fmt.Sprintf("<< %s /Length %d >>\nstream\n%s\nendstream", dict, len(data), data)
+	}
+	pdf := buildPDF(
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Pattern << /P1 6 0 R >> >> /Contents 5 0 R >>",
+		stdHelvetica,
+		stream("", "/Pattern cs /P1 scn 0 0 300 200 re f"),
+		stream("/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 300 200] /XStep 300 /YStep 200 "+
+			"/Resources << /Font << /F1 4 0 R >> >>", `BT /F1 24 Tf 20 100 Td (o\256x) Tj ET`),
+	)
+	d, err := OpenStream(pdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	p, err := d.LoadPage(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gs := pageGlyphs(t, p)
+	if s := runesOf(gs); s != "ofix" {
+		t.Fatalf("glyphs %q", s)
+	}
+	if err := p.AddRedactionQuads(quadsOf(gs[1:3]), RedactOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.ApplyRedactions(ApplyOptions{})
+	var ce *RedactionCheckError
+	if !errors.Is(err, ErrTextRemains) || !errors.As(err, &ce) || ce.Remaining < 1 {
+		t.Errorf("ApplyRedactions: %v; want the ligature remaining", err)
+	}
+}
+
+// Ligatures, kerning and zero-advance marks keep the count, and a kept
+// ligature's trailing components (at the next glyph's origin, on the edge of
+// or inside a redaction that starts there) are not redacted text: redacting
+// next to them is no error, and only the redacted glyphs go.
 func TestApplyRedactionsCountLigaturesKerning(t *testing.T) {
+	const ffiCM = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CMapName /Lig def 1 begincodespacerange <00> <FF> endcodespacerange 1 beginbfchar <AE> <006600660069> endbfchar endcmap CMapName currentdict /CMap defineresource pop end end"
+	ffi := []string{fmt.Sprintf("<< /Length %d >>\nstream\n%s\nendstream", len(ffiCM), ffiCM)}
 	for _, c := range []struct {
 		name, font, show string
+		extra            []string
 		from, to         int // glyphs (spaces dropped) redacted by their quads
 		want             string
-		// Known false refusal of the near-hit rule (not the count): a kept
-		// ligature's trailing component lies on or in the redacted glyph's
-		// quad, so it was "under a redaction" before and still is.
-		remains bool
 	}{
 		// The ligature's trailing i sits at the redacted S's origin.
-		{"ligature before", stdHelvetica, `(of\256SECRET) Tj`, 4, 10, "offi", true},
-		{"ligature before space", stdHelvetica, `(of\256 SECRET) Tj`, 4, 10, "offi", false},
+		{"ligature before", stdHelvetica, `(of\256SECRET) Tj`, nil, 4, 10, "offi"},
+		// A kern puts the trailing i inside the redacted S.
+		{"ligature before, kerned", stdHelvetica, `[(of\256) 30 (SECRET)] TJ`, nil, 4, 10, "offi"},
+		{"ligature before, rotated", stdHelvetica, `0.5 0.866 -0.866 0.5 20 100 Tm (of\256SECRET) Tj`, nil, 4, 10, "offi"},
+		{"ligature before, char spacing", stdHelvetica, `1 Tc (of\256SECRET) Tj`, nil, 4, 10, "offi"},
+		// Two trailing components (a ToUnicode "ffi") before redacted digits.
+		{"ffi before digits", flToUnicode, `(ref\2561234) Tj`, ffi, 6, 10, "refffi"},
+		{"ligature before space", stdHelvetica, `(of\256 SECRET) Tj`, nil, 4, 10, "offi"},
+		// The redaction ends on the ligature; x starts at its trailing i's
+		// origin and stays.
+		{"ligature redacted, next kept", stdHelvetica, `(SECRE\256x) Tj`, nil, 0, 7, "x"},
+		{"ligature inside", stdHelvetica, `(xSE\256ETy) Tj`, nil, 1, 7, "xy"},
 		// SECRET's T ends where the fl ligature starts.
-		{"ligature after", stdHelvetica, `(SECRET\257ow) Tj`, 0, 6, "flow", false},
-		{"kerning", stdHelvetica, `[(W) 80 (a) -40 (\256) 30 (SECRET) -60 (AV) 90 (o\257)] TJ`, 4, 10, "WafiAVofl", true},
-		{"kerning apart", stdHelvetica, `[(W) 80 (a) -40 (\256) -30 (SECRET) -60 (AV) 90 (o\257)] TJ`, 4, 10, "WafiAVofl", false},
+		{"ligature after", stdHelvetica, `(SECRET\257ow) Tj`, nil, 0, 6, "flow"},
+		{"kerning", stdHelvetica, `[(W) 80 (a) -40 (\256) 30 (SECRET) -60 (AV) 90 (o\257)] TJ`, nil, 4, 10, "WafiAVofl"},
+		{"kerning apart", stdHelvetica, `[(W) 80 (a) -40 (\256) -30 (SECRET) -60 (AV) 90 (o\257)] TJ`, nil, 4, 10, "WafiAVofl"},
 		// The zero-width acute sits at the redacted x's origin, on the edge
 		// of its box, and goes with it.
-		{"mark before", zeroAcuteHelvetica(), `(cafe\302xyz) Tj`, 5, 8, "cafe", false},
-		{"mark after", zeroAcuteHelvetica(), `(xyze\302cafe) Tj`, 0, 3, "e´cafe", false},
+		{"mark before", zeroAcuteHelvetica(), `(cafe\302xyz) Tj`, nil, 5, 8, "cafe"},
+		{"mark after", zeroAcuteHelvetica(), `(xyze\302cafe) Tj`, nil, 0, 3, "e´cafe"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			pdf := pdfPageFont(c.font, "/MediaBox [0 0 300 200]", "BT /F1 12 Tf 20 100 Td "+c.show+" ET")
+			pdf := pdfPageFont(c.font, "/MediaBox [0 0 300 200]", "BT /F1 12 Tf 20 100 Td "+c.show+" ET", c.extra...)
 			d, err := OpenStream(pdf)
 			if err != nil {
 				t.Fatal(err)
@@ -181,14 +231,8 @@ func TestApplyRedactionsCountLigaturesKerning(t *testing.T) {
 			if err := p.AddRedactionQuads(quadsOf(gs[c.from:c.to]), RedactOptions{}); err != nil {
 				t.Fatal(err)
 			}
-			_, err = p.ApplyRedactions(ApplyOptions{})
-			var ce *RedactionCheckError
-			if c.remains {
-				if !errors.As(err, &ce) || ce.Excess != 0 || ce.Moved != 0 || ce.Remaining != 1 {
-					t.Errorf("ApplyRedactions: %v; want 1 remaining, no excess", err)
-				}
-			} else if err != nil {
-				t.Errorf("ApplyRedactions: %v", err)
+			if _, err := p.ApplyRedactions(ApplyOptions{}); err != nil {
+				t.Errorf("chars %q: ApplyRedactions: %v", runesOf(gs), err)
 			}
 			if s := runesOf(pageGlyphs(t, p)); s != c.want {
 				t.Errorf("chars %q, quads on %d..%d: left %q, want %q", runesOf(gs), c.from, c.to, s, c.want)
