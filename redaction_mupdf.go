@@ -112,11 +112,30 @@ typedef struct {
 } gomupdf_regions;
 
 // GOMUPDF_MAX_REDACT_REGIONS bounds the regions (quads plus rect-only
-// redactions) gomupdf_collect_regions builds for one page. Annotations in a
-// file can share one huge /QuadPoints array, so the sum is unbounded;
-// beyond the limit the page takes MuPDF's own text removal, which reads the
-// quads in place and never removes less than the box rule.
+// redactions) one page's redaction annotations may hold. Annotations in a
+// file can share one huge /QuadPoints array, so the sum is unbounded, and
+// both our pass and pdf_redact_page cost memory and time per region; a page
+// over the limit is refused (gomupdf_count_regions) before anything changes.
 #define GOMUPDF_MAX_REDACT_REGIONS (1 << 16)
+
+// gomupdf_count_regions returns the regions the redaction annotations in
+// the page object's /Annots hold, from array lengths only (a shared array
+// counts once per annotation), as pdf_redact_page reads them. It reads the
+// page dictionary directly: loading the page loads its annotations, which
+// for redactions holding millions of quads already costs seconds.
+static size_t gomupdf_count_regions(fz_context *ctx, pdf_obj *pageobj) {
+    pdf_obj *annots = pdf_dict_get(ctx, pageobj, PDF_NAME(Annots));
+    size_t total = 0;
+    int i, n = pdf_array_len(ctx, annots);
+    for (i = 0; i < n; i++) {
+        pdf_obj *obj = pdf_array_get(ctx, annots, i);
+        if (pdf_dict_get(ctx, obj, PDF_NAME(Subtype)) == PDF_NAME(Redact)) {
+            int k = pdf_array_len(ctx, pdf_dict_get(ctx, obj, PDF_NAME(QuadPoints)));
+            total += k > 0 ? ((size_t)k + 7) / 8 : 1;
+        }
+    }
+    return total;
+}
 
 // GOMUPDF_MAX_REDACT_ORIGINS bounds the characters under redactions one page
 // may record; beyond it the page takes MuPDF's own text removal.
@@ -260,7 +279,8 @@ static int gomupdf_glyph_filter(fz_context *ctx, void *opaque, int *ucsbuf, int 
 // mirroring pdf_redact_page's reading of them: /QuadPoints when the array is
 // non-empty (8 numbers per quad, pdf_to_quad's ul ur ll lr order), else
 // /Rect. Returns the number of regions, or -1 (building nothing) if the page
-// has more than GOMUPDF_MAX_REDACT_REGIONS. Caller frees rs->r.
+// has more than GOMUPDF_MAX_REDACT_REGIONS (the caller refused such pages
+// already). Caller frees rs->r.
 static int gomupdf_collect_regions(fz_context *ctx, pdf_page *page, gomupdf_regions *rs) {
     pdf_annot *a;
     size_t cap = 0;
@@ -629,7 +649,8 @@ static void gomupdf_undeclare_page(fz_context *ctx, pdf_document *pdf, pdf_page 
 // they draw) through MuPDF's sanitize filter, stripping declared text from
 // inline marked-content properties, and removes the text under the page's
 // redaction annotations glyph by glyph. Returns 1 if it removed the text, 0
-// if the page is over a limit and needs MuPDF's own text removal (the
+// if the page has more characters under redactions than
+// GOMUPDF_MAX_REDACT_ORIGINS and needs MuPDF's own text removal (the
 // declared text is stripped either way). Throws.
 static int gomupdf_redact_text(fz_context *ctx, pdf_document *pdf, pdf_page *page) {
     gomupdf_regions rs;
@@ -641,8 +662,9 @@ static int gomupdf_redact_text(fz_context *ctx, pdf_document *pdf, pdf_page *pag
         pdf_sanitize_filter_options sopts;
         pdf_filter_factory filters[3];
         pdf_filter_options fopts;
-        per_glyph = gomupdf_collect_regions(ctx, page, &rs) >= 0 &&
-            gomupdf_collect_origins(ctx, page, &rs) == 0;
+        if (gomupdf_collect_regions(ctx, page, &rs) < 0)
+            fz_throw(ctx, FZ_ERROR_LIMIT, "too many redaction regions");
+        per_glyph = gomupdf_collect_origins(ctx, page, &rs) == 0;
         memset(&sopts, 0, sizeof sopts);
         memset(filters, 0, sizeof filters);
         memset(&fopts, 0, sizeof fopts);
@@ -702,21 +724,28 @@ static int gomupdf_apply_redactions(fz_context *ctx, fz_document *doc, int pagen
     }
     pdf_page *page = NULL;
     int count = 0;
+    size_t regions = 0;
     fz_var(page);
+    fz_var(regions);
     fz_try(ctx) {
-        page = pdf_load_page(ctx, pdf, pageno);
-        pdf_annot *a;
-        for (a = pdf_first_annot(ctx, page); a; a = pdf_next_annot(ctx, a)) {
-            if (pdf_annot_type(ctx, a) == PDF_ANNOT_REDACT) {
-                count++;
+        // Refuse a page whose redactions hold too many regions, in every
+        // text mode, before changing (or even loading) anything.
+        regions = gomupdf_count_regions(ctx, pdf_lookup_page_obj(ctx, pdf, pageno));
+        if (regions <= GOMUPDF_MAX_REDACT_REGIONS) {
+            pdf_annot *a;
+            page = pdf_load_page(ctx, pdf, pageno);
+            for (a = pdf_first_annot(ctx, page); a; a = pdf_next_annot(ctx, a)) {
+                if (pdf_annot_type(ctx, a) == PDF_ANNOT_REDACT) {
+                    count++;
+                }
             }
         }
         if (count > 0) {
             // Our pass removes the text glyph by glyph and pdf_redact_page
             // does the rest (boxes, images, line art, links, FreeText,
             // deleting the annotations) without its own text removal. Past
-            // a limit, MuPDF's text removal stays on. Declared text goes
-            // from every page whose text we redact.
+            // the character limit, MuPDF's text removal stays on. Declared
+            // text goes from every page whose text we redact.
             int undeclare = opts.text == PDF_REDACT_TEXT_REMOVE;
             if (undeclare && gomupdf_redact_text(ctx, pdf, page))
                 opts.text = PDF_REDACT_TEXT_NONE;
@@ -730,6 +759,11 @@ static int gomupdf_apply_redactions(fz_context *ctx, fz_document *doc, int pagen
     }
     fz_catch(ctx) {
         snprintf(err, errlen, "%s", fz_caught_message(ctx));
+        return -1;
+    }
+    if (regions > GOMUPDF_MAX_REDACT_REGIONS) {
+        snprintf(err, errlen, "too many redaction regions on page %d: %zu, limit %d",
+                 pageno, regions, GOMUPDF_MAX_REDACT_REGIONS);
         return -1;
     }
     return count;

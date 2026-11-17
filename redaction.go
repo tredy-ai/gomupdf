@@ -136,6 +136,20 @@ func isFinite32(f float32) bool {
 // annotation on the page according to opts, then deletes the redaction marks.
 // Returns the number of redactions applied. Effective on Save.
 //
+// Every redaction annotation on the page is applied, not only the ones the
+// caller added with AddRedaction or AddRedactionQuads: redaction annotations
+// already present in the opened file are applied (and count towards the
+// limit below) too.
+//
+// A page whose redaction annotations hold more than 65536 regions in all
+// (each quad of a quad redaction, plus one per rect redaction; annotations
+// in a file can share one huge /QuadPoints array, which counts once per
+// annotation) is refused, for every Text mode, with an error naming the page
+// (its 0-based Number), the count and the limit. Nothing on the page changes
+// and its redaction annotations stay, so the caller can inspect or reject the
+// file: both this package's pass and MuPDF's own redaction cost memory and
+// time per region.
+//
 // Changed from upstream: it takes ApplyOptions. Upstream passed zeroed MuPDF
 // options, so no box was drawn, and always removed overlapping images whole.
 // Out-of-range enum values return an error.
@@ -181,11 +195,11 @@ func isFinite32(f float32) bool {
 // of the text does not move. MuPDF then draws the boxes, handles images and
 // line art, removes overlapping links and FreeText annotations and deletes the
 // redaction annotations, without its own text removal. TextNone goes through
-// stock MuPDF unchanged. A page whose redactions have more than 65536 quads
-// and rects in all (annotations in a file can share one huge /QuadPoints
-// array), or more than 1048576 extracted characters under them, gets MuPDF's
-// own text removal instead (each quad's bounds against each glyph's box): the
-// per-glyph pass would need memory per quad or character.
+// stock MuPDF unchanged. A page with more than 1048576 extracted characters
+// under its redactions gets MuPDF's own text removal instead (each quad's
+// bounds against each glyph's box), since the per-glyph pass records each
+// one; unlike the region limit, that is bounded by the page's own content,
+// so it falls back rather than fails.
 func (p *Page) ApplyRedactions(opts ApplyOptions) (int, error) {
 	d := p.doc
 	d.mu.Lock()
