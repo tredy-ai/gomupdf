@@ -176,6 +176,19 @@ func isFinite32(f float32) bool {
 // the changes made so far are lost and ApplyRedactions, like AddRedaction
 // and AddRedactionQuads, returns an error saying so.
 //
+// Also changed, with opts.Text TextRemove: after redacting, the page is
+// extracted again (as RawDict does by default) and ApplyRedactions returns
+// an error, naming the page and the number of characters, if a character
+// still lies under a redaction (shrunk as above) or lies where no character
+// outside the redactions was before (to 0.25pt). That happens to text the removal cannot reach (in a tiling
+// pattern or a soft mask) and to text it measures with the wrong font (a
+// form XObject without /Resources that uses the page's fonts, which MuPDF's
+// rewritten copy of the form cannot find, so its glyphs move). Spaces
+// extraction makes up for gaps, and ligature trailing components and
+// zero-advance marks at the next glyph's origin, are not checked. The error
+// comes after the page has changed: the page must not be treated as
+// redacted. The check costs one more extraction of the page.
+//
 // Changed from upstream: it takes ApplyOptions. Upstream passed zeroed MuPDF
 // options, so no box was drawn, and always removed overlapping images whole.
 // Out-of-range enum values return an error.
@@ -246,7 +259,8 @@ func isFinite32(f float32) bool {
 // under its redactions gets MuPDF's own text removal instead (each quad's
 // bounds against each glyph's box), since the per-glyph pass records each
 // one; unlike the region limit, that is bounded by the page's own content,
-// so it falls back rather than fails.
+// so it falls back rather than fails (the check after redacting still
+// applies, except for characters that moved, which it then cannot tell).
 func (p *Page) ApplyRedactions(opts ApplyOptions) (int, error) {
 	d := p.doc
 	d.mu.Lock()

@@ -110,6 +110,8 @@ typedef struct {
     gomupdf_region *r;
     int no;                // origins of the characters extraction found under a region,
     gomupdf_origin *o;     // sorted by x
+    int nk, capk;          // the other characters (exclude holds the character), sorted
+    gomupdf_origin *k;     // by x; nk = -1: not all recorded
 } gomupdf_regions;
 
 // GOMUPDF_MAX_REDACT_REGIONS bounds the regions (quads plus rect-only
@@ -399,6 +401,51 @@ static int gomupdf_shares_origin(const fz_stext_char *ch, const fz_stext_char *n
         fabs(n->origin.x - ch->origin.x) < 0.01 && fabs(n->origin.y - ch->origin.y) < 0.01;
 }
 
+// gomupdf_char_origin returns ch's origin as the text_filter sees it, in
+// PDF user space (inv undoes the page transform).
+static fz_point gomupdf_char_origin(const fz_stext_char *ch, const fz_stext_line *l, fz_matrix inv) {
+    fz_point o = ch->origin;
+    if (l->wmode) {
+        o.x += ch->quad.lr.x - ch->quad.ll.x;
+        o.y += ch->quad.lr.y - ch->quad.ll.y;
+    }
+    return fz_transform_point(o, inv);
+}
+
+// gomupdf_keep_char records a character no region hits (rs->k).
+static void gomupdf_keep_char(fz_context *ctx, gomupdf_regions *rs, fz_point o, int c) {
+    if (rs->nk == rs->capk) {
+        rs->capk = rs->capk ? rs->capk * 2 : 64;
+        rs->k = fz_realloc_array(ctx, rs->k, rs->capk, gomupdf_origin);
+    }
+    rs->k[rs->nk].x = o.x;
+    rs->k[rs->nk].y = o.y;
+    rs->k[rs->nk].exclude = c;
+    rs->nk++;
+}
+
+// A character after redaction is where it was before when its origin
+// agrees to GOMUPDF_MOVED_TOL. Not GOMUPDF_ORIGIN_TOL: the rewritten content
+// stream rounds coordinates, and kept text shifts by a few hundredths of a
+// point (0.028 on pdfjs issue3062.pdf).
+#define GOMUPDF_MOVED_TOL 0.25
+
+// gomupdf_kept reports whether character c at o was recorded by
+// gomupdf_keep_char (same character, same origin to GOMUPDF_MOVED_TOL).
+static int gomupdf_kept(const gomupdf_regions *rs, fz_point o, int c) {
+    double tol = GOMUPDF_MOVED_TOL;
+    int lo = 0, hi = rs->nk, i;
+    while (lo < hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (rs->k[mid].x < o.x - tol) lo = mid + 1;
+        else hi = mid;
+    }
+    for (i = lo; i < rs->nk && rs->k[i].x <= o.x + tol; i++)
+        if (rs->k[i].exclude == c && fabs(rs->k[i].y - o.y) <= tol)
+            return 1;
+    return 0;
+}
+
 static int gomupdf_collect_origins(fz_context *ctx, pdf_page *page, gomupdf_regions *rs) {
     fz_stext_page *text = NULL;
     fz_stext_options so;
@@ -411,6 +458,8 @@ static int gomupdf_collect_origins(fz_context *ctx, pdf_page *page, gomupdf_regi
     so.flags = FZ_STEXT_IGNORE_ACTUALTEXT;
     rs->no = 0;
     rs->o = NULL;
+    rs->nk = rs->capk = 0;
+    rs->k = NULL;
     fz_try(ctx) {
         fz_stext_block *b;
         pdf_page_transform(ctx, page, NULL, &page_ctm);
@@ -423,13 +472,16 @@ static int gomupdf_collect_origins(fz_context *ctx, pdf_page *page, gomupdf_regi
             for (l = b->u.t.first_line; l && !over; l = l->next) {
                 fz_stext_char *ch, *prev = NULL;
                 for (ch = l->first_char; ch; ch = ch->next) {
-                    fz_point o = ch->origin;
+                    fz_point o = gomupdf_char_origin(ch, l, inv);
                     fz_stext_char *next = ch->next, *last = prev;
                     int exclude = 0;
                     if (!(ch->flags & FZ_STEXT_SYNTHETIC))
                         prev = ch;
-                    if (!gomupdf_char_hits(rs, fz_transform_quad(ch->quad, inv)))
+                    if (!gomupdf_char_hits(rs, fz_transform_quad(ch->quad, inv))) {
+                        if (!(ch->flags & FZ_STEXT_SYNTHETIC))
+                            gomupdf_keep_char(ctx, rs, o, ch->c);
                         continue;
+                    }
                     while (next && (next->flags & FZ_STEXT_SYNTHETIC))
                         next = next->next;
                     if (gomupdf_zero_advance(ch)) {
@@ -438,11 +490,6 @@ static int gomupdf_collect_origins(fz_context *ctx, pdf_page *page, gomupdf_regi
                         else if (gomupdf_shares_origin(ch, last))
                             exclude = last->c;
                     }
-                    if (l->wmode) {
-                        o.x += ch->quad.lr.x - ch->quad.ll.x;
-                        o.y += ch->quad.lr.y - ch->quad.ll.y;
-                    }
-                    o = fz_transform_point(o, inv);
                     if (rs->no == cap) {
                         if (cap >= GOMUPDF_MAX_REDACT_ORIGINS) { over = 1; break; }
                         cap = cap ? cap * 2 : 64;
@@ -457,6 +504,10 @@ static int gomupdf_collect_origins(fz_context *ctx, pdf_page *page, gomupdf_regi
         }
         if (rs->no > 1)
             qsort(rs->o, rs->no, sizeof *rs->o, gomupdf_cmp_origin);
+        if (over)
+            rs->nk = -1;
+        else if (rs->nk > 1)
+            qsort(rs->k, rs->nk, sizeof *rs->k, gomupdf_cmp_origin);
     }
     fz_always(ctx) {
         fz_drop_stext_page(ctx, text);
@@ -1175,23 +1226,20 @@ static void gomupdf_finish_page(fz_context *ctx, pdf_document *pdf, pdf_page *pa
 // if the page has more characters under redactions than
 // GOMUPDF_MAX_REDACT_ORIGINS and needs MuPDF's own text removal (the
 // declared text is stripped either way). Throws.
-static int gomupdf_redact_text(fz_context *ctx, pdf_document *pdf, pdf_page *page) {
-    gomupdf_regions rs;
+// rs holds the page's regions (gomupdf_collect_regions); this fills rs->o.
+// The caller frees both.
+static int gomupdf_redact_text(fz_context *ctx, pdf_document *pdf, pdf_page *page, gomupdf_regions *rs) {
     int per_glyph = 0;
-    memset(&rs, 0, sizeof rs);
-    fz_var(rs);
     fz_var(per_glyph);
     fz_try(ctx) {
         pdf_sanitize_filter_options sopts;
         pdf_filter_factory filters[3];
         pdf_filter_options fopts;
-        if (gomupdf_collect_regions(ctx, page, &rs) < 0)
-            fz_throw(ctx, FZ_ERROR_LIMIT, "too many redaction regions");
-        per_glyph = gomupdf_collect_origins(ctx, page, &rs) == 0;
+        per_glyph = gomupdf_collect_origins(ctx, page, rs) == 0;
         memset(&sopts, 0, sizeof sopts);
         memset(filters, 0, sizeof filters);
         memset(&fopts, 0, sizeof fopts);
-        sopts.opaque = &rs;
+        sopts.opaque = rs;
         if (per_glyph)
             sopts.text_filter = gomupdf_glyph_filter;
         filters[0].filter = pdf_new_sanitize_filter;
@@ -1205,14 +1253,67 @@ static int gomupdf_redact_text(fz_context *ctx, pdf_document *pdf, pdf_page *pag
         fopts.filters = filters;
         pdf_filter_page_contents(ctx, pdf, page, &fopts);
     }
-    fz_always(ctx) {
-        fz_free(ctx, rs.r);
-        fz_free(ctx, rs.o);
-    }
     fz_catch(ctx) {
         fz_rethrow(ctx);
     }
     return per_glyph;
+}
+
+// gomupdf_count_left extracts the page as gomupdf_collect_origins does and
+// counts the characters that are still under a region (by
+// gomupdf_char_hits) or that were not on the page, at that origin, before
+// the passes (rs->k; not checked when rs->nk < 0). The second catches text
+// the passes rewrote at other positions: a form whose font MuPDF's filtered
+// copy cannot find is measured, and then drawn, with a fallback font, so its
+// glyphs move and the box and origin rules miss the one redacted. Not
+// counted: characters extraction made up (spaces it synthesises for gaps),
+// and a character with no advance that shares its origin with a real
+// neighbour (a ligature's trailing component or a zero-advance mark, which
+// sits at the next glyph's origin; see gomupdf_collect_origins).
+static int gomupdf_count_left(fz_context *ctx, pdf_page *page, const gomupdf_regions *rs) {
+    fz_stext_page *text = NULL;
+    fz_stext_options so;
+    fz_matrix page_ctm, inv;
+    int left = 0;
+    fz_var(text);
+    fz_var(left);
+    memset(&so, 0, sizeof so);
+    so.flags = FZ_STEXT_IGNORE_ACTUALTEXT;
+    fz_try(ctx) {
+        fz_stext_block *b;
+        pdf_page_transform(ctx, page, NULL, &page_ctm);
+        inv = fz_invert_matrix(page_ctm);
+        text = gomupdf_new_stext_page(ctx, (fz_page *)page, &so);
+        for (b = text->first_block; b; b = b->next) {
+            fz_stext_line *l;
+            if (b->type != FZ_STEXT_BLOCK_TEXT)
+                continue;
+            for (l = b->u.t.first_line; l; l = l->next) {
+                fz_stext_char *ch, *prev = NULL;
+                for (ch = l->first_char; ch; ch = ch->next) {
+                    fz_stext_char *next = ch->next, *last = prev;
+                    if (ch->flags & FZ_STEXT_SYNTHETIC)
+                        continue;
+                    prev = ch;
+                    while (next && (next->flags & FZ_STEXT_SYNTHETIC))
+                        next = next->next;
+                    if (gomupdf_zero_advance(ch) &&
+                        (gomupdf_shares_origin(ch, next) || gomupdf_shares_origin(ch, last)))
+                        continue;
+                    if (gomupdf_char_hits(rs, fz_transform_quad(ch->quad, inv)) ||
+                        (rs->nk >= 0 && !gomupdf_kept(rs, gomupdf_char_origin(ch, l, inv), ch->c)))
+                        left++;
+                }
+            }
+        }
+    }
+    fz_always(ctx) {
+        fz_drop_stext_page(ctx, text);
+    }
+    fz_catch(ctx) {
+        fz_rethrow(ctx);
+    }
+    return left;
 }
 
 // gomupdf_apply_redactions applies every redaction annotation on the page.
@@ -1246,13 +1347,17 @@ static int gomupdf_apply_redactions(fz_context *ctx, fz_document *doc, int pagen
     default: snprintf(err, errlen, "invalid text method %d", text); return -1;
     }
     pdf_page *page = NULL;
-    int count = 0;
+    int count = 0, left = 0;
     size_t regions = 0;
     gomupdf_plan plan;
+    gomupdf_regions rs;
     memset(&plan, 0, sizeof plan);
+    memset(&rs, 0, sizeof rs);
     fz_var(page);
     fz_var(regions);
     fz_var(plan);
+    fz_var(rs);
+    fz_var(left);
     fz_try(ctx) {
         // Refuse a page whose redactions hold too many regions, in every
         // text mode, before changing (or even loading) anything.
@@ -1279,20 +1384,36 @@ static int gomupdf_apply_redactions(fz_context *ctx, fz_document *doc, int pagen
             // text goes from every page whose text we redact. Every mode
             // replaces the page's forms with redacted copies, so the page's
             // structure references follow them.
+            if (undeclare && gomupdf_collect_regions(ctx, page, &rs) < 0)
+                fz_throw(ctx, FZ_ERROR_LIMIT, "too many redaction regions");
             gomupdf_tag_forms(ctx, &plan);
-            if (undeclare && gomupdf_redact_text(ctx, pdf, page))
+            if (undeclare && gomupdf_redact_text(ctx, pdf, page, &rs))
                 opts.text = PDF_REDACT_TEXT_NONE;
             pdf_redact_page(ctx, pdf, page, &opts);
             gomupdf_finish_page(ctx, pdf, page, &plan, undeclare);
+            // Text the passes cannot reach (in a tiling pattern, a soft
+            // mask, or a form drawn with a font MuPDF's copy of it cannot
+            // find) is still extracted: check, as extraction sees it.
+            if (undeclare)
+                left = gomupdf_count_left(ctx, page, &rs);
         }
     }
     fz_always(ctx) {
         gomupdf_untag_forms(ctx, pdf, &plan);
         gomupdf_plan_drop(ctx, &plan);
+        fz_free(ctx, rs.r);
+        fz_free(ctx, rs.o);
+        fz_free(ctx, rs.k);
         fz_drop_page(ctx, (fz_page *)page);
     }
     fz_catch(ctx) {
         snprintf(err, errlen, "%s", fz_caught_message(ctx));
+        return -1;
+    }
+    if (left > 0) {
+        snprintf(err, errlen, "%d characters remain under redactions or moved on page %d (text in a pattern, soft mask, "
+                 "or other content redaction cannot reach or measures wrongly); the page must not be treated as redacted",
+                 left, pageno);
         return -1;
     }
     if (regions > GOMUPDF_MAX_REDACT_REGIONS) {
