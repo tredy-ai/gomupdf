@@ -31,8 +31,9 @@ file if they ever disagree.
   to README"). Nothing from upstream has been merged since.
 - Build and test target: Go 1.27 on Alpine 3.23 with its packaged MuPDF 1.26.11
   (apk `mupdf-dev`), dynamically linked, on musl. The code is guarded at compile
-  time by MuPDF >= 1.25 (see [Testing](#9-testing) for what was run on which
-  version).
+  time by MuPDF >= 1.25; CI and the committed corpus's known-failures list are
+  for MuPDF 1.26.11 (see [MuPDF versions](#mupdf-versions) for what was run on
+  which version).
 - `LICENSE` (AGPL-3.0) is unchanged.
 
 ## 2. What the fork is for
@@ -54,7 +55,7 @@ f3b7339..main`), grouped by theme. The groups are thematic, not chronological:
 the order inside each group is the order in the history. "API impact" is
 `None`, `New API`, `Behavior change` (same signatures, different results or
 errors) or `BREAKING` (existing callers must change code or handle a new
-failure). Nothing has been pushed or tagged yet.
+failure). Nothing has been pushed or tagged yet. 64 commits.
 
 
 ### Fork and build
@@ -87,6 +88,7 @@ failure). Nothing has been pushed or tagged yet.
 | `32f2da8` | `fix: repair damaged files before changing them` | Behavior change: every object is loaded at open, so repair happens first; a repaired file cannot be saved incrementally |
 | `8739cc5` | `fix: do not load or change a locked document` | BREAKING: changing or saving a locked document is refused |
 | `b0bb5ad` | `fix: refuse to read a locked document` | BREAKING: reading a locked document is refused; PageCount is 0 until Authenticate |
+| `d381f88` | `fix(open): refuse a page count the file cannot hold` | Behavior change: Open, OpenStream, OpenAnyStream and Authenticate refuse a page count larger than the object count |
 
 ### Redaction
 
@@ -107,6 +109,7 @@ failure). Nothing has been pushed or tagged yet.
 | `198982b` | `fix(redact): accept an inverted redaction rectangle` | Behavior change: an inverted rect is accepted again (normalised) |
 | `066481a` | `fix(redact): say to discard the document after a failed redaction` | New API: ErrRedactionFailed; saves fail after a failed redaction |
 | `73d666f` | `fix(redact): fail when more text remains than was kept` | Behavior change: the check also fails when more text remains than was kept (RedactionCheckError.Excess) |
+| `0055d6e` | `fix(redact): do not count a kept ligature's tail as redacted text` | Behavior change: a kept ligature's tail next to a redaction no longer fails the post-redaction check |
 
 ### Scrub
 
@@ -125,12 +128,17 @@ failure). Nothing has been pushed or tagged yet.
 | `daadd6e` | `fix(scrub): remove annotations and fields nothing displays` | Behavior change: annotations and fields on no page removed |
 | `989f10c` | `fix(scrub): destroy removed annotations that a kept action targets` | Behavior change: annotations a kept action targets are destroyed |
 | `5874ed1` | `fix(scrub): strip and report scripts on form nodes on no page` | Behavior change: scripts on form nodes on no page stripped and reported |
+| `8ae9ebc` | `fix(scrub): empty orphan pages completely and treat uncounted pages as orphans` | Behavior change: orphan pages emptied completely; pages MuPDF does not serve are orphans |
+| `b762bd9` | `fix(scrub): small corrections from review` | Behavior change: null trailer keys removed; kept widget appearances kept; /IRT no longer keeps an annotation |
+| `eea128e` | `fix(scrub): keep every annotation under KeepAnnotations` | Behavior change: KeepAnnotations keeps every annotation, including those on pages MuPDF does not serve |
+| `eaa11f5` | `fix(scrub): do not fail HiddenContent on a page tree MuPDF accepts` | Behavior change: HiddenContent and Scrub tolerate a page tree with an unloadable kid |
 
 ### Layers
 
 | Commit | Subject | API impact |
 | --- | --- | --- |
 | `b696b6c` | `feat(layers): report optional content and add Document.ShowAllLayers` | New API: Document.ShowAllLayers, HiddenContent.Layers and HiddenLayers |
+| `05f7509` | `fix(layers): count hidden groups in object streams and inline dictionaries` | Behavior change: HiddenLayers counts groups in object streams and inline dictionaries and fails closed |
 
 ### Hardening from review
 
@@ -143,6 +151,7 @@ failure). Nothing has been pushed or tagged yet.
 | `f021198` | `fix: never return an empty error message` | Behavior change: errors never have an empty message; out-of-memory is reported |
 | `9eafc6e` | `fix: do not retry a broken object stream for every object` | None (Open no longer quadratic on a broken object stream) |
 | `653d4c6` | `fix: report errors with an empty message from font and image helpers` | Behavior change: an error with an empty message is no longer read as "nothing found" by font and image helpers |
+| `8cc4c9e` | `fix(scrub): do not re-parse unloadable objects in the sweep` | None (sweeps skip unloadable objects; no more minutes-long HiddenContent, Scrub, ShowAllLayers on broken object streams) |
 
 ### Tests
 
@@ -151,6 +160,12 @@ failure). Nothing has been pushed or tagged yet.
 | `3fa95bf` | `test: add a corpus invariant test and fuzz target` | None (TestCorpus, FuzzPipeline) |
 | `46bba5a` | `test: add a curated PDF corpus` | None (committed corpus) |
 | `8deacf5` | `test: report redacted words left after scrub in the corpus test` | None (corpus test reports words left after Scrub) |
+
+### Documentation
+
+| Commit | Subject | API impact |
+| --- | --- | --- |
+| `a0c1781` | `docs: describe the fork as it is` | None (FORK.md and README.md rewritten) |
 
 ## 4. Behavior differences from upstream and stock MuPDF
 
@@ -215,6 +230,13 @@ stated. The exported doc comments carry the exact limits and the corner cases.
   caches it, so any read with the wrong key garbles that object for good.
 - `Authenticate` loads every object on success; if that fails it returns false
   and the document stays locked.
+- `Open`, `OpenStream` and `OpenAnyStream` (and `Authenticate`, for a locked
+  file, which then fails) refuse a PDF whose page tree declares more pages than
+  the file has objects: `page tree declares N pages but the file has only M
+  objects`. No such file can hold those pages, and the first call that makes
+  MuPDF build its page map would allocate an entry per declared page (11 GB for
+  a `/Count` of 1,410,065,407). A page count MuPDF cannot read at all is left
+  to fail where it is used.
 - Errors from the C helpers never have an empty message; a helper that fails
   without one reports `unknown error (MuPDF gave no message)`. Out-of-memory
   is reported with the size asked for.
@@ -314,9 +336,18 @@ procedures or annotation appearances; stock MuPDF does not either.
   `Excess`), which is what a form that uses the page's fonts without its own
   `/Resources` produces (MuPDF measures it with a fallback font).
 
+The count rule counts real characters (spaces and zero-advance
+characters are not counted), so one more than the redactions kept is an error
+whatever the extra character is or where it went. Its limit: glyphs wrongly
+removed elsewhere on the same page offset survivors one for one, which is why
+the first two rules stay.
+
 Kept text that moved elsewhere is counted in `MovedElsewhere` and is not an
-error by itself. Spaces, ligature tails and zero-advance marks are not checked.
-`TextNone` is not verified.
+error by itself. Spaces are not checked. A character with no advance where the
+glyph before it ends (the "i" of a "fi" ligature, a mark on its letter) belongs
+to that glyph and is judged with it, before and after redacting: a kept "fi"
+right before a redaction is no error although its "i" lies on the redaction's
+edge, and a mark on a redacted letter must go too. `TextNone` is not verified.
 
 **Limits and refusals (nothing changes, redactions stay, the error names the
 page).** More than 65,536 redaction regions on a page (each quad, plus one per
@@ -350,17 +381,27 @@ JavaScript or Launch action; `/Outlines`; page and page-tree-node `/Thumb`,
 structure elements, output intents, ICC profiles and embedded files; `/AF`
 file specifications on any object; every annotation except Links (popups and
 replies included), every widget and the catalog `/AcroForm`; `/AcroForm /XFA`
-always; annotations and fields that are on no page; and the contents of page
-dictionaries that are not in the page tree. Scripts: on every annotation and
+always; annotations and fields that are on no page; and everything in the page
+dictionaries MuPDF does not serve (orphan pages, below). Scripts: on every annotation and
 form node that stays, `/AA` and any `/A` or `/PA` that is or chains to a
 JavaScript or Launch action.
+
+**Orphan pages.** The pages MuPDF serves (the `PageCount` pages) are
+authoritative. Any other page dictionary is an orphan: one outside the page
+tree, or in it but not served (a `/Kids` entry past a `/Count` that is too
+small, or a damaged file's extra pages). `Scrub` empties orphans completely
+(`/Contents`, `/Resources`, `/Parent`, and the forms and images their own and
+inherited resources reach, down through nested forms), keeps the dictionary
+page-shaped for references to it, and `HiddenContent.OrphanPages` counts them.
+A page MuPDF cannot look up in a damaged or cyclic page tree is skipped, not an
+error. A page count above the object count is refused (4.2).
 
 **Options:**
 
 | Option | Keeps |
 | --- | --- |
-| `KeepAnnotations` | Every annotation and widget and the whole `/AcroForm` (and `/Perms`, `/DSS`, signature dictionaries), with scripts removed. `/XFA` still goes. |
-| `KeepFormFields` | Widgets and the `/AcroForm` field tree, with scripts removed and the signature remnants kept as above. Other non-Link annotations still go. You must inspect form values yourself (`Page.Widgets`); they are not reliably in page text. |
+| `KeepAnnotations` | Every annotation (including those on pages MuPDF does not serve) and widget and the whole `/AcroForm` (and `/Perms`, `/DSS`, signature dictionaries), with scripts removed. `/XFA` still goes. Embedded media in kept annotations stay (a FileAttachment's file, Sound, Movie, Screen rendition, RichMedia assets, 3D streams). An annotation reachable only through an outline item's action (a GoTo3DView) is kept by Scrub but unreferenced when outlines are removed, so a garbage-collecting save drops it; keep outlines to keep it. |
+| `KeepFormFields` | Widgets and the `/AcroForm` field tree, with scripts removed and the signature remnants kept as above. Other non-Link annotations still go. Hidden template pages (`/Names/Templates`) are emptied whatever the options, so templates spawn blank pages. You must inspect form values yourself (`Page.Widgets`); they are not reliably in page text. |
 | `KeepOutlines` | `/Outlines`. Titles and `/Dest` stay; an `/A` that is or chains to a JavaScript or Launch action goes. |
 
 **Destruction, not unlinking.** Removed objects that may be reachable from
@@ -378,7 +419,10 @@ counts (`EmbeddedFiles`, `AssociatedFiles`, `NonLinkAnnotations`, `Widgets`,
 `ObjectMetadata`, `LastModified`, `Layers`, `HiddenLayers`). When a walk hits a
 limit the field fails closed (`EmbeddedFiles` at least 1, `JavaScript` true).
 It loads every object first, so `PageCount` can change if the file needed
-repair. After `Scrub`, a garbage-collecting save and a reopen, everything it
+repair. Between `ApplyRedactions` and `Scrub` (or a save and reopen) it counts
+each applied redaction annotation, which MuPDF unlinks but does not delete, as
+a `NonLinkAnnotations` entry. Trailer keys with a null value are counted and
+removed. After `Scrub`, a garbage-collecting save and a reopen, everything it
 reads except `Layers` and `HiddenLayers` is zero when the matching `Keep*`
 option was not set (the locations a `Keep*` option keeps still read non-zero);
 that is how to verify the output.
@@ -407,12 +451,24 @@ reopened copy. Call it before extraction and detection. Cost: the page shows
 every layer at once (all language alternatives drawn over each other, say) and
 annotations with `/OC` become visible.
 
-`HiddenContent.Layers` is the number of groups `/OCProperties` lists.
-`HiddenLayers` is the number of groups and membership dictionaries MuPDF hides
-for viewing. MuPDF does not evaluate `/VE` visibility expressions and shows
-their content, so `HiddenLayers == 0` does not mean no viewer hides anything.
-Treat any file with `Layers > 0` as possibly hiding content: `HiddenLayers`
-currently undercounts groups stored in object streams (a fix is in flight).
+`HiddenContent.Layers` is the number of groups `/OCProperties` lists; with
+`Layers == 0` MuPDF hides nothing. `HiddenLayers` is 0 when `Layers` is 0;
+otherwise it is the number of groups and membership dictionaries MuPDF hides
+for viewing. It reads indirect ones (in object streams too) and direct ones
+written as an object's own `/OC` value or in a `/Properties` dictionary, and
+it **fails closed**: it is at least 1 when any of those is a membership
+dictionary, a group with `/Usage` or with an `/Intent` other than `/View`, or a
+direct one, even if it shows. `HiddenLayers == 0` with `Layers > 0` therefore
+means every group those places hold is an indirect plain group the
+configuration shows.
+
+The one documented gap: it does not read content streams, so a group or
+membership dictionary written inline as a marked-content property list
+(`/OC << ... >> BDC`) is not seen, and MuPDF honors it. MuPDF also does not
+evaluate `/VE` visibility expressions and shows their content, so
+`HiddenLayers == 0` never meant that no viewer hides anything. **Rule for
+callers: only `Layers == 0` rules out hidden content. If you need certainty,
+call `ShowAllLayers` whenever `Layers > 0`.**
 
 ## 5. Migration notes
 
@@ -530,10 +586,16 @@ run. It is not a guarantee of the package.
    `UseActualText`, and can allocate hundreds of megabytes (a pixel-redacted
    990 KB file needed 306 MB). `TestCorpus` runs each file in a child process
    with a 3 GiB address-space cap and a timeout for the same reason.
-2. **Inspect first.** Call `HiddenContent`. Decide about layers: call
-   `ShowAllLayers` before extraction, or refuse the file (see
-   [Open decisions](#8-open-decisions)). Treat any file with `Layers > 0` as
-   possibly hiding content.
+1a. **An encrypted input must be authenticated before anything else is called**
+   (`NeedsPass`, then `Authenticate`, or `OpenWithPassword`): until then
+   `PageCount` is 0 and every read, change and save returns an error, and a
+   read before it would garble strings for good.
+2. **Inspect first.** Call `HiddenContent`. Layers: if `Layers == 0` nothing is
+   hidden. If `Layers > 0` and you need certainty, call `ShowAllLayers` before
+   extraction and detection (every layer is then drawn at once); or refuse the
+   file. `HiddenLayers` alone is not enough (inline `/OC << >> BDC` property
+   lists in content streams are not counted). See
+   [Open decisions](#8-open-decisions) for the owner's choice.
 3. **Extract** with `RawDictWithOptions` and a fixed `TextOptions`. Also run
    detection on form field values (`Page.Widgets`), link targets
    (`Page.Links`) and annotation contents (`Page.Annotations`): none of them are
@@ -549,6 +611,20 @@ run. It is not a guarantee of the package.
    `/ActualText` modes if the process isolation allows (the `UseActualText`
    pass can crash), and by `HiddenContent` on the reopened file. Reject on any
    leftover.
+
+Error handling around step 4 and 5:
+
+```go
+_, err := page.ApplyRedactions(gomupdf.ApplyOptions{Images: gomupdf.ImageRemove})
+switch {
+case errors.Is(err, gomupdf.ErrTextRemains), errors.Is(err, gomupdf.ErrTextMoved):
+	// the page is not redacted; reject the file, discard the Document
+case errors.Is(err, gomupdf.ErrRedactionFailed):
+	// returned by a later save of a Document whose redaction failed
+case err != nil:
+	// any other error: the page may be half redacted; discard the Document
+}
+```
 
 Compilable snippets for steps 2 to 6 are in the README ("Redact", "Scrub & hidden
 content", "Optional content (layers)").
@@ -589,26 +665,25 @@ and returns an error; it does not remove them.
 - Deleting an object created in the same session breaks saves on 1.25.6; Scrub
   leaves an empty dictionary in its place.
 
-**Corpus results.** On 5,347 public PDFs (kept outside the repo), at commit
-`653d4c6`: 5,185 pass; 0 files where redacted text survives with success
+**Corpus results (from the run at `653d4c6`; superseded by the final run below).**
+On 5,347 public PDFs (kept outside the repo): 5,185 pass; 0 files where redacted text survives with success
 reported; 26 files where redaction is refused with an explicit error; 4 time
 out in MuPDF; 1 crashes only with `UseActualText`. MuPDF's content rewriter
 changes rendering outside the redaction areas on about 60 files and
 over-removes on about 27, on unusual constructs. This is the observed rate, not
 a bound.
 
-**In flight on other branches (not yet at `main`).** `HiddenLayers` undercounts
-groups stored in object streams; orphan pages will be emptied more thoroughly;
-`KeepAnnotations` will keep all annotation subtypes (it does not yet); `Open` does
-not refuse a page count larger than the object count (a crafted `/Count` of
-1,410,065,407 is accepted, and `AddRedactionQuads` allocates 8 bytes per page);
-a redaction that starts right after a ligature can be falsely refused.
+<!-- CORPUS-FINAL -->
+
+**Gaps that remain in layers.** `HiddenLayers` does not read content streams: an
+inline `/OC << >> BDC` property list is not counted (section 4.6). Call
+`ShowAllLayers` whenever `Layers > 0` if you need certainty.
 
 **Platform.**
 
 - Encrypted and incremental saves, and `SaveBytes*`, are built in memory.
-- On MuPDF 1.28.6 (Homebrew, macOS), at last check (commit `f0ed073`), the
-  package built and three tests failed:
+- See [MuPDF versions](#mupdf-versions). On MuPDF 1.28.6 (Homebrew, macOS), at
+  last check (commit `f0ed073`), the package built and three tests failed:
   `TestRawDictWithOptionsDehyphenate` (1.28 dehyphenates differently) and two
   per-glyph redaction cases where the right glyphs are removed but following
   characters shift. 1.28 has not been re-run since many later changes.
@@ -626,6 +701,11 @@ Both belong to the owner. Neither is decided; the package does not pick one.
      drawn and redactable at once; or
    - a future "delete hidden content" operation that removes what the
      configuration hides, which does not exist.
+3. **Raising the compile guard to MuPDF 1.26.** Today the guard allows 1.25.
+   Raising it drops 1.25.6, on which `TestCorpus` already fails because some
+   corpus files behave differently there, and makes the supported set match
+   what CI and the known-failures list cover; keeping it lets consumers on 1.25
+   (older distributions) build, with a corpus test that cannot be run clean.
 2. **The accessibility structure tree.** Whether `Scrub` should drop or strip
    it. Today it keeps the tree (except the declared text stripped on redacted
    pages) and so keeps `/ID`, `/Summary`, `/T` and the other attributes listed
@@ -652,9 +732,17 @@ CI (`.github/workflows/ci.yml`) runs the same steps in a
 total coverage (the last line above prints the total). The tests take about
 half a minute after the package install.
 
-**What was run on which MuPDF.** The suite passes on 1.26.11 (the target) and
-passed repeatedly on 1.25.6. The committed corpus's `KNOWN_FAILURES.tsv` is
-for 1.26.11. See section 7 for 1.28.6 and `mupdf_bundled`.
+### MuPDF versions
+
+- **1.26.11 (Alpine 3.23)**: the target. CI and the committed corpus test's
+  `KNOWN_FAILURES.tsv` are for it. The whole suite passes.
+- **1.25.6**: the compile guard still allows 1.25. The test suite other than
+  `TestCorpus` passes on 1.25.6 (re-run at `d381f88`). `TestCorpus` fails on
+  1.25.6 because some corpus files behave differently there.
+- **1.28.6** (Homebrew, macOS): last checked at commit `f0ed073`; it built and
+  three tests failed (section 7). Not re-run since.
+- **`mupdf_bundled`**: built and tested once against MuPDF 1.25.6 from source
+  and passed (section 7).
 
 **Corpus test (`TestCorpus`, `corpus_test.go`).** Walks `testdata/corpus` (163
 PDFs, 17 MB; sources in `testdata/corpus/SOURCES.md`) and `testdata/fuzz/crashers`
@@ -736,7 +824,8 @@ passes, update the `UseActualText` warning.
   only for a reason (a security fix that affects us, or a feature we need). It
   is gated by consumers' extraction-diff tests and by the corpus test.
 - **The pin is Alpine 3.23 with MuPDF 1.26.11.** Compile-time guard:
-  MuPDF >= 1.25. See section 7 for what was and was not run on 1.28.6.
+  MuPDF >= 1.25 (see [MuPDF versions](#mupdf-versions); raising it to 1.26 is an
+  open decision, section 8).
 - Semver on the fork's own module path. Breaking API changes bump the minor
   version while we're on v1 and are noted in this file, matching how upstream
   has versioned so far.

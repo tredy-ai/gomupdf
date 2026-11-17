@@ -111,8 +111,8 @@ gomupdf links against the MuPDF C library via cgo, so a **C toolchain** and
 | Arch | `sudo pacman -S libmupdf` |
 
 **Alpine / musl.** This fork is built and tested on Alpine 3.23 with its
-packaged MuPDF 1.26.11 and Go 1.27 (MuPDF 1.25 or newer is required; the code
-also builds and passes on 1.25.6). On linux the link
+packaged MuPDF 1.26.11 and Go 1.27 (MuPDF 1.25 or newer is required by the
+compile guard; see the version notes below). On linux the link
 flags come from `pkg-config --libs mupdf`, so nothing else needs configuring:
 
 ```sh
@@ -127,8 +127,11 @@ go build ./...
   and two per-glyph redaction cases where the right glyphs are removed but
   following characters shift. 1.28 has not been re-run since many later
   changes. Only Alpine 3.23 / MuPDF 1.26.11 is a supported target.
-- The package also builds and passes the suite on MuPDF 1.25.6, the oldest
-  version it accepts (older headers fail with a clear `#error`).
+- MuPDF 1.25.6 is the oldest version the compile guard accepts (older headers
+  fail with a clear `#error`). The test suite other than `TestCorpus` passes on
+  it (re-run at `d381f88`); `TestCorpus` fails on 1.25.6 because some corpus
+  files behave differently there. CI and the corpus test's known-failures list
+  are for 1.26.11.
 - On macOS the cgo flags (`cgo_darwin.go`) point at Homebrew's Apple Silicon
   prefix, `/opt/homebrew`; elsewhere set `CGO_CFLAGS` / `CGO_LDFLAGS` as below.
 - The Debian, Fedora and Arch rows in the table above are carried over from
@@ -244,7 +247,8 @@ Changed from upstream: `Open` reads the file on demand instead of loading it
 (do not modify the file while the document is open); every object of a PDF is
 loaded at open, so a damaged file is repaired before anything is read or
 changed; and a password-protected PDF answers nothing (`PageCount` is 0,
-`LoadPage` fails) until `Authenticate` succeeds.
+`LoadPage` fails) until `Authenticate` succeeds. A PDF whose page tree declares more pages than the file has
+objects is refused at open.
 
 ### Text & geometry
 
@@ -417,9 +421,11 @@ for i, page := range doc.Pages() {
 	_, err = page.ApplyRedactions(gomupdf.ApplyOptions{Images: gomupdf.ImageRemove})
 	var ce *gomupdf.RedactionCheckError
 	switch {
-	case errors.As(err, &ce):
-		// text remained (ErrTextRemains) or moved (ErrTextMoved): the page is
-		// not redacted. ce.Page, ce.Remaining, ce.Moved say how much.
+	case errors.Is(err, gomupdf.ErrTextRemains), errors.Is(err, gomupdf.ErrTextMoved):
+		// the page is not redacted; reject the file. errors.As gives the counts.
+		if errors.As(err, &ce) {
+			log.Printf("page %d: %d remain, %d moved, %d excess", ce.Page, ce.Remaining, ce.Moved, ce.Excess)
+		}
 		return err
 	case err != nil:
 		return err // any error: discard doc; later saves fail with ErrRedactionFailed
@@ -470,14 +476,16 @@ Reopen the output and call `HiddenContent` to verify it.
 Content on a layer that MuPDF's default configuration hides is never
 extracted, searched, rendered or redacted, but stays in the file. `Scrub` does
 not touch it. `ShowAllLayers` makes all of it ordinary, visible content; call it
-before extraction and detection.
+before extraction and detection. `HiddenLayers` counts what MuPDF hides but
+cannot see inline `/OC << >> BDC` property lists in content streams, so call
+`ShowAllLayers` whenever `Layers > 0` if you need certainty.
 
 ```go
 hc, err := doc.HiddenContent()
 if err != nil {
 	return err
 }
-if hc.Layers > 0 { // HiddenLayers can undercount; treat any layers as possibly hiding content
+if hc.Layers > 0 { // only Layers == 0 rules out hidden content; reveal whenever certainty matters
 	if err := doc.ShowAllLayers(); err != nil {
 		return err
 	}
