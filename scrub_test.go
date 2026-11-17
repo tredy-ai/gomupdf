@@ -608,8 +608,9 @@ func TestScrubTaggedPDF(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Close()
+	// AssociatedFiles: the page's /AF and the StructElem 25 /AF.
 	want := HiddenContent{
-		Info: true, XMP: true, AcroForm: true, EmbeddedFiles: 1, AssociatedFiles: 1, JavaScript: true,
+		Info: true, XMP: true, AcroForm: true, EmbeddedFiles: 1, AssociatedFiles: 2, JavaScript: true,
 		NonLinkAnnotations: 2, Widgets: 2, Thumbnails: 1, PageMetadata: 1,
 	}
 	if got := scrubHidden(t, d); got != want {
@@ -2519,6 +2520,280 @@ func TestScrubLaunchPlatformsAndNamesNext(t *testing.T) {
 	scrubNoTokens(t, "default", out, winTok, macTok, nextTok)
 	if h := scrubHidden(t, re); h != (HiddenContent{}) {
 		t.Errorf("after scrub: %+v", h)
+	}
+}
+
+// scrubAppendUpdate appends to pdf, a file scrubBuildPDF wrote with size
+// xref entries, an incremental update that rewrites object num as body, with
+// trailerExtra in its trailer.
+func scrubAppendUpdate(pdf []byte, size, num int, body, trailerExtra string) []byte {
+	i := bytes.LastIndex(pdf, []byte("startxref\n")) + len("startxref\n")
+	var prev int
+	fmt.Sscanf(string(pdf[i:]), "%d", &prev)
+	b := bytes.NewBuffer(append([]byte(nil), pdf...))
+	off := b.Len()
+	fmt.Fprintf(b, "%d 0 obj\n%s\nendobj\n", num, body)
+	x := b.Len()
+	fmt.Fprintf(b, "xref\n0 1\n0000000000 65535 f \n%d 1\n%010d 00000 n \ntrailer\n<< /Size %d /Root 1 0 R /Prev %d %s >>\nstartxref\n%d\n%%%%EOF\n",
+		num, off, size, prev, trailerExtra, x)
+	return b.Bytes()
+}
+
+// scrubXRefStreamPDF is scrubBuildPDF with a cross-reference stream (object
+// len(objs)+1, its dictionary holding trailerExtra) instead of an xref table.
+func scrubXRefStreamPDF(objs []string, trailerExtra string) []byte {
+	pdf := scrubBuildPDF(objs, "")
+	pdf = pdf[:bytes.LastIndex(pdf, []byte("\nxref\n"))+1]
+	var offs []int
+	for i := range objs {
+		offs = append(offs, bytes.Index(pdf, []byte(fmt.Sprintf("\n%d 0 obj\n", i+1)))+1)
+	}
+	n := len(objs) + 1
+	offs = append(offs, len(pdf))
+	var rows bytes.Buffer
+	rows.Write([]byte{0, 0, 0, 0, 0, 0xff, 0xff})
+	for _, o := range offs {
+		rows.Write([]byte{1, byte(o >> 24), byte(o >> 16), byte(o >> 8), byte(o), 0, 0})
+	}
+	b := bytes.NewBuffer(pdf)
+	fmt.Fprintf(b, "%d 0 obj\n<< /Type /XRef /Size %d /W [1 4 2] /Root 1 0 R %s /Length %d >>\nstream\n", n, n+1, trailerExtra, rows.Len())
+	b.Write(rows.Bytes())
+	fmt.Fprintf(b, "\nendstream\nendobj\nstartxref\n%d\n%%%%EOF\n", offs[n-1])
+	return b.Bytes()
+}
+
+// /Info goes from a file whose trailer is a cross-reference stream (where
+// MuPDF's first edit to it starts a new xref section with a copy of the
+// trailer) and from one with an incremental update, and an /Info typed
+// /Type /Info is destroyed although the structure tree references it.
+// (Reduced from pdf.js issue11131_reduced.pdf.)
+func TestScrubInfoTrailerCopies(t *testing.T) {
+	const tok = "GomupdfIncrInfo4d2b"
+	page := `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>`
+	objs := []string{
+		/* 1 */ `<< /Type /Catalog /Pages 2 0 R /MarkInfo << /Marked true >> /StructTreeRoot 5 0 R >>`,
+		/* 2 */ `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+		/* 3 */ page,
+		/* 4 */ `<< /Type /Info /Title (` + tok + `) >>`,
+		/* 5 */ `<< /Type /StructTreeRoot /K [6 0 R] >>`,
+		/* 6 */ `<< /Type /StructElem /S /Document /P 5 0 R /GomupdfRefs [4 0 R] >>`,
+	}
+	cases := map[string][]byte{
+		"xref stream":        scrubXRefStreamPDF(objs, "/Info 4 0 R"),
+		"incremental update": scrubAppendUpdate(scrubBuildPDF(objs, "/Info 4 0 R"), 7, 3, page, "/Info 4 0 R"),
+	}
+	for name, pdf := range cases {
+		t.Run(name, func(t *testing.T) {
+			scrubControl(t, pdf, tok)
+			d, err := OpenStream(pdf)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			if h := scrubHidden(t, d); !h.Info {
+				t.Fatalf("Info not reported before scrub: %+v", h)
+			}
+			if err := d.Scrub(ScrubOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			if h := scrubHidden(t, d); h != (HiddenContent{}) {
+				t.Errorf("in memory after scrub: %+v", h)
+			}
+			out, re := scrubRoundTrip(t, pdf, ScrubOptions{})
+			scrubNoTokens(t, "default", out, tok)
+			if h := scrubHidden(t, re); h != (HiddenContent{}) {
+				t.Errorf("after scrub: %+v", h)
+			}
+		})
+	}
+}
+
+// A field tree in which every node lists its one kid twice (2^24 paths, 25
+// distinct nodes) is walked once per node: a script on a node deep in it is
+// found and removed, and without one the form reads clean, with no
+// fail-closed JavaScript from an exhausted walk. (Reduced from qpdf
+// shared-unnamed-field.pdf.)
+func TestScrubSharedFieldKids(t *testing.T) {
+	const depth = 24
+	const tok = "GomupdfSharedFieldJS8a3c"
+	tree := func(script bool) []byte {
+		objs := []string{
+			`<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [4 0 R] >> >>`,
+			`<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+			fmt.Sprintf(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots [%d 0 R] >>`, 4+depth),
+		}
+		for i := range depth {
+			aa := ""
+			if script && i == depth-4 {
+				aa = ` /AA << /C << /S /JavaScript /JS (var ` + tok + ` = 1;) >> >>`
+			}
+			parent := ""
+			if i > 0 {
+				parent = fmt.Sprintf(" /Parent %d 0 R", 3+i)
+			}
+			objs = append(objs, fmt.Sprintf(`<< /Kids [%d 0 R %d 0 R]%s%s >>`, 5+i, 5+i, parent, aa))
+		}
+		objs = append(objs, fmt.Sprintf(`<< /Type /Annot /Subtype /Widget /FT /Tx /T (leaf) /Rect [0 0 50 20] /Parent %d 0 R >>`, 3+depth))
+		return scrubBuildPDF(objs, "")
+	}
+	clean := HiddenContent{AcroForm: true, Widgets: 1}
+	for _, script := range []bool{false, true} {
+		t.Run(fmt.Sprintf("script %v", script), func(t *testing.T) {
+			pdf := tree(script)
+			d, err := OpenStream(pdf)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			want := clean
+			want.JavaScript = script
+			start := time.Now()
+			if h := scrubHidden(t, d); h != want {
+				t.Errorf("before scrub: %+v, want %+v", h, want)
+			}
+			out, re := scrubRoundTrip(t, pdf, ScrubOptions{KeepFormFields: true})
+			if el := time.Since(start); el > 2*time.Second {
+				t.Errorf("took %v", el)
+			}
+			scrubNoTokens(t, "KeepFormFields", out, tok)
+			if h := scrubHidden(t, re); h != clean {
+				t.Errorf("after scrub: %+v, want %+v", h, clean)
+			}
+		})
+	}
+}
+
+// Scrub removes /AF wherever it occurs (here on an image the page draws, a
+// form XObject, a structure element and a kept Link) and destroys the
+// filespecs and embedded files, although the page still draws the image;
+// a colour space resource that happens to be named /AF is not touched.
+// (Reduced from veraPDF 6-8-t02-pass-b.pdf, where the attachment is listed
+// in /Names/EmbeddedFiles and in the /AF of three drawn images.)
+func TestScrubAFEverywhere(t *testing.T) {
+	const imgTok, formTok, elemTok, linkTok, bodyTok = "GomupdfAFImage.csv", "GomupdfAFForm.csv",
+		"GomupdfAFElem.csv", "GomupdfAFLink.csv", "GomupdfAFBody6e1d"
+	fs := func(tok string, ef string) string {
+		return `<< /Type /Filespec /F (` + tok + `) /UF (` + tok + `)` + ef + ` /AFRelationship /Source >>`
+	}
+	pdf := scrubBuildPDF([]string{
+		/* 1 */ `<< /Type /Catalog /Pages 2 0 R /MarkInfo << /Marked true >> /StructTreeRoot 13 0 R
+   /Names << /EmbeddedFiles << /Names [(a) 8 0 R] >> >> >>`,
+		/* 2 */ `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+		/* 3 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [12 0 R]
+   /Resources << /Font << /F1 5 0 R >> /XObject << /Im1 6 0 R /Fm1 7 0 R >> /ColorSpace 16 0 R >> >>`,
+		/* 4 */ "\nstream\nBT /F1 12 Tf 20 150 Td (" + scrubPageText + ") Tj ET q 40 0 0 40 120 20 cm /Im1 Do Q /Fm1 Do q /AF cs 1 sc 10 10 30 30 re f Q",
+		/* 5 */ `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>`,
+		/* 6 */ "/Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8 /AF [8 0 R]\nstream\n\x00\xff\xff\x00",
+		/* 7 */ "/Type /XObject /Subtype /Form /BBox [0 0 200 200] /AF [10 0 R]\nstream\n0 0 1 rg 60 60 20 20 re f",
+		/* 8 */ fs(imgTok, ` /EF << /F 9 0 R >>`),
+		/* 9 */ "/Type /EmbeddedFile\nstream\n" + bodyTok,
+		/* 10 */ fs(formTok, ""),
+		/* 11 */ fs(elemTok, ""),
+		/* 12 */ `<< /Type /Annot /Subtype /Link /Rect [0 0 20 20] /A << /S /URI /URI (https://example.com/) >> /AF [15 0 R] >>`,
+		/* 13 */ `<< /Type /StructTreeRoot /K [14 0 R] >>`,
+		/* 14 */ `<< /Type /StructElem /S /Figure /P 13 0 R /Pg 3 0 R /AF [11 0 R] >>`,
+		/* 15 */ fs(linkTok, ""),
+		/* 16 */ `<< /AF [/Indexed /DeviceRGB 1 <FF000000FF00>] >>`,
+	}, "")
+	scrubControl(t, pdf, imgTok, formTok, elemTok, linkTok, bodyTok)
+	d, err := OpenStream(pdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if h := scrubHidden(t, d); h.AssociatedFiles != 4 {
+		t.Errorf("AssociatedFiles before scrub = %d, want 4", h.AssociatedFiles)
+	}
+	re := scrubCheckKept(t, pdf, ScrubOptions{})
+	if h := scrubHidden(t, re); h != (HiddenContent{}) {
+		t.Errorf("after scrub: %+v", h)
+	}
+	out, err := re.SaveBytesWithOptions(scrubSaveOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scrubNoTokens(t, "default", out, imgTok, formTok, elemTok, linkTok, bodyTok)
+	p, _ := re.LoadPage(0)
+	if l, err := p.Links(); err != nil || len(l) != 1 {
+		t.Errorf("links after scrub = %+v, %v; want the URI link", l, err)
+	}
+}
+
+// An /AF array with entries other than file specifications (null, a name)
+// still loses its file specifications: the attachment of a drawn image goes,
+// and the page draws as before.
+func TestScrubAFMixedEntries(t *testing.T) {
+	const tok, bodyTok = "GomupdfAFMixed.csv", "GomupdfAFMixedBody2c8e"
+	pdf := scrubBuildPDF([]string{
+		/* 1 */ `<< /Type /Catalog /Pages 2 0 R /Names << /EmbeddedFiles << /Names [(a) 7 0 R] >> >> >>`,
+		/* 2 */ `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+		/* 3 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R
+   /Resources << /Font << /F1 5 0 R >> /XObject << /Im1 6 0 R /Im2 9 0 R >> >> >>`,
+		/* 4 */ "\nstream\nBT /F1 12 Tf 20 150 Td (" + scrubPageText + ") Tj ET q 40 0 0 40 120 20 cm /Im1 Do Q q 40 0 0 40 20 20 cm /Im2 Do Q",
+		/* 5 */ `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>`,
+		/* 6 */ "/Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8 /AF [7 0 R null]\nstream\n\x00\xff\xff\x00",
+		/* 7 */ `<< /Type /Filespec /F (` + tok + `) /UF (` + tok + `) /EF << /F 8 0 R >> >>`,
+		/* 8 */ "/Type /EmbeddedFile\nstream\n" + bodyTok,
+		/* 9 */ "/Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8 /AF [/x 7 0 R]\nstream\n\xff\x00\x00\xff",
+	}, "")
+	scrubControl(t, pdf, tok, bodyTok)
+	d, err := OpenStream(pdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if h := scrubHidden(t, d); h.AssociatedFiles != 2 {
+		t.Errorf("AssociatedFiles before scrub = %d, want 2", h.AssociatedFiles)
+	}
+	re := scrubCheckKept(t, pdf, ScrubOptions{})
+	if h := scrubHidden(t, re); h != (HiddenContent{}) {
+		t.Errorf("after scrub: %+v", h)
+	}
+	out, err := re.SaveBytesWithOptions(scrubSaveOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scrubNoTokens(t, "default", out, tok, bodyTok)
+}
+
+// HiddenContent loads every object first, so a file whose cross-reference
+// table is broken (it lists too few objects, so MuPDF counts 0 pages, and one
+// entry points at the wrong object, so loading every object makes MuPDF
+// repair it) is repaired before anything is read: the page that appears is
+// checked, and PageCount afterwards is what a save would give. (Reduced from
+// pdf.js GHOSTSCRIPT-698804-1-fuzzed.pdf.)
+func TestScrubHiddenContentRepairsFirst(t *testing.T) {
+	pdf := scrubBuildPDF([]string{
+		/* 1 */ `<< /Type /Catalog /Pages 3 0 R /Outline 2 0 R >>`, // sic, as in the original
+		/* 2 */ `<< /Type /Outlines /Count 0 >>`,
+		/* 3 */ `<< /Type /Pages /Kids [4 0 R] /Count 1 >>`,
+		/* 4 */ `<< /Type /Page /Parent 3 0 R /MediaBox [0 0 200 200] /Annots [5 0 R] >>`,
+		/* 5 */ `<< /Type /Annot /Subtype /Link /Rect [0 0 50 50] /A << /S /JavaScript /JS (app.alert\(1\)) >> >>`,
+	}, "")
+	// List objects 0 to 2 only, with object 2 pointing at object 4.
+	x := bytes.LastIndex(pdf, []byte("\nxref\n")) + 1
+	rows := pdf[x+len("xref\n"):]
+	rows = rows[bytes.IndexByte(rows, '\n')+1:]
+	short := fmt.Appendf(append([]byte(nil), pdf[:x]...), "xref\n0 3\n%s%010d 00000 n \n",
+		rows[:40], bytes.Index(pdf, []byte("\n4 0 obj"))+1)
+	short = fmt.Appendf(short, "trailer\n<< /Size 3 /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n", x)
+	if d, err := OpenStream(short); err != nil || d.PageCount() != 0 {
+		t.Fatalf("fixture: %v, want a document with 0 pages before repair", err)
+	} else {
+		d.Close()
+	}
+
+	d, err := OpenStream(short)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	h := scrubHidden(t, d)
+	if !h.JavaScript {
+		t.Errorf("HiddenContent missed the Link script on the repaired page: %+v", h)
+	}
+	if n := d.PageCount(); n != 1 {
+		t.Errorf("PageCount after HiddenContent = %d, want 1", n)
 	}
 }
 

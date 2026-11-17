@@ -111,6 +111,7 @@ static int gomupdf_name_in(const char *name, const char **list) {
 #define GM_ASAFE 4096  // an action gomupdf_action_walk decided safe
 #define GM_ABAD 8192   // an action gomupdf_action_walk decided unsafe
 #define GM_AREC 16384  // an action gomupdf_record_chain has recorded
+#define GM_FWALK 32768 // a field gomupdf_fields has walked (a shared kid is walked once)
 
 enum { GS_WALK, GS_TOP, GS_DOWN, GS_UP, GS_LINK, GS_COUNT };
 
@@ -162,6 +163,20 @@ static void gomupdf_marks_free(fz_context *ctx, gomupdf_marks *mk) {
 
 static void gomupdf_destroy(fz_context *ctx, gomupdf_marks *mk, pdf_obj *obj, int kind);
 static void gomupdf_destroy_action(fz_context *ctx, gomupdf_marks *mk, pdf_obj *act);
+static int gomupdf_is_kind(fz_context *ctx, pdf_obj *o, int kind);
+static void gomupdf_af_sweep(fz_context *ctx, pdf_document *pdf, gomupdf_marks *mk, int *out);
+
+// gomupdf_af_files returns how many entries of the array v are file
+// specification dictionaries: an /AF with any is an associated-files array.
+// Outside the catalog and pages Scrub removes only those entries (and the
+// key, when every entry is one), and the marking skips only those entries,
+// so a resource that happens to be named /AF (a colour space array, which
+// never holds a filespec) is never touched.
+static int gomupdf_af_files(fz_context *ctx, pdf_obj *v) {
+    int n = pdf_array_len(ctx, v), files = 0;
+    for (int i = 0; i < n; i++) files += gomupdf_is_kind(ctx, pdf_array_get(ctx, v, i), GK_FILESPEC);
+    return files;
+}
 static void gomupdf_page_nodes(fz_context *ctx, gomupdf_marks *mk, pdf_obj *page, unsigned short seen,
                                int *out, gomupdf_marks *ax);
 
@@ -343,12 +358,27 @@ static void gomupdf_keep_on(fz_context *ctx, gomupdf_marks *mk, int which, pdf_o
 }
 #define gomupdf_keep(ctx, mk, obj) gomupdf_keep_on(ctx, mk, GS_WALK, obj)
 
+// gomupdf_keep_value keeps the value v of key k (on stack which), except, when
+// k is /AF and v an associated-files array (gomupdf_af_files), its file
+// specifications, which Scrub removes everywhere.
+static void gomupdf_keep_value(fz_context *ctx, gomupdf_marks *mk, int which, pdf_obj *k, pdf_obj *v) {
+    if (!pdf_name_eq(ctx, k, PDF_NAME(AF)) || !gomupdf_af_files(ctx, v)) {
+        gomupdf_keep_on(ctx, mk, which, v);
+        return;
+    }
+    int n = pdf_array_len(ctx, v);
+    for (int i = 0; i < n; i++) {
+        pdf_obj *e = pdf_array_get(ctx, v, i);
+        if (!gomupdf_is_kind(ctx, e, GK_FILESPEC)) gomupdf_keep_on(ctx, mk, which, e);
+    }
+}
+
 // gomupdf_keep_tops expands the kept annotations, outline items and (with
 // KeepFormFields or KeepAnnotations) the /AcroForm dictionary and its field
 // tree: everything they reference is kept except through their own /Parent,
-// /P, /Popup, /AA, /SE and /XFA, which lead up a tree, to another
-// annotation, to actions or XFA streams Scrub removes or into the structure
-// tree, and except an /A or /PA that is or
+// /P, /Popup, /AA, /SE, /XFA and an associated-files /AF, which lead up a
+// tree, to another annotation, to actions, XFA streams or files Scrub
+// removes or into the structure tree, and except an /A or /PA that is or
 // chains to a JavaScript or Launch action, which Scrub removes (one that is
 // also reached as content is walked in full as well). Outline siblings and
 // children, /Fields, /Kids and /CO entries and an /IRT annotation are
@@ -367,12 +397,12 @@ static void gomupdf_keep_tops(fz_context *ctx, gomupdf_marks *mk) {
         for (int i = 0; i < n; i++) gomupdf_keep_on(ctx, mk, GS_TOP, pdf_array_get(ctx, o, i));
         n = pdf_dict_len(ctx, o);
         for (int i = 0; i < n; i++) {
-            const char *k = pdf_to_name(ctx, pdf_dict_get_key(ctx, o, i));
-            pdf_obj *v = pdf_dict_get_val(ctx, o, i);
+            pdf_obj *key = pdf_dict_get_key(ctx, o, i), *v = pdf_dict_get_val(ctx, o, i);
+            const char *k = pdf_to_name(ctx, key);
             if (gomupdf_name_in(k, skip)) continue;
             if ((!strcmp(k, "A") || !strcmp(k, "PA")) && gomupdf_action_unsafe(ctx, v, mk, NULL))
                 continue;
-            gomupdf_keep_on(ctx, mk, gomupdf_name_in(k, items) ? GS_TOP : GS_WALK, v);
+            gomupdf_keep_value(ctx, mk, gomupdf_name_in(k, items) ? GS_TOP : GS_WALK, key, v);
         }
         pdf_drop_obj(ctx, mk->cur);
         mk->cur = NULL;
@@ -401,8 +431,10 @@ static int gomupdf_walk_skips(fz_context *ctx, int is_page, int is_root, pdf_obj
 // follows every key, except those gomupdf_walk_skips names on pages, on
 // intermediate page-tree nodes not reached as page content (which Scrub
 // edits; one reached as content was queued with GM_CONTENT, before any other
-// role, and is left as it is) and on the catalog. Nothing in the loop body
-// resolves an object after o, so o stays valid.
+// role, and is left as it is) and on the catalog, and the file
+// specifications of an associated-files /AF on any object
+// (gomupdf_keep_value), which Scrub removes everywhere. The object is held
+// while expanding it, as that check resolves others.
 static void gomupdf_keep_walk(fz_context *ctx, gomupdf_marks *mk) {
     gomupdf_stack *s = &mk->s[GS_WALK];
     while (s->n) {
@@ -410,15 +442,19 @@ static void gomupdf_keep_walk(fz_context *ctx, gomupdf_marks *mk) {
         unsigned short *m = gomupdf_mark(ctx, mk, mk->cur);
         int is_page = m && ((*m & GM_PAGE) || (*m & (GM_INODE | GM_CONTENT)) == GM_INODE);
         int is_root = m && pdf_to_num(ctx, mk->cur) == mk->root;
-        pdf_obj *o = pdf_resolve_indirect(ctx, mk->cur);
+        pdf_obj *o = pdf_keep_obj(ctx, pdf_resolve_indirect(ctx, mk->cur));
+        pdf_drop_obj(ctx, mk->cur);
+        mk->cur = o;
         if (pdf_is_array(ctx, o)) {
             int n = pdf_array_len(ctx, o);
             for (int i = 0; i < n; i++) gomupdf_keep(ctx, mk, pdf_array_get(ctx, o, i));
         } else if (pdf_is_dict(ctx, o)) {
             int n = pdf_dict_len(ctx, o);
-            for (int i = 0; i < n; i++)
-                if (!gomupdf_walk_skips(ctx, is_page, is_root, pdf_dict_get_key(ctx, o, i)))
-                    gomupdf_keep(ctx, mk, pdf_dict_get_val(ctx, o, i));
+            for (int i = 0; i < n; i++) {
+                pdf_obj *k = pdf_dict_get_key(ctx, o, i);
+                if (!gomupdf_walk_skips(ctx, is_page, is_root, k))
+                    gomupdf_keep_value(ctx, mk, GS_WALK, k, pdf_dict_get_val(ctx, o, i));
+            }
         }
         pdf_drop_obj(ctx, mk->cur);
         mk->cur = NULL;
@@ -587,7 +623,8 @@ static int gomupdf_is_kind(fz_context *ctx, pdf_obj *o, int kind) {
     int stream = pdf_is_stream(ctx, o), dict = !stream && pdf_is_dict(ctx, o);
     if (GK_IS(st, Link)) return 0;
     switch (kind) {
-    case GK_INFO: case GK_EF: case GK_LAUNCHP: return dict && !t;
+    case GK_INFO: return dict && (!t || GK_IS(t, Info)); // FOP writes /Type /Info
+    case GK_EF: case GK_LAUNCHP: return dict && !t;
     case GK_ACROFORM: return dict && !t && (GK_HAS(Fields) || GK_HAS(XFA));
     case GK_TREE: return dict && !t && (GK_HAS(Names) || GK_HAS(Kids));
     case GK_FILESPEC:
@@ -726,7 +763,9 @@ static void gomupdf_destroy_name_tree(fz_context *ctx, gomupdf_marks *del, pdf_o
 // gomupdf_fields walks the /AcroForm field tree below the array fields,
 // following /Kids at most GOMUPDF_MAX_DEPTH levels deep and charging one unit
 // of *budget per array entry; a node too deep or on a /Kids cycle is skipped,
-// and everything past the budget, which makes the walk incomplete. Each
+// and everything past the budget, which makes the walk incomplete. An
+// indirect node already walked (GM_FWALK in ax: a kid several parents list)
+// is skipped, so a tree that shares its kids is walked once per node. Each
 // node's actions charge ax (gomupdf_actions). Without mk (HiddenContent)
 // it returns 1 as soon as a node has a JavaScript or Launch action or the walk
 // is incomplete. With mk and !strip (Scrub removing /AcroForm) it records
@@ -747,6 +786,9 @@ static int gomupdf_fields(fz_context *ctx, gomupdf_marks *mk, int strip, pdf_obj
             found = 1;
             continue;
         }
+        unsigned short *fm = gomupdf_mark(ctx, ax, f);
+        if (fm && (*fm & GM_FWALK)) continue; // a kid shared by several parents
+        if (fm) *fm |= GM_FWALK;
         int c = gomupdf_in_content(ctx, mk, f, in);
         if (!strip) gomupdf_destroy(ctx, mk, f, GK_FIELD);
         if (!(strip && c)) found |= gomupdf_actions(ctx, mk, f, strip, ax);
@@ -834,12 +876,19 @@ static int gomupdf_hidden_content(fz_context *ctx, fz_document *doc, int *out,
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) { snprintf(err, errlen, "not a PDF document"); return -1; }
     for (int i = 0; i < HC_COUNT; i++) out[i] = 0;
-    // Marks only for the walks up /Parent: GM_PAGE, GM_DONE and GM_FUP.
+    // Marks for the walks up /Parent and the action and field walks: no
+    // kept-content marking.
     gomupdf_marks mk;
     memset(&mk, 0, sizeof mk);
     fz_var(mk);
     int failed = 0;
     fz_try(ctx) {
+        // Load every object first, as Scrub does: the /AF sweep reads them
+        // all, and a repair MuPDF needs must happen before anything is read
+        // (so the counts describe the repaired document, page count
+        // included) and never while an array taken from the old xref is in
+        // use.
+        gomupdf_load_all(ctx, pdf);
         pdf_obj *trailer = pdf_trailer(ctx, pdf);
         pdf_obj *root = pdf_dict_get(ctx, trailer, PDF_NAME(Root));
         pdf_obj *names = pdf_dict_get(ctx, root, PDF_NAME(Names));
@@ -902,6 +951,7 @@ static int gomupdf_hidden_content(fz_context *ctx, fz_document *doc, int *out,
                     gomupdf_add(&out[HC_NONLINK], 1);
             }
         }
+        gomupdf_af_sweep(ctx, pdf, &mk, out);
     }
     fz_always(ctx) gomupdf_marks_free(ctx, &mk);
     fz_catch(ctx) {
@@ -909,6 +959,55 @@ static int gomupdf_hidden_content(fz_context *ctx, fz_document *doc, int *out,
         failed = 1;
     }
     return failed ? -1 : 0;
+}
+
+// gomupdf_af_sweep visits every object in the xref, skipping the catalog,
+// pages and intermediate page-tree nodes (GM_PAGE, GM_INODE or GM_DONE in
+// mk, whose /AF is handled with them), and finds each /AF that is an
+// associated-files array (gomupdf_af_files). With out (HiddenContent) it
+// counts them; otherwise (Scrub) it records their filespecs for destruction
+// and, when every entry is one, deletes /AF in place, even on page content
+// such as an image XObject: /AF plays no part in drawing, and a resource
+// named /AF never holds a filespec. A mixed array keeps its other entries,
+// and its destroyed filespecs become null. A direct dictionary nested in an
+// object is not visited. The caller has loaded every object first
+// (gomupdf_load_all), so no repair can happen during the sweep.
+static void gomupdf_af_sweep(fz_context *ctx, pdf_document *pdf, gomupdf_marks *mk, int *out) {
+    int n = pdf_xref_len(ctx, pdf);
+    for (int i = 1; i < n; i++) {
+        if (i == mk->root || (i < mk->len && (mk->m[i] & (GM_PAGE | GM_INODE | GM_DONE)))) continue;
+        pdf_obj *ref = pdf_new_indirect(ctx, pdf, i, 0), *af = NULL;
+        fz_var(af);
+        fz_try(ctx) {
+            af = pdf_keep_obj(ctx, pdf_dict_get(ctx, ref, PDF_NAME(AF))); // a broken object is null
+            int files = gomupdf_af_files(ctx, af);
+            if (files && out) {
+                gomupdf_add(&out[HC_AF], 1);
+            } else if (files) {
+                for (int j = 0; j < pdf_array_len(ctx, af); j++)
+                    gomupdf_destroy_filespec(ctx, mk, pdf_array_get(ctx, af, j));
+                if (files == pdf_array_len(ctx, af)) pdf_dict_del(ctx, ref, PDF_NAME(AF));
+            }
+        }
+        fz_always(ctx) {
+            pdf_drop_obj(ctx, af);
+            pdf_drop_obj(ctx, ref);
+        }
+        fz_catch(ctx) fz_rethrow(ctx);
+    }
+}
+
+// gomupdf_trailer_del deletes key from the trailer. The first edit to an
+// object makes MuPDF start an incremental xref section with a copy of the
+// trailer, and when the trailer is a cross-reference stream's dictionary,
+// editing the trailer is that first edit: the copy keeps the key, and a
+// trailer fetched before it is stale. So it deletes from the current trailer
+// until that holds no key, and fails if it cannot.
+static void gomupdf_trailer_del(fz_context *ctx, pdf_document *pdf, pdf_obj *key) {
+    for (int i = 0; i < 3 && pdf_dict_get(ctx, pdf_trailer(ctx, pdf), key); i++)
+        pdf_dict_del(ctx, pdf_trailer(ctx, pdf), key);
+    if (pdf_dict_get(ctx, pdf_trailer(ctx, pdf), key))
+        fz_throw(ctx, FZ_ERROR_FORMAT, "cannot remove /%s from the trailer", pdf_to_name(ctx, key));
 }
 
 // gomupdf_own returns the value of key in the dictionary parent (or, with a
@@ -1054,7 +1153,7 @@ static int gomupdf_scrub(fz_context *ctx, fz_document *doc, int keep_annots, int
         gomupdf_destroy_xfa(ctx, &mk, pdf_dict_getp(ctx, root, "AcroForm/XFA"));
         gomupdf_aa_unsafe(ctx, pdf_dict_get(ctx, root, PDF_NAME(AA)), &mk, &mk);
 
-        pdf_dict_del(ctx, trailer, PDF_NAME(Info));
+        gomupdf_trailer_del(ctx, pdf, PDF_NAME(Info));
         pdf_dict_del(ctx, root, PDF_NAME(Metadata));
         pdf_dict_del(ctx, root, PDF_NAME(AA));
         pdf_dict_del(ctx, root, PDF_NAME(AF));
@@ -1114,6 +1213,9 @@ static int gomupdf_scrub(fz_context *ctx, fz_document *doc, int keep_annots, int
             gomupdf_outline(ctx, &mk, outlines, gomupdf_in_content(ctx, &mk, outlines, 0), 0, NULL, &budget,
                             &mk);
         }
+        // /AF wherever else it occurs: XObjects, structure elements,
+        // annotations, outline items, Scrub's own copies.
+        gomupdf_af_sweep(ctx, pdf, &mk, NULL);
     }
     fz_catch(ctx) {
         snprintf(err, errlen, "%s", fz_caught_message(ctx));

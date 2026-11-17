@@ -59,7 +59,9 @@ type HiddenContent struct {
 	EmbeddedFiles int
 	// AssociatedFiles is the number of /AF arrays on the catalog, on page
 	// dictionaries and on intermediate page-tree nodes (the /Pages nodes
-	// above a page, up to 32 levels, each counted once).
+	// above a page, up to 32 levels, each counted once), plus the number of
+	// other objects (XObjects, structure elements, annotations and so on)
+	// whose /AF is an array holding a file specification.
 	AssociatedFiles int
 
 	// JavaScript reports /Names/JavaScript, or a script action (directly or
@@ -149,6 +151,11 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 //   - whatever the options, /AcroForm /XFA (a stream, or an array of
 //     name/stream pairs) and the catalog /NeedsRendering, while the rest of
 //     a kept /AcroForm stays;
+//   - the file specifications of /AF wherever else an object (an image or
+//     form XObject, a structure element, an annotation that stays, an
+//     outline item) has an /AF array holding one, and the /AF key too when
+//     every entry is one; a direct dictionary nested inside another object
+//     is not searched;
 //   - on every annotation that stays, /AA, and each of /A and /PA that is or
 //     chains through /Next to a JavaScript or Launch action; when the form
 //     stays (opts.KeepAnnotations or opts.KeepFormFields), the same on every
@@ -167,7 +174,7 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // filespecs, and, unless the form stays, the /AcroForm dictionary with its
 // field tree; in every case it is /Info, the XMP stream,
 // page and page-tree node /Metadata and /Thumb streams, the filespecs of
-// /Names/EmbeddedFiles and of catalog, page and node /AF, every such
+// /Names/EmbeddedFiles and of every /AF Scrub removes, every such
 // filespec's /EF streams, the /Names/JavaScript actions with their script
 // strings and streams, the nodes of both name trees, the /XFA streams, and
 // every JavaScript or Launch action Scrub removes or removes the holder of
@@ -177,7 +184,7 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // action's /Win, /Mac and /Unix dictionaries with their /F files, and with
 // every other action dictionary of the chain it removes (a GoTo whose /Next
 // is the script, say). Each is destroyed only if it is recognisably of its
-// kind (an /Info dictionary has no /Type, an XMP stream has /Type /Metadata
+// kind (an /Info dictionary has no /Type or /Type /Info, an XMP stream has /Type /Metadata
 // or /Subtype /XML, a filespec has /Type /Filespec, a script action is one
 // as HiddenContent's JavaScript field defines it, another action has /S and
 // no /Type other than /Action, an XFA stream has no /Type or /Subtype, and
@@ -199,8 +206,11 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // every key, whatever other role it has (page-tree node, kept annotation,
 // field, outline item), except on a page or an intermediate page-tree node
 // that Scrub edits, where the walk skips the keys Scrub removes there and
-// /Annots, and on the catalog, where it skips the keys Scrub removes or edits
-// there, /Pages and /StructTreeRoot. A removed entry that points at kept
+// /Annots, on the catalog, where it skips the keys Scrub removes or edits
+// there, /Pages and /StructTreeRoot, and on any object the file
+// specifications in an /AF array (an image the page draws may carry one;
+// Scrub removes them in place, which does not change the drawing, and a
+// resource named /AF never holds a file specification). A removed entry that points at kept
 // content (a /Thumb that the page also draws, an /Info that is the page's
 // /Resources, a JavaScript action that is also a graphics state, an action
 // that a kept /A or a kept /OpenAction also uses) is only unlinked. A
@@ -212,7 +222,8 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // resources, actions other than JavaScript and Launch, /PieceInfo,
 // /Outlines, objects not recognisably of the removed kind, and the parts of
 // a name tree, field tree or outline beyond 32 levels or 65,536 units of
-// walk work, and of a page tree more than 32 levels above a page. Unlinked
+// walk work (a field listed by several parents is walked once), and of a
+// page tree more than 32 levels above a page. Unlinked
 // objects leave the file only if nothing else references them. Scrub's
 // marking pass and its edit pass each have an action budget of 4,096 + 32 x
 // (xref length) reaches, as a HiddenContent call does, and the edit pass
@@ -223,8 +234,12 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 //
 // Out of scope: the scripts of 3D and RichMedia annotations when annotations
 // are kept; actions of other kinds that reach outside the file (URI, GoToR,
-// GoToE, SubmitForm, ImportData); content beyond the limits above; and a
-// field-tree node, outline item or page-tree node that is also page content.
+// GoToE, SubmitForm, ImportData); content beyond the limits above; a
+// field-tree node, outline item or page-tree node that is also page content;
+// an annotation or widget that is on no page's /Annots and not in the
+// /AcroForm field tree (one only the structure tree references); and text
+// in structure elements, optional-content groups, name trees and other
+// document-level dictionaries Scrub does not list here.
 //
 // Scrub is meaningful only followed by a non-incremental save with
 // SaveOptions.Garbage >= 1, which drops unreferenced objects and nulls
@@ -261,8 +276,12 @@ func (d *Document) Scrub(opts ScrubOptions) error {
 	return nil
 }
 
-// HiddenContent reports what Scrub would remove, without changing the
-// document. See HiddenContent's fields for exactly which locations are read;
+// HiddenContent reports what Scrub would remove, without editing the
+// document. It first loads every object, as Scrub does, so a file whose
+// cross-reference table MuPDF has to repair is repaired before anything is
+// read, as a save would repair it; PageCount can change (a broken file that
+// read as 0 pages can have 1 afterwards), and the counts describe the
+// repaired document. See HiddenContent's fields for exactly which locations are read;
 // it does not search other references (a structure tree, say) for removed
 // content, so a zero result relies on Scrub having destroyed it. When the
 // name-tree or action walk hits a limit, the field it feeds fails closed
