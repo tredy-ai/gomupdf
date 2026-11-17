@@ -489,7 +489,9 @@ func (d *Document) Scrub(opts ScrubOptions) error {
 // (EmbeddedFiles at least 1, JavaScript true); see the fields for the limits.
 // The pages it checks are those MuPDF serves: a page MuPDF cannot look up in a
 // damaged or cyclic page tree (and cannot load either) is skipped, not an
-// error, and a page dictionary it never serves counts as an orphan page. A
+// error, as is a /Kids entry naming a missing object (which MuPDF serves as
+// an empty page), and a page dictionary it never serves counts as an orphan
+// page. A
 // page count above 8,388,607 is refused, as Open refuses it, and
 // HiddenContent and Scrub return an error for it.
 //

@@ -1046,16 +1046,17 @@ func TestScrubDestroysCreatedObjects(t *testing.T) {
 	}
 }
 
-// A Scrub that fails partway (here on a /Kids entry that is not a page)
-// returns an error and still destroys what it had already unlinked, so that
-// does not survive through a structure-tree reference.
+// A Scrub that fails partway (here on a catalog /Names that is not a
+// dictionary) returns an error and still destroys what it had already
+// unlinked (the form's widget, /Info), so that does not survive through a
+// structure-tree reference.
 func TestScrubFailureStillDestroys(t *testing.T) {
 	const annotTok, infoTok = "GomupdfFailAnnot2d6f", "GomupdfFailInfo8c4a"
 	pdf := scrubBuildPDF([]string{
-		/* 1 */ `<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 6 0 R >>`,
-		/* 2 */ `<< /Type /Pages /Kids [3 0 R 99 0 R] /Count 2 >>`,
+		/* 1 */ `<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 6 0 R /AcroForm << /Fields [4 0 R] >> /Names 0 >>`,
+		/* 2 */ `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
 		/* 3 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots [4 0 R] >>`,
-		/* 4 */ `<< /Type /Annot /Subtype /Square /Rect [0 0 50 50] /Contents (` + annotTok + `) >>`,
+		/* 4 */ `<< /Type /Annot /Subtype /Widget /FT /Tx /T (f) /V (` + annotTok + `) /Rect [0 0 50 50] /P 3 0 R >>`,
 		/* 5 */ `<< /Title (` + infoTok + `) >>`,
 		/* 6 */ `<< /Type /StructTreeRoot /K [7 0 R] >>`,
 		/* 7 */ `<< /Type /StructElem /S /Annot /P 6 0 R /K << /Type /OBJR /Obj 4 0 R >> /GomupdfRefs [5 0 R] >>`,
@@ -1066,7 +1067,7 @@ func TestScrubFailureStillDestroys(t *testing.T) {
 	}
 	defer d.Close()
 	if err := d.Scrub(ScrubOptions{}); err == nil {
-		t.Fatal("Scrub succeeded on a page tree with a missing page")
+		t.Fatal("Scrub succeeded on a catalog /Names that is not a dictionary")
 	}
 	out, err := d.SaveBytesWithOptions(SaveOptions{Garbage: 4})
 	if err != nil {
@@ -1414,8 +1415,8 @@ func TestScrubKidsArrayIsAlsoAnnots(t *testing.T) {
 // with an error saying so, instead of reporting a scrub it may not have done.
 func TestScrubFailureIsSticky(t *testing.T) {
 	d, err := OpenStream(scrubBuildPDF([]string{
-		`<< /Type /Catalog /Pages 2 0 R >>`,
-		`<< /Type /Pages /Kids [3 0 R 99 0 R] /Count 2 >>`,
+		`<< /Type /Catalog /Pages 2 0 R /Names 0 >>`,
+		`<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
 		`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>`,
 	}, ""))
 	if err != nil {
@@ -1423,7 +1424,7 @@ func TestScrubFailureIsSticky(t *testing.T) {
 	}
 	defer d.Close()
 	if err := d.Scrub(ScrubOptions{}); err == nil {
-		t.Fatal("Scrub succeeded on a page tree with a missing page")
+		t.Fatal("Scrub succeeded on a catalog /Names that is not a dictionary")
 	}
 	if err := d.Scrub(ScrubOptions{}); err == nil || !strings.Contains(err.Error(), "earlier Scrub failed") {
 		t.Errorf("second Scrub: %v, want the earlier failure", err)
@@ -3953,9 +3954,10 @@ func TestScrubKeepAnnotationsMedia(t *testing.T) {
 // HiddenContent or Scrub fail: the pages MuPDF serves are checked and
 // scrubbed, and a page dictionary it never serves is an orphan page. A null
 // /Kids entry (which MuPDF's page lookup reports as a cycle, although the
-// pages after it are served) hides nothing; a /Kids entry that is the tree's
-// own root (a real cycle) stops MuPDF serving the pages after it, which are
-// then reported and emptied. (Reduced from the Garbage 1 save of qpdf
+// pages after it are served) hides nothing, nor does a /Kids entry naming a
+// missing object (which MuPDF serves as an empty page with no text); a /Kids
+// entry that is the tree's own root (a real cycle) stops MuPDF serving the
+// pages after it, which are then reported and emptied. (Reduced from the Garbage 1 save of qpdf
 // xref-compressed-in-compressed.pdf, whose damaged /Kids entry the save
 // writes as null.)
 func TestScrubUnservedPageInTree(t *testing.T) {
@@ -3966,7 +3968,8 @@ func TestScrubUnservedPageInTree(t *testing.T) {
 	for _, c := range []struct {
 		name, kids string
 		served     bool // page 2 is served
-	}{{"null kid", "[3 0 R null 6 0 R] /Count 3", true}, {"root as kid", "[3 0 R 2 0 R 6 0 R] /Count 3", false}} {
+	}{{"null kid", "[3 0 R null 6 0 R] /Count 3", true}, {"missing kid", "[3 0 R 99 0 R 6 0 R] /Count 3", true},
+		{"root as kid", "[3 0 R 2 0 R 6 0 R] /Count 3", false}} {
 		name, kids := c.name, c.kids
 		t.Run(name, func(t *testing.T) {
 			pdf := scrubBuildPDF([]string{
@@ -4010,6 +4013,12 @@ func TestScrubUnservedPageInTree(t *testing.T) {
 			}
 			if s, err := p.GetText(); err != nil || !strings.Contains(s, tok) {
 				t.Errorf("page 2 after scrub: %q, %v", s, err)
+			}
+			// Page 1 has no text: GetText returns none or fails, as before Scrub.
+			if p, err = re.LoadPage(1); err == nil {
+				if s, err := p.GetText(); err == nil && s != "" {
+					t.Errorf("page 1 after scrub: %q; want no text", s)
+				}
 			}
 		})
 	}

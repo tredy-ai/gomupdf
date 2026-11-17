@@ -596,7 +596,10 @@ static int gomupdf_page_count(fz_context *ctx, pdf_document *pdf) {
 // (the Garbage 1 save of qpdf xref-compressed-in-compressed.pdf), and
 // loading that page fails the same way, so the page is not one MuPDF serves:
 // the pages that are served are checked and scrubbed, and a page dictionary
-// never served is an orphan page, instead of the whole call failing.
+// never served is an orphan page, instead of the whole call failing. A page
+// MuPDF looks up that is not a dictionary (a /Kids entry naming a missing
+// object, which MuPDF serves as a null page with nothing on it) is treated
+// the same way: there is nothing on it to check or edit.
 static pdf_obj *gomupdf_page_obj(fz_context *ctx, pdf_document *pdf, int p) {
     pdf_obj *page = NULL;
     fz_var(page);
@@ -606,7 +609,7 @@ static pdf_obj *gomupdf_page_obj(fz_context *ctx, pdf_document *pdf, int p) {
         fz_ignore_error(ctx);
         page = NULL;
     }
-    return page;
+    return pdf_is_dict(ctx, page) ? page : NULL;
 }
 
 // gomupdf_push_node marks node as a kept page-tree node and queues it on the
