@@ -118,10 +118,21 @@ type HiddenContent struct {
 	// objects nothing in the saved file references (qpdf's /QTest, say, can
 	// hold a page's content stream from before a redaction).
 	TrailerKeys int
+
+	// OrphanPages counts the page dictionaries that are not in the page tree
+	// but still hold content (any key Scrub removes from them). A page
+	// dictionary is one with /Type /Page or /Type /Template (a template
+	// /Names/Templates lists), or with no /Type, a /MediaBox and a /Contents
+	// or /Parent; one with /Kids is a page-tree node and never counts. The
+	// page tree is every node reached from the catalog /Pages down /Kids and
+	// up /Parent from each page PageCount counts. Such a page is never
+	// extracted, rendered or redacted, while a structure element's /Pg, a
+	// destination or a template can still reach it.
+	OrphanPages int
 }
 
 // hiddenContentCounts is the number of counts the backend returns.
-const hiddenContentCounts = 14
+const hiddenContentCounts = 15
 
 // hiddenContentFromCounts maps the backend's counts, in HiddenContent field
 // order, to a HiddenContent.
@@ -144,6 +155,7 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 		PieceInfo:          c[11],
 		XFA:                c[12] != 0,
 		TrailerKeys:        c[13],
+		OrphanPages:        c[14],
 	}, nil
 }
 
@@ -170,6 +182,11 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 //     outline item) has an /AF array holding one, and the /AF key too when
 //     every entry is one; a direct dictionary nested inside another object
 //     is not searched;
+//   - on every page dictionary that is not in the page tree (see
+//     HiddenContent's OrphanPages; a structure element's /Pg, a destination
+//     or /Names/Templates can still reach one), /Contents, /Resources,
+//     /Annots, /B, /Group, /StructParents and the keys removed from pages
+//     above; the dictionary itself stays, page-shaped, for those references;
 //   - on every annotation that stays, /AA, and each of /A and /PA that is or
 //     chains through /Next to a JavaScript or Launch action; when the form
 //     stays (opts.KeepAnnotations or opts.KeepFormFields), the same on every
@@ -186,7 +203,10 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // Unless opts.KeepAnnotations, that is the removed annotations (and widgets,
 // unless opts.KeepFormFields) with their /Popup and their /FS and /AF
 // filespecs, and, unless the form stays, the /AcroForm dictionary with its
-// field tree; in every case it is /Info, the XMP stream,
+// field tree; in every case it is the content streams of a page that is not
+// in the page tree, the forms and images in its own /Resources /XObject, and
+// the annotations on it that the options remove as on a page, /Info, the XMP
+// stream,
 // page and page-tree node /Metadata and /Thumb streams, the filespecs of
 // /Names/EmbeddedFiles and of every /AF Scrub removes, every such
 // filespec's /EF streams, the /Names/JavaScript actions with their script
@@ -201,8 +221,9 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // kind (an /Info dictionary has no /Type or /Type /Info, an XMP stream has /Type /Metadata
 // or /Subtype /XML, a filespec has /Type /Filespec, a script action is one
 // as HiddenContent's JavaScript field defines it, another action has /S and
-// no /Type other than /Action, an XFA stream has no /Type or /Subtype, and
-// so on).
+// no /Type other than /Action, an XFA stream or content stream has no /Type
+// or /Subtype, an image or form has /Subtype /Image or /Form and no /Type
+// other than /XObject, and so on).
 //
 // Scrub never destroys kept content. Before it changes anything it loads
 // every object (so that an xref repair MuPDF needs happens first) and marks
@@ -224,7 +245,10 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // there, /Pages and /StructTreeRoot, and on any object the file
 // specifications in an /AF array (an image the page draws may carry one;
 // Scrub removes them in place, which does not change the drawing, and a
-// resource named /AF never holds a file specification). A removed entry that points at kept
+// resource named /AF never holds a file specification). A page dictionary
+// that is not in the page tree and is reached other than as page content (a
+// kept Link's or outline item's destination) is kept but not walked, so what
+// it holds is still destroyed. A removed entry that points at kept
 // content (a /Thumb that the page also draws, an /Info that is the page's
 // /Resources, a JavaScript action that is also a graphics state, an action
 // that a kept /A or a kept /OpenAction also uses) is only unlinked. A

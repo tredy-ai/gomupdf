@@ -2953,3 +2953,102 @@ func TestScrubTrailerKeys(t *testing.T) {
 		d.Close()
 	}
 }
+
+// Tokens of scrubOrphanPagesPDF, each in exactly one object.
+const (
+	orphanA     = "GomupdfOrphanStructPage4b1e"
+	orphanForm  = "GomupdfOrphanForm8c3d"
+	orphanAnnot = "GomupdfOrphanAnnot2e9f"
+	orphanB     = "GomupdfOrphanDestsPage7a5c"
+	orphanC     = "GomupdfOrphanLinkPage1d6b"
+	orphanT     = "GomupdfOrphanTemplate9f2a"
+)
+
+// scrubOrphanPagesPDF is a one-page tagged PDF with four page dictionaries
+// that are not in the page tree, each holding text MuPDF never extracts: A
+// (6), which only a structure element's /Pg reaches (pymupdf test_3725), and
+// which draws the form 13 and lists the Square 14; B (7), only in a
+// /Names/Dests destination (test_4412), whose /Contents array also holds the
+// real page's content stream 4; C (8), untyped, only the destination of the
+// real page's Link (test_4363's extra pages, which keep /Parent to the real
+// tree); and the template T (17) of /Names/Templates. All of them use the real
+// page's font 5, and the structure element references every orphan stream and
+// the Square, so unlinking alone keeps them.
+func scrubOrphanPagesPDF() []byte {
+	text := func(y int, s string) string { return fmt.Sprintf("\nstream\nBT /F1 12 Tf 20 %d Td (%s) Tj ET", y, s) }
+	const res = `/Resources << /Font << /F1 5 0 R >> >>`
+	return scrubBuildPDF([]string{
+		/* 1 */ `<< /Type /Catalog /Pages 2 0 R /MarkInfo << /Marked true >> /StructTreeRoot 10 0 R
+   /Names << /Dests << /Names [(d) [7 0 R /Fit]] >> /Templates << /Names [(t) 17 0 R] >> >> >>`,
+		/* 2 */ `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+		/* 3 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] ` + res + ` /Contents 4 0 R /Annots [12 0 R] >>`,
+		/* 4 */ text(150, scrubPageText),
+		/* 5 */ `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>`,
+		/* 6 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> /XObject << /Fm1 13 0 R >> >>
+   /Contents 9 0 R /Annots [14 0 R] /StructParents 0 >>`,
+		/* 7 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] ` + res + ` /Contents [15 0 R 4 0 R] >>`,
+		/* 8 */ `<< /Parent 2 0 R /MediaBox [0 0 300 200] ` + res + ` /Contents 16 0 R >>`,
+		/* 9 */ "\nstream\nBT /F1 12 Tf 20 100 Td (" + orphanA + ") Tj ET /Fm1 Do",
+		/* 10 */ `<< /Type /StructTreeRoot /K [11 0 R] >>`,
+		/* 11 */ `<< /Type /StructElem /S /P /P 10 0 R /Pg 6 0 R /K 0 /GomupdfRefs [9 0 R 13 0 R 14 0 R 15 0 R 16 0 R 18 0 R] >>`,
+		/* 12 */ `<< /Type /Annot /Subtype /Link /Rect [0 0 50 50] /Dest [8 0 R /Fit] >>`,
+		/* 13 */ "/Type /XObject /Subtype /Form /BBox [0 0 300 200] " + res + text(50, orphanForm),
+		/* 14 */ `<< /Type /Annot /Subtype /Square /Rect [0 0 10 10] /Contents (` + orphanAnnot + `) >>`,
+		/* 15 */ text(120, orphanB),
+		/* 16 */ text(80, orphanC),
+		/* 17 */ `<< /Type /Template /MediaBox [0 0 300 200] ` + res + ` /Contents 18 0 R >>`,
+		/* 18 */ text(60, orphanT),
+	}, "")
+}
+
+// Page dictionaries that are not in the page tree lose their content: their
+// content streams and own images and forms are destroyed although the
+// structure tree references them, while the content stream and font the real
+// page shares with them stay, and the real page renders and extracts as
+// before. Each emptied dictionary stays, page-shaped, for the references to
+// it. KeepAnnotations keeps (only unlinks) the orphan page's annotation.
+func TestScrubOrphanPages(t *testing.T) {
+	pdf := scrubOrphanPagesPDF()
+	content := []string{orphanA, orphanForm, orphanB, orphanC, orphanT}
+	scrubControl(t, pdf, append(content, orphanAnnot)...)
+	d, err := OpenStream(pdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if d.PageCount() != 1 {
+		t.Fatalf("fixture: %d pages, want 1", d.PageCount())
+	}
+	if h := scrubHidden(t, d); h != (HiddenContent{OrphanPages: 4}) {
+		t.Errorf("before scrub: %+v, want OrphanPages 4", h)
+	}
+	for _, opts := range []ScrubOptions{{}, {KeepAnnotations: true}} {
+		t.Run(fmt.Sprintf("%+v", opts), func(t *testing.T) {
+			re := scrubCheckKept(t, pdf, opts)
+			out, err := re.SaveBytesWithOptions(scrubSaveOpts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			scrubNoTokens(t, "orphan pages", out, content...)
+			if got := bytes.Contains(out, []byte(orphanAnnot)); got != opts.KeepAnnotations {
+				t.Errorf("orphan page annotation in save = %v, want %v", got, opts.KeepAnnotations)
+			}
+			if h := scrubHidden(t, re); h != (HiddenContent{}) {
+				t.Errorf("after scrub: %+v", h)
+			}
+			if n := len(regexp.MustCompile(`/Type\s*/Page\b`).FindAll(out, -1)); n != 3 {
+				t.Errorf("%d /Type /Page dictionaries after scrub, want 3", n)
+			}
+			if !regexp.MustCompile(`/Type\s*/Template\b`).Match(out) {
+				t.Error("the emptied template is gone")
+			}
+			p, err := re.LoadPage(0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if l, err := p.Links(); err != nil || len(l) != 1 {
+				t.Errorf("links after scrub = %+v, %v; want the Link", l, err)
+			}
+		})
+	}
+}
