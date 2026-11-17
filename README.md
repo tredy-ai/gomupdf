@@ -33,6 +33,31 @@ _ = pm.SavePNG("page.png")      // …and save it as an image
 
 ---
 
+## What this fork changes
+
+This fork backs a PII-redaction service, so it differs from upstream where a
+redaction can fail without telling the caller. In short:
+
+- **Redaction is checked.** `ApplyRedactions(ApplyOptions)` removes text glyph
+  by glyph (quads follow the quad shape, not its bounding box), strips declared
+  text (`/ActualText`, `/Alt`, `/E`) from redacted pages, extracts the page
+  again, and returns an error (`*RedactionCheckError`) if redacted text is still
+  there or moved. After such an error the `Document` must be discarded.
+- **`Scrub` and `HiddenContent`** remove, and report, the places outside page
+  content where text survives: metadata, attachments, scripts, annotations,
+  form fields, outlines, private data. **`ShowAllLayers`** reveals hidden
+  optional-content layers so they can be extracted and redacted.
+- **Extraction ignores `/ActualText` by default** and exposes per-character
+  quads (`RawDictWithOptions`, `Char.Quad`).
+- **Damaged files are repaired at open**, locked documents answer nothing until
+  `Authenticate`, and `SaveWithOptions` streams to the file.
+- Built and tested on Go 1.27, Alpine 3.23, MuPDF 1.26.11.
+
+Several of these break upstream's API. [FORK.md](FORK.md) has the patch list,
+the exact rules, migration notes, known limitations and how to test.
+
+---
+
 ## Why gomupdf?
 
 - **One dependency, many formats.** PDF, XPS, EPUB, MOBI, FB2, CBZ, SVG, plain
@@ -41,8 +66,9 @@ _ = pm.SavePNG("page.png")      // …and save it as an image
   reading-order reconstruction, and table detection with two strategies
   (word-alignment and vector-ruling).
 - **Real writing, not just reading.** Create documents, insert text/images,
-  merge, set metadata/XMP, page labels, page boxes, and save with fine-grained
-  options including AES-256 encryption and incremental updates.
+  merge, set metadata/XMP, page labels, page boxes, redact, and save with
+  fine-grained options including AES-256 encryption and incremental updates
+  (for documents opened from memory).
 - **Idiomatic Go.** `iter.Seq2` page ranges, typed geometry, `error` returns,
   deterministic `Close()`, no hidden globals.
 - **Thin and honest.** A small layer over MuPDF — the credit for the engine
@@ -51,12 +77,13 @@ _ = pm.SavePNG("page.png")      // …and save it as an image
 ## Table of contents
 
 - [Install](#install) · [Requirements](#requirements)
-- [60-second tour](#60-second-tour)
+- [What this fork changes](#what-this-fork-changes) · [60-second tour](#60-second-tour)
 - **Cookbook** — [Open](#open-anything) · [Text & geometry](#text--geometry) ·
   [Tables](#tables) · [Search, outline & links](#search-outline--links) ·
   [Render & images](#render--images) · [Pages & boxes](#pages-rotation--boxes) ·
   [Metadata & labels](#metadata--page-labels) · [Write & assemble](#write--assemble) ·
-  [Save options](#save-options)
+  [Redact](#redact) · [Scrub & hidden content](#scrub--hidden-content) ·
+  [Optional content (layers)](#optional-content-layers) · [Save options](#save-options)
 - [API cheat-sheet](#api-cheat-sheet) · [Feature support](#feature-support)
 - [Concurrency & memory](#concurrency--memory) · [Subpackages](#subpackages)
 - [Acknowledgements](#acknowledgements) · [License](#license)
@@ -93,9 +120,19 @@ apk add build-base pkgconf mupdf-dev
 go build ./...
 ```
 
-- Extraction output depends on the MuPDF version. On Homebrew's MuPDF 1.28.6
-  the suite builds and passes except `TestRawDictWithOptionsDehyphenate`,
-  because 1.28 dehyphenates differently.
+- Extraction output depends on the MuPDF version (`gomupdf.MuPDFVersion()`
+  reports the headers the binary was built against). On Homebrew's MuPDF 1.28.6
+  (macOS) the package builds, but at last check (commit `f0ed073`) three tests
+  failed: `TestRawDictWithOptionsDehyphenate` (1.28 dehyphenates differently)
+  and two per-glyph redaction cases where the right glyphs are removed but
+  following characters shift. 1.28 has not been re-run since many later
+  changes. Only Alpine 3.23 / MuPDF 1.26.11 is a supported target.
+- The package also builds and passes the suite on MuPDF 1.25.6, the oldest
+  version it accepts (older headers fail with a clear `#error`).
+- On macOS the cgo flags (`cgo_darwin.go`) point at Homebrew's Apple Silicon
+  prefix, `/opt/homebrew`; elsewhere set `CGO_CFLAGS` / `CGO_LDFLAGS` as below.
+- The Debian, Fedora and Arch rows in the table above are carried over from
+  upstream and are not tested in this fork.
 - MuPDF links **dynamically** on Alpine (`mupdf-dev` ships `libmupdf.so` and no
   static archive), so runtime images must install `mupdf-libs`, which pulls in
   MuPDF's shared dependencies (freetype, harfbuzz, jbig2dec, openjpeg, ...).
@@ -103,7 +140,9 @@ go build ./...
   so use an Alpine runtime image of the same release as the build image.
 - For a MuPDF built from source with its bundled third-party code (a
   `libmupdf-third` next to `libmupdf`), build with `-tags mupdf_bundled`, which
-  links `-lmupdf -lmupdf-third -lm` instead of using pkg-config.
+  links `-lmupdf -lmupdf-third -lm` instead of using pkg-config. This was
+  built and tested once, against MuPDF 1.25.6 built from source, and passed.
+  The CI workflow does not exercise it, and has not run yet.
 
 <details>
 <summary><b>From source / custom prefix / Windows / troubleshooting</b></summary>
@@ -201,6 +240,12 @@ defer pdf.Close()
 Non-PDF documents open **read-only** (text, geometry, rendering all work); use
 `ConvertToPDF` to get a writable PDF `Document`.
 
+Changed from upstream: `Open` reads the file on demand instead of loading it
+(do not modify the file while the document is open); every object of a PDF is
+loaded at open, so a damaged file is repaired before anything is read or
+changed; and a password-protected PDF answers nothing (`PageCount` is 0,
+`LoadPage` fails) until `Authenticate` succeeds.
+
 ### Text & geometry
 
 ```go
@@ -216,6 +261,34 @@ raw, _    := page.StructuredJSON() // the raw block/line/char JSON, your way
 
 `Words` is the recommended input for layout work and table reconstruction — the
 boxes are unions of per-character quads, not span approximations.
+
+Per-character geometry, with the options pinned (`RawDictWithOptions` takes the
+same `TextOptions` as `ExtractText`):
+
+```go
+blocks, err := page.RawDictWithOptions(gomupdf.TextOptions{AccurateBBoxes: true})
+if err != nil {
+	log.Fatal(err)
+}
+for _, b := range blocks {
+	for _, line := range b.Lines {
+		fmt.Println(line.Dir, line.WMode) // baseline direction, 0 horizontal / 1 vertical
+		for _, c := range line.Chars {
+			fmt.Println(string(c.Rune), c.Origin, c.BBox, c.Quad) // page space, y down
+		}
+	}
+}
+```
+
+Changed from upstream: extraction returns the glyphs drawn and **ignores
+`/ActualText`** (the replacement text a PDF can declare for them). Pass
+`TextOptions{UseActualText: true}` to `ExtractText` or `RawDictWithOptions` to
+get MuPDF's default back; the other extraction APIs have no toggle. With it set,
+MuPDF 1.26.11 can crash the whole process on crafted input, so do not enable it
+on untrusted files outside a separate process. `RawDict` never skips a
+character: unreadable output is an error. Form field values, link targets and
+annotation contents are not part of page text; read them with `page.Widgets()`,
+`page.Links()` and `page.Annotations()`.
 
 ### Tables
 
@@ -314,6 +387,103 @@ doc.InsertPDF(otherPDFBytes, "")      // append every page of another PDF
 doc.DeletePage(3)
 ```
 
+### Redact
+
+Mark characters by their quads, apply, and treat any error as "discard this
+document". `isSecret` stands for your detector.
+
+```go
+for i, page := range doc.Pages() {
+	blocks, err := page.RawDictWithOptions(gomupdf.TextOptions{})
+	if err != nil {
+		return err
+	}
+	var quads []geometry.Quad
+	for _, b := range blocks {
+		for _, l := range b.Lines {
+			for _, c := range l.Chars {
+				if isSecret(c) {
+					quads = append(quads, c.Quad)
+				}
+			}
+		}
+	}
+	if len(quads) == 0 {
+		continue
+	}
+	if err := page.AddRedactionQuads(quads, gomupdf.RedactOptions{}); err != nil {
+		return fmt.Errorf("page %d: %w", i, err)
+	}
+	_, err = page.ApplyRedactions(gomupdf.ApplyOptions{Images: gomupdf.ImageRemove})
+	var ce *gomupdf.RedactionCheckError
+	switch {
+	case errors.As(err, &ce):
+		// text remained (ErrTextRemains) or moved (ErrTextMoved): the page is
+		// not redacted. ce.Page, ce.Remaining, ce.Moved say how much.
+		return err
+	case err != nil:
+		return err // any error: discard doc; later saves fail with ErrRedactionFailed
+	}
+}
+```
+
+- `AddRedaction(rect, RedactOptions{})` takes a rect instead; it returns an
+  error for an empty rect (zero width or height), which a union of glyph boxes
+  can be: use `AddRedactionQuads` for those.
+- `ApplyRedactions` applies every redaction annotation on the page, including
+  ones already in the file. The zero `ApplyOptions` draws a black box, blanks
+  covered image pixels, leaves line art and removes text; `ImageRemove` drops an
+  overlapping image whole.
+- A page with more than 65,536 redaction regions, or too deeply nested forms or
+  structure, is refused before anything changes. Any other error may come after
+  the page started to change.
+- Redaction cannot reach tiling patterns, soft masks or Type 3 glyphs; the
+  check after applying turns those leftovers into an error. See
+  [FORK.md](FORK.md#44-redaction).
+
+### Scrub & hidden content
+
+`Scrub` removes document-level content that page redaction never touches
+(metadata, attachments, scripts, annotations, form fields, outlines, private
+data); `HiddenContent` reports what it would remove, without editing. Follow
+`Scrub` with a non-incremental save with `Garbage >= 1`, and discard the
+document if `Scrub` returns an error.
+
+```go
+hc, err := doc.HiddenContent()
+if err != nil {
+	return err
+}
+fmt.Println(hc.JavaScript, hc.EmbeddedFiles, hc.Widgets, hc.Layers)
+
+if err := doc.Scrub(gomupdf.ScrubOptions{}); err != nil { // zero value removes everything it knows
+	return err // discard doc
+}
+err = doc.SaveWithOptions("out.pdf", gomupdf.SaveOptions{Garbage: 3, Deflate: true})
+```
+
+`ScrubOptions` has `KeepAnnotations`, `KeepFormFields` and `KeepOutlines`.
+Reopen the output and call `HiddenContent` to verify it.
+
+### Optional content (layers)
+
+Content on a layer that MuPDF's default configuration hides is never
+extracted, searched, rendered or redacted, but stays in the file. `Scrub` does
+not touch it. `ShowAllLayers` makes all of it ordinary, visible content; call it
+before extraction and detection.
+
+```go
+hc, err := doc.HiddenContent()
+if err != nil {
+	return err
+}
+if hc.Layers > 0 { // HiddenLayers can undercount; treat any layers as possibly hiding content
+	if err := doc.ShowAllLayers(); err != nil {
+		return err
+	}
+}
+```
+
 ### Save options
 
 ```go
@@ -336,9 +506,18 @@ data, _ = doc.SaveBytesWithOptions(gomupdf.SaveOptions{
 data, _ = doc.SaveEncryptedBytes("user", "owner")  // shorthand
 
 // Incremental update (stream-opened docs; needs OpenStream): appends changes after the
-// original bytes instead of rewriting the whole file.
+// original bytes instead of rewriting the whole file. A file MuPDF had to repair
+// cannot be saved incrementally. Not for redacted output: use a full save.
 _ = doc.SaveIncremental("out.pdf")
 ```
+
+`SaveWithOptions` (plain, unencrypted) streams to a temporary file next to the
+destination and renames it over the destination, so a failed save leaves no
+partial file; encrypted and incremental saves, and the `SaveBytes*` functions,
+are built in memory. It refuses to overwrite the file the document was opened
+from. After a failed `ApplyRedactions`, every save returns an error wrapping
+`ErrRedactionFailed`. `SaveOptions{}` writes an uncompressed file; use
+`DefaultSaveOptions()` (`Garbage: 3`, `Deflate: true`) in production.
 
 ---
 
@@ -351,13 +530,16 @@ _ = doc.SaveIncremental("out.pdf")
 | Convert to writable PDF | `doc.ConvertToPDF()` |
 | Count / load / iterate pages | `doc.PageCount` · `doc.LoadPage` · `doc.Pages` |
 | Extract text | `doc.Text` · `page.GetText` · `page.Lines` · `page.ExtractText` (clip+flags) |
-| Get positioned text | `page.Words` · `page.Spans` · `page.StructuredText` · `page.RawDict`/`Dict` |
+| Get positioned text | `page.Words` · `page.Spans` · `page.StructuredText` · `page.RawDict`/`Dict` · `page.RawDictWithOptions` (per-char quads) |
 | Export markup | `page.HTML` · `page.XHTML` · `page.XML` |
 | Find tables | `page.FindTables` → `table.ToMarkdown` / `table.Header` |
 | Search | `page.Search` · `page.SearchRects` · `page.SearchWith` (clip, cap) |
 | Outline / links | `doc.TOC`/`SetTOC` · `page.Links`/`InsertLink`/`DeleteLink` |
 | Annotate | `page.AddHighlight`/`AddFreeText`/`AddLine`/`Annotations`/`DeleteAnnotation` |
-| Redact | `page.AddRedaction` → `page.ApplyRedactions` |
+| Redact | `page.AddRedaction`/`AddRedactionQuads` → `page.ApplyRedactions(ApplyOptions)` (errors: `*RedactionCheckError`, `ErrRedactionFailed`) |
+| Scrub / inspect | `doc.Scrub(ScrubOptions)` · `doc.HiddenContent` |
+| Layers | `doc.ShowAllLayers` · `HiddenContent.Layers`/`HiddenLayers` |
+| Version | `gomupdf.MuPDFVersion` |
 | Forms | `page.Widgets` · `page.SetTextField` · `page.AddTextField` |
 | Page ops | `doc.CopyPage`/`MovePage`/`SelectPages`/`InsertPDFRange` |
 | Draw | `page.DrawRect`/`DrawLine`/`DrawCircle` · `page.InsertTextbox` |
@@ -393,7 +575,8 @@ Legend: ✅ supported · 🟡 partial · ⬜ not yet
 | Structure | Page links — read, insert, goto, delete | ✅ |
 | Structure | Page labels, page boxes, rotation | ✅ |
 | Structure | Metadata read/write + XMP | ✅ |
-| Structure | Embedded files, optional-content layers | ⬜ |
+| Structure | Embedded files (read/write) | ⬜ (`Scrub` removes them) |
+| Structure | Optional-content layers: report hidden layers, reveal all | 🟡 no per-layer toggling |
 | Render | Pixmap → raster (DPI, RGB/Gray/CMYK, clip, annot toggle) | ✅ |
 | Render | Pixmap ops (invert, gamma) + PNG/JPEG/PNM encode & save | ✅ |
 | Render | Extract images + placement bbox | ✅ |
@@ -404,14 +587,15 @@ Legend: ✅ supported · 🟡 partial · ⬜ not yet
 | Write | Insert text, images, word-wrapped text boxes | ✅ |
 | Write | Draw lines / rects / circles | ✅ |
 | Write | Annotations — markup, shapes, ink, free-text, sticky notes | ✅ |
-| Write | Redaction (mark + apply) | ✅ |
+| Write | Redaction (rect + quad, per-glyph removal, checked after apply) | ✅ |
+| Write | Scrub document-level content, report it (`HiddenContent`) | ✅ |
 | Write | Form widgets — read, fill, create text fields | 🟡 text/checkbox |
-| Write | Save options (deflate, clean, linear, ASCII, incremental) | ✅ |
+| Write | Save options (deflate, clean, linear, ASCII, incremental; plain saves streamed) | ✅ |
 | Write | AES-256 encryption | ✅ |
-| Write | Digital signatures, full Shape API, OCG layers | ⬜ |
+| Write | Digital signatures, full Shape API, per-layer (OCG) editing | ⬜ |
 
 > gomupdf is actively working toward feature parity with PyMuPDF. The remaining
-> remaining ⬜ items (digital signatures, full form types, OCR, optional-content layers) are on the
+> ⬜ items (digital signatures, full form types, OCR, per-layer editing) are on the
 > roadmap.
 
 ## Concurrency & memory
@@ -421,6 +605,11 @@ concurrent use; all of its methods are serialized internally by a mutex. To
 process documents in parallel, **open one `Document` per goroutine**.
 
 - Always `Close()` a document when done — the finalizer is only a backstop.
+- MuPDF runs in your process. On untrusted files it can hang for minutes on a
+  few crafted inputs, crash (with `UseActualText`), or allocate hundreds of
+  megabytes (pixel-redacted images are stored uncompressed). A service should
+  process each document in a separate worker process with time and memory
+  limits; see [FORK.md](FORK.md#6-using-the-package-in-a-redaction-service).
 - Bytes backing an `OpenStream` document are held in memory for its lifetime;
   `Open` reads the file lazily and keeps it open until `Close`. Either way
   MuPDF reads on demand.
