@@ -3783,6 +3783,62 @@ func TestScrubOrphanPageAnnotations(t *testing.T) {
 	}
 }
 
+// A kept annotation on an orphan page keeps its appearance stream even when
+// the orphan page's /Resources also lists it: KeepAnnotations keeps the
+// stream, still referenced by /AP /N after a save, while the orphan page's
+// own content goes; the default options remove both, although the structure
+// tree references them.
+func TestScrubOrphanPageAnnotationAppearance(t *testing.T) {
+	const apTok, pageTok = "GomupdfOrphanStampAP6c2e", "GomupdfOrphanStampPage3d9a"
+	pdf := scrubBuildPDF([]string{
+		/* 1 */ `<< /Type /Catalog /Pages 2 0 R /MarkInfo << /Marked true >> /StructTreeRoot 10 0 R >>`,
+		/* 2 */ `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+		/* 3 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>`,
+		/* 4 */ "\nstream\nBT /F1 12 Tf 20 150 Td (" + scrubPageText + ") Tj ET",
+		/* 5 */ `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>`,
+		/* 6 */ `<< /Type /Page /MediaBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> /XObject << /Ap 8 0 R >> >>
+   /Contents 9 0 R /Annots [7 0 R] >>`,
+		/* 7 */ `<< /Type /Annot /Subtype /Stamp /Rect [0 0 100 50] /P 6 0 R /AP << /N 8 0 R >> /StructParent 0 >>`,
+		/* 8 */ "/Type /XObject /Subtype /Form /BBox [0 0 100 50] /Resources << /Font << /F1 5 0 R >> >>" +
+			"\nstream\nBT /F1 10 Tf 2 5 Td (" + apTok + ") Tj ET",
+		/* 9 */ "\nstream\nBT /F1 12 Tf 20 100 Td (" + pageTok + ") Tj ET /Ap Do",
+		/* 10 */ `<< /Type /StructTreeRoot /K [11 0 R] >>`,
+		/* 11 */ `<< /Type /StructElem /S /P /P 10 0 R /Pg 6 0 R /K << /Type /OBJR /Obj 7 0 R >> /GomupdfRefs [8 0 R 9 0 R] >>`,
+	}, "")
+	scrubControl(t, pdf, apTok, pageTok)
+	d, err := OpenStream(pdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if h, want := scrubHidden(t, d), (HiddenContent{OrphanPages: 1, NonLinkAnnotations: 1}); h != want {
+		t.Errorf("before scrub: %+v, want %+v", h, want)
+	}
+	for _, opts := range []ScrubOptions{{}, {KeepAnnotations: true}} {
+		t.Run(fmt.Sprintf("%+v", opts), func(t *testing.T) {
+			re := scrubCheckKept(t, pdf, opts)
+			out, err := re.SaveBytesWithOptions(scrubSaveOpts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			scrubNoTokens(t, "orphan page content", out, pageTok)
+			if got := bytes.Contains(out, []byte(apTok)); got != opts.KeepAnnotations {
+				t.Errorf("appearance stream in save = %v, want %v", got, opts.KeepAnnotations)
+			}
+			if regexp.MustCompile(`/N\s*null`).Match(out) {
+				t.Error("the kept annotation's appearance became /N null")
+			}
+			want := HiddenContent{}
+			if opts.KeepAnnotations {
+				want.NonLinkAnnotations = 1
+			}
+			if h := scrubHidden(t, re); h != want {
+				t.Errorf("after scrub: %+v, want %+v", h, want)
+			}
+		})
+	}
+}
+
 // KeepAnnotations keeps media annotations with their embedded media (a
 // Screen's rendition and media clip, a Sound's sound stream) and strips their
 // scripts: the Screen's /AA and a Rendition action carrying /JS.

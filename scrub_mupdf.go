@@ -183,6 +183,7 @@ static void gomupdf_sweep(fz_context *ctx, pdf_document *pdf, gomupdf_marks *mk,
 static pdf_obj *gomupdf_trailer_extra(fz_context *ctx, pdf_document *pdf, int *count);
 static void gomupdf_record_annot(fz_context *ctx, gomupdf_marks *del, pdf_obj *e);
 static int gomupdf_annot_shaped(fz_context *ctx, pdf_obj *ref);
+static int gomupdf_unloaded(fz_context *ctx, pdf_document *pdf, int i);
 
 // gomupdf_af_files returns how many entries of the array v are file
 // specification dictionaries: an /AF with any is an associated-files array.
@@ -697,6 +698,16 @@ static int gomupdf_annot_kept(fz_context *ctx, pdf_obj *a, int keep_annots, int 
         || (keep_fields && pdf_name_eq(ctx, pdf_dict_get(ctx, a, PDF_NAME(Subtype)), PDF_NAME(Widget)));
 }
 
+// gomupdf_orphan_kept reports whether Scrub keeps the annotation or field a
+// on no page (shape from gomupdf_annot_shaped; form: a node of the form,
+// GM_FORM): what the options keep on a page (gomupdf_annot_kept; a field
+// counts as a widget) and, when the form stays, every node of the form.
+static int gomupdf_orphan_kept(fz_context *ctx, pdf_obj *a, int shape, int form, int keep_annots,
+                               int keep_fields) {
+    int widget = shape == 2 || pdf_name_eq(ctx, pdf_dict_get(ctx, a, PDF_NAME(Subtype)), PDF_NAME(Widget));
+    return gomupdf_annot_kept(ctx, a, keep_annots, keep_fields) || (keep_fields && (widget || form));
+}
+
 // gomupdf_form_push queues obj for gomupdf_mark_form, once, and reports
 // whether it was queued.
 static int gomupdf_form_push(fz_context *ctx, gomupdf_marks *mk, pdf_obj *obj) {
@@ -788,6 +799,28 @@ static void gomupdf_mark_content(fz_context *ctx, pdf_document *pdf, gomupdf_mar
     mk->content = 0;
 }
 
+// gomupdf_keep_orphan_aps queues on the AP stack the /AP of every annotation
+// or field on no page (not GM_ONPAGE, not page content) that Scrub keeps
+// (gomupdf_orphan_kept), so that what its appearance draws is kept, as a kept
+// page annotation's is, even when an orphan page's resources, which Scrub
+// destroys, also list it. The caller has loaded every object first, and an
+// entry that holds none is skipped (gomupdf_unloaded).
+static void gomupdf_keep_orphan_aps(fz_context *ctx, pdf_document *pdf, gomupdf_marks *mk, int keep_annots,
+                                    int keep_fields) {
+    for (int i = 1; i < mk->len; i++) {
+        unsigned int m = mk->m[i];
+        if ((m & (GM_ONPAGE | GM_CONTENT)) || gomupdf_unloaded(ctx, pdf, i)) continue;
+        pdf_obj *ref = pdf_new_indirect(ctx, pdf, i, 0);
+        fz_try(ctx) {
+            int shape = gomupdf_annot_shaped(ctx, ref);
+            if (shape && gomupdf_orphan_kept(ctx, ref, shape, (m & GM_FORM) != 0, keep_annots, keep_fields))
+                gomupdf_keep_on(ctx, mk, GS_AP, pdf_dict_get(ctx, ref, PDF_NAME(AP)));
+        }
+        fz_always(ctx) pdf_drop_obj(ctx, ref);
+        fz_catch(ctx) fz_rethrow(ctx);
+    }
+}
+
 // gomupdf_keep_pass marks the kept content of the document (see GM_KEEP).
 // keep_fields (KeepFormFields, or KeepAnnotations) keeps the widgets and the
 // /AcroForm field tree.
@@ -820,6 +853,7 @@ static void gomupdf_keep_pass(fz_context *ctx, pdf_document *pdf, gomupdf_marks 
     if (keep_outlines) gomupdf_keep_on(ctx, mk, GS_TOP, pdf_dict_get(ctx, root, PDF_NAME(Outlines)));
     if (keep_fields) gomupdf_keep_on(ctx, mk, GS_TOP, pdf_dict_get(ctx, root, PDF_NAME(AcroForm)));
     gomupdf_keep_tops(ctx, mk);
+    gomupdf_keep_orphan_aps(ctx, pdf, mk, keep_annots, keep_fields);
     gomupdf_keep_walk(ctx, mk, GS_WALK);
     gomupdf_keep_walk(ctx, mk, GS_AP);
 }
@@ -1573,7 +1607,8 @@ static void gomupdf_orphan_annot(fz_context *ctx, gomupdf_marks *mk, pdf_obj *a,
         else if (!gomupdf_is_link(ctx, a)) gomupdf_add(&out[HC_NONLINK], 1);
         return;
     }
-    if (!(gomupdf_annot_kept(ctx, a, keep_annots, keep_fields) || (keep_fields && widget))) {
+    // The sweep sends a node of the form here only when the form goes.
+    if (!gomupdf_orphan_kept(ctx, a, shape, 0, keep_annots, keep_fields)) {
         gomupdf_destroy(ctx, mk, a, GK_FIELD);
         gomupdf_record_annot(ctx, mk, a);
         return;

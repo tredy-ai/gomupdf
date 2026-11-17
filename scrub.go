@@ -380,7 +380,8 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // opts.KeepOutlines the outline items, with everything they reference other
 // than through their own /Parent, /P, /Popup, /AA, /SE and /XFA and an /A or
 // /PA that Scrub removes; what a kept annotation's /AP reaches is kept
-// whatever it is. An object reached as kept content is walked through
+// whatever it is, for an annotation or field on no page that Scrub keeps too
+// (an orphan page's resources may list the same appearance). An object reached as kept content is walked through
 // every key, whatever other role it has (page-tree node, kept annotation,
 // field, outline item), except on a page or an intermediate page-tree node
 // that Scrub edits, where the walk skips the keys Scrub removes there and
