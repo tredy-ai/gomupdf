@@ -4,6 +4,7 @@ package gomupdf
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -275,6 +276,9 @@ func TestRedactLateRepairFails(t *testing.T) {
 		d.b.(*mupdfDoc).stable = true
 		if _, err := redactSecret(t, d, quads); err == nil || !strings.Contains(err.Error(), "must not be treated as redacted") {
 			t.Errorf("quads %v: ApplyRedactions error = %v, want the repair error", quads, err)
+		}
+		if _, err := d.SaveBytesWithOptions(SaveOptions{Garbage: 1}); !errors.Is(err, ErrRedactionFailed) {
+			t.Errorf("quads %v: save after the repair error = %v, want ErrRedactionFailed", quads, err)
 		}
 		d.Close()
 

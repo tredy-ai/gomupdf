@@ -58,6 +58,9 @@ func (d *Document) SaveBytesWithOptions(opts SaveOptions) ([]byte, error) {
 	if d.b == nil {
 		return nil, errors.New("gomupdf: document closed")
 	}
+	if err := d.redactionFailed("save"); err != nil {
+		return nil, err
+	}
 	return d.b.save(opts, nil)
 }
 
@@ -93,6 +96,9 @@ func (d *Document) SaveWithOptions(path string, opts SaveOptions) error {
 	defer d.mu.Unlock()
 	if d.b == nil {
 		return errors.New("gomupdf: document closed")
+	}
+	if err := d.redactionFailed("save"); err != nil {
+		return err
 	}
 	if err := d.checkNotSource(path); err != nil {
 		return err

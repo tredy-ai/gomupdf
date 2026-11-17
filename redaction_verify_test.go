@@ -3,6 +3,7 @@ package gomupdf
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -79,13 +80,18 @@ func TestApplyRedactionsVerifiesPage(t *testing.T) {
 				t.Fatalf("ApplyRedactions = %d, %v; want the characters-remain error (text now %q)",
 					n, err, runesOf(pageGlyphs(t, p)))
 			}
-			// The private form marker is gone even so.
-			out, err := d.SaveBytesWithOptions(SaveOptions{Garbage: 1})
-			if err != nil {
-				t.Fatal(err)
+			// The page is half redacted: the document no longer saves.
+			if _, err := d.SaveBytesWithOptions(SaveOptions{Garbage: 1}); !errors.Is(err, ErrRedactionFailed) {
+				t.Errorf("SaveBytesWithOptions after the failed check: %v, want ErrRedactionFailed", err)
 			}
-			if strings.Contains(string(out), "GomupdfRedactSrc") {
-				t.Error("saved file keeps the private form marker")
+			if err := d.SaveWithOptions(filepath.Join(t.TempDir(), "out.pdf"), SaveOptions{}); !errors.Is(err, ErrRedactionFailed) {
+				t.Errorf("SaveWithOptions after the failed check: %v, want ErrRedactionFailed", err)
+			}
+			if _, err := d.SaveEncryptedBytes("u", "o"); !errors.Is(err, ErrRedactionFailed) {
+				t.Errorf("SaveEncryptedBytes after the failed check: %v, want ErrRedactionFailed", err)
+			}
+			if _, err := d.ConvertToPDF(); !errors.Is(err, ErrRedactionFailed) {
+				t.Errorf("ConvertToPDF after the failed check: %v, want ErrRedactionFailed", err)
 			}
 			// TextNone keeps text on purpose: no check.
 			d2, err := OpenStream(unreachablePDF(c.content))

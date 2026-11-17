@@ -42,6 +42,7 @@ type Document struct {
 	encrypted bool   // whether the PDF was password-protected at open
 	path      string // file the document was opened from by Open; "" otherwise
 	badScrub  bool   // a Scrub failed on the document; see Scrub
+	badRedact bool   // ApplyRedactions failed after changing a page; see ApplyRedactions
 }
 
 // Open opens a PDF document from a file path.
@@ -297,6 +298,9 @@ func (d *Document) SaveEncryptedBytes(userPwd, ownerPwd string) ([]byte, error) 
 	defer d.mu.Unlock()
 	if d.b == nil {
 		return nil, errors.New("gomupdf: document closed")
+	}
+	if err := d.redactionFailed("save encrypted"); err != nil {
+		return nil, err
 	}
 	return d.b.saveEncrypted(userPwd, ownerPwd)
 }

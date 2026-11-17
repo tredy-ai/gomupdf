@@ -1383,8 +1383,9 @@ static void gomupdf_count_left(fz_context *ctx, pdf_page *page, const gomupdf_re
 // image_method, line_art and text carry the Go-side enum values (see
 // ApplyOptions); each is mapped to its PDF_REDACT_* constant by name, and an
 // unknown value is an error. black_boxes is MuPDF's flag (non-zero = draw).
-// check receives gomupdf_count_left's three counts (all 0 unless text was
-// removed); the caller decides what they mean.
+// check[0..2] receive gomupdf_count_left's three counts (all 0 unless text
+// was removed); the caller decides what they mean. check[3] is 1 once the
+// page has started to change, so an error after that leaves it half done.
 static int gomupdf_apply_redactions(fz_context *ctx, fz_document *doc, int pageno,
                                     int black_boxes, int image_method,
                                     int line_art, int text,
@@ -1422,7 +1423,7 @@ static int gomupdf_apply_redactions(fz_context *ctx, fz_document *doc, int pagen
     fz_var(regions);
     fz_var(plan);
     fz_var(rs);
-    check[0] = check[1] = check[2] = 0;
+    check[0] = check[1] = check[2] = check[3] = 0;
     fz_try(ctx) {
         // Refuse a page whose redactions hold too many regions, in every
         // text mode, before changing (or even loading) anything.
@@ -1451,6 +1452,7 @@ static int gomupdf_apply_redactions(fz_context *ctx, fz_document *doc, int pagen
             // structure references follow them.
             if (undeclare && gomupdf_collect_regions(ctx, page, &rs) < 0)
                 fz_throw(ctx, FZ_ERROR_LIMIT, "too many redaction regions");
+            check[3] = 1; // the page starts to change
             gomupdf_tag_forms(ctx, &plan);
             if (undeclare && gomupdf_redact_text(ctx, pdf, page, &rs))
                 opts.text = PDF_REDACT_TEXT_NONE;
@@ -1572,18 +1574,24 @@ func (d *mupdfDoc) applyRedactions(pageNo int, opts ApplyOptions) (int, error) {
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
-	var check [3]C.int
+	var check [4]C.int
 	n := C.gomupdf_apply_redactions(d.ctx, d.doc, C.int(pageNo), boxes,
 		C.int(opts.Images), C.int(opts.LineArt), C.int(opts.Text), &check[0], errBuf, errBufLen)
+	// Errors after the page started to change (check[3]), a repair that
+	// dropped edits, and a failed check leave the document half redacted.
 	if n < 0 {
-		return 0, errors.New("gomupdf: apply redactions: " + errText(errBuf))
-	}
-	if err := d.lateRepair("apply redactions", repaired); err != nil {
+		err := errors.New("gomupdf: apply redactions: " + errText(errBuf))
+		if check[3] != 0 {
+			return 0, changedPageError{err}
+		}
 		return 0, err
 	}
+	if err := d.lateRepair("apply redactions", repaired); err != nil {
+		return 0, changedPageError{err}
+	}
 	if check[0] > 0 || check[1] > 0 {
-		return 0, &RedactionCheckError{Page: pageNo, Remaining: int(check[0]), Moved: int(check[1]),
-			MovedElsewhere: int(check[2])}
+		return 0, changedPageError{&RedactionCheckError{Page: pageNo, Remaining: int(check[0]), Moved: int(check[1]),
+			MovedElsewhere: int(check[2])}}
 	}
 	return int(n), nil
 }

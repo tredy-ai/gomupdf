@@ -226,6 +226,15 @@ func (e *RedactionCheckError) Unwrap() []error {
 // the changes made so far are lost and ApplyRedactions, like AddRedaction
 // and AddRedactionQuads, returns an error saying so.
 //
+// After an error that came once the page had started to change (a MuPDF
+// failure in the rewriting, a repair, or the check below), the page is
+// half redacted and its redaction annotations may be gone. Discard this
+// Document: reopen the original to retry, or reject the file. Every later
+// save of it (SaveBytesWithOptions, SaveWithOptions, SaveEncryptedBytes and
+// the functions built on them, and ConvertToPDF) returns an error wrapping
+// ErrRedactionFailed until it is closed. The refusals above, which change
+// nothing, do not. New relative to upstream.
+//
 // Also changed, with opts.Text TextRemove: after redacting, the page is
 // extracted again (as RawDict does by default) and checked. ApplyRedactions
 // returns a *RedactionCheckError if a redacted character is still extracted:
@@ -327,5 +336,31 @@ func (p *Page) ApplyRedactions(opts ApplyOptions) (int, error) {
 	if d.b == nil {
 		return 0, errors.New("gomupdf: document closed")
 	}
-	return d.b.applyRedactions(p.Number, opts)
+	n, err := d.b.applyRedactions(p.Number, opts)
+	var ce changedPageError
+	if errors.As(err, &ce) {
+		d.badRedact = true
+		err = ce.error
+	}
+	return n, err
+}
+
+// changedPageError marks a backend ApplyRedactions error that came after the
+// page started to change.
+type changedPageError struct{ error }
+
+func (e changedPageError) Unwrap() error { return e.error }
+
+// ErrRedactionFailed is wrapped by the error every save of a Document
+// returns after ApplyRedactions failed on it once the page had started to
+// change. New relative to upstream.
+var ErrRedactionFailed = errors.New("gomupdf: a redaction failed after changing the page; discard this document")
+
+// redactionFailed returns the error saves return after a failed redaction,
+// or nil.
+func (d *Document) redactionFailed(op string) error {
+	if d.badRedact {
+		return fmt.Errorf("gomupdf: %s: %w", op, ErrRedactionFailed)
+	}
+	return nil
 }

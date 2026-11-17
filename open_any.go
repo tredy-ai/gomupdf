@@ -57,6 +57,10 @@ func (d *Document) ConvertToPDF() (*Document, error) {
 		d.mu.Unlock()
 		return nil, errors.New("gomupdf: document closed")
 	}
+	if err := d.redactionFailed("convert to PDF"); err != nil {
+		d.mu.Unlock()
+		return nil, err
+	}
 	data, err := d.b.convertToPDF()
 	d.mu.Unlock()
 	if err != nil {
