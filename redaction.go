@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/tredy-ai/gomupdf/geometry"
 )
@@ -144,6 +145,50 @@ func isFinite32(f float32) bool {
 	return !math.IsNaN(float64(f)) && !math.IsInf(float64(f), 0)
 }
 
+// Errors a *RedactionCheckError matches with errors.Is. New relative to
+// upstream; see ApplyRedactions.
+var (
+	// ErrTextRemains: text is still extracted under a redaction.
+	ErrTextRemains = errors.New("gomupdf: text remains under a redaction")
+	// ErrTextMoved: a redacted character reappears, moved, on its line, so
+	// the redaction missed the glyph it was meant for.
+	ErrTextMoved = errors.New("gomupdf: redacted text moved next to its redaction")
+)
+
+// RedactionCheckError is returned by ApplyRedactions when the page, checked
+// after redacting, still shows text it should not. New relative to upstream.
+type RedactionCheckError struct {
+	Page           int // 0-based page number
+	Remaining      int // redacted characters still under a redaction (ErrTextRemains)
+	Moved          int // redacted characters that reappear moved on their line (ErrTextMoved)
+	MovedElsewhere int // kept characters that moved, elsewhere or under a box (not an error by itself)
+}
+
+func (e *RedactionCheckError) Error() string {
+	var parts []string
+	if e.Remaining > 0 {
+		parts = append(parts, fmt.Sprintf("%d characters remain under redactions", e.Remaining))
+	}
+	if e.Moved > 0 {
+		parts = append(parts, fmt.Sprintf("%d redacted characters reappear moved next to their redactions", e.Moved))
+	}
+	return fmt.Sprintf("gomupdf: apply redactions: page %d: %s (text in a pattern, soft mask, or other content "+
+		"redaction cannot reach or measures wrongly); the page must not be treated as redacted",
+		e.Page, strings.Join(parts, " and "))
+}
+
+// Unwrap returns ErrTextRemains and ErrTextMoved, as they apply.
+func (e *RedactionCheckError) Unwrap() []error {
+	var errs []error
+	if e.Remaining > 0 {
+		errs = append(errs, ErrTextRemains)
+	}
+	if e.Moved > 0 {
+		errs = append(errs, ErrTextMoved)
+	}
+	return errs
+}
+
 // ApplyRedactions permanently removes the content under every redaction
 // annotation on the page according to opts, then deletes the redaction marks.
 // Returns the number of redactions applied. Effective on Save.
@@ -177,17 +222,26 @@ func isFinite32(f float32) bool {
 // and AddRedactionQuads, returns an error saying so.
 //
 // Also changed, with opts.Text TextRemove: after redacting, the page is
-// extracted again (as RawDict does by default) and ApplyRedactions returns
-// an error, naming the page and the number of characters, if a character
-// still lies under a redaction (shrunk as above) or lies where no character
-// outside the redactions was before (to 0.25pt). That happens to text the removal cannot reach (in a tiling
-// pattern or a soft mask) and to text it measures with the wrong font (a
-// form XObject without /Resources that uses the page's fonts, which MuPDF's
-// rewritten copy of the form cannot find, so its glyphs move). Spaces
-// extraction makes up for gaps, and ligature trailing components and
-// zero-advance marks at the next glyph's origin, are not checked. The error
-// comes after the page has changed: the page must not be treated as
-// redacted. The check costs one more extraction of the page.
+// extracted again (as RawDict does by default) and checked. ApplyRedactions
+// returns a *RedactionCheckError if a redacted character is still extracted:
+// a character lies under a redaction (shrunk as above) and the same
+// character was under a redaction before, on the same line nearby (within
+// two character heights along its baseline and half a height across it)
+// (errors.Is ErrTextRemains); or a character lies, outside every
+// redaction, where no character outside the redactions was before (to
+// 0.25pt), and the same character was under a redaction before, on the
+// same line nearby (errors.Is ErrTextMoved). The first happens to text the
+// removal cannot reach (in a tiling pattern or a soft mask); the second to
+// text it measures with the wrong font (a form XObject without /Resources
+// that uses the page's fonts, which MuPDF's rewritten copy of the form
+// cannot find, so its glyphs move and the one redacted escapes). Kept text that
+// moved, elsewhere on the page or under a box, is not an error (MuPDF's
+// rewriting of the page can shift kept text slightly); when the call fails
+// anyway, the error counts it in MovedElsewhere. Spaces (real ones, and
+// those extraction makes up for gaps), and ligature trailing components and zero-advance marks at the next glyph's
+// origin, are not checked. The error comes after the page has changed: the
+// page must not be treated as redacted. The check costs one more
+// extraction of the page.
 //
 // Changed from upstream: it takes ApplyOptions. Upstream passed zeroed MuPDF
 // options, so no box was drawn, and always removed overlapping images whole.

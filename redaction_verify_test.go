@@ -1,6 +1,7 @@
 package gomupdf
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -38,13 +39,14 @@ func unreachablePDF(content string) []byte {
 func TestApplyRedactionsVerifiesPage(t *testing.T) {
 	for _, c := range []struct {
 		name, content, text string
-		last                bool // redact only the last glyph
+		last                bool  // redact only the last glyph
+		want                error // the sentinel the error matches
 	}{
-		{"tiling pattern", "/Pattern cs /P1 scn 0 0 300 200 re f", "op", false},
-		{"soft mask", "/GS1 gs 0 0 1 rg 0 0 300 200 re f", "AB", false},
+		{"tiling pattern", "/Pattern cs /P1 scn 0 0 300 200 re f", "op", false, ErrTextRemains},
+		{"soft mask", "/GS1 gs 0 0 1 rg 0 0 300 200 re f", "AB", false, ErrTextRemains},
 		// MuPDF's filtered copy of the form cannot find /F2 and
 		// measures the glyphs with a fallback font, so the i moves.
-		{"form using the page's font", "/Fm1 Do", "WWWWWWi", true},
+		{"form using the page's font", "/Fm1 Do", "WWWWWWi", true, ErrTextMoved},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			d, err := OpenStream(unreachablePDF(c.content))
@@ -71,7 +73,8 @@ func TestApplyRedactionsVerifiesPage(t *testing.T) {
 				t.Fatal(err)
 			}
 			n, err := p.ApplyRedactions(ApplyOptions{})
-			if err == nil || !strings.Contains(err.Error(), "remain under redactions or moved on page 0") ||
+			var ce *RedactionCheckError
+			if !errors.Is(err, c.want) || !errors.As(err, &ce) || ce.Page != 0 ||
 				!strings.Contains(err.Error(), "must not be treated as redacted") {
 				t.Fatalf("ApplyRedactions = %d, %v; want the characters-remain error (text now %q)",
 					n, err, runesOf(pageGlyphs(t, p)))
