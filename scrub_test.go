@@ -3170,6 +3170,73 @@ func TestScrubOrphanPageClosure(t *testing.T) {
 	scrubOrphanCase(t, pdf, HiddenContent{OrphanPages: 2}, HiddenContent{}, inheritTok, nestedTok)
 }
 
+// A served page with no /Resources of its own inherits them from its /Parent,
+// here a page dictionary with no /Kids (typed /Page, untyped, or a
+// /Template). That parent is a page-tree node, not an orphan page: the font
+// and the form the served page draws through it stay, in memory and after a
+// save, whatever the options. Its own /Contents is displayed on no page, so
+// it is reported before Scrub and destroyed by it, although the structure
+// tree references it.
+func TestScrubPageShapedParent(t *testing.T) {
+	const formTok, parentTok = "GomupdfInheritedFormText2b6d", "GomupdfParentOwnText4a7c"
+	for _, c := range []struct {
+		name, parent string
+		before       HiddenContent
+	}{
+		{"typed page", `<< /Type /Page /MediaBox [0 0 300 200] /Resources 5 0 R /Contents 9 0 R >>`, HiddenContent{OrphanPages: 1}},
+		{"untyped", `<< /MediaBox [0 0 300 200] /Resources 5 0 R /Parent 2 0 R >>`, HiddenContent{}},
+		{"template", `<< /Type /Template /Resources 5 0 R >>`, HiddenContent{}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			pdf := scrubBuildPDF([]string{
+				/* 1 */ `<< /Type /Catalog /Pages 2 0 R /MarkInfo << /Marked true >> /StructTreeRoot 10 0 R >>`,
+				/* 2 */ `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+				/* 3 */ `<< /Type /Page /Parent 8 0 R /MediaBox [0 0 300 200] /Contents 4 0 R >>`,
+				/* 4 */ "\nstream\nBT /F1 12 Tf 20 150 Td (" + scrubPageText + ") Tj ET /Fm Do",
+				/* 5 */ `<< /Font << /F1 6 0 R >> /XObject << /Fm 7 0 R >> >>`,
+				/* 6 */ `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>`,
+				/* 7 */ "/Type /XObject /Subtype /Form /BBox [0 0 300 200] /Resources << /Font << /F1 6 0 R >> >>" +
+					"\nstream\nBT /F1 12 Tf 20 60 Td (" + formTok + ") Tj ET",
+				/* 8 */ c.parent,
+				/* 9 */ "\nstream\nBT /F1 12 Tf 20 100 Td (" + parentTok + ") Tj ET",
+				/* 10 */ `<< /Type /StructTreeRoot /K [11 0 R] >>`,
+				/* 11 */ `<< /Type /StructElem /S /P /P 10 0 R /Pg 3 0 R /K [<< /Type /MCR /Pg 8 0 R /Stm 9 0 R /MCID 0 >>]
+   /GomupdfRefs [5 0 R 7 0 R 9 0 R] >>`,
+			}, "")
+			scrubControl(t, pdf, formTok, parentTok)
+			d, err := OpenStream(pdf)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			if s := scrubText(t, d); !strings.Contains(s, formTok) {
+				t.Fatalf("control: the inherited form is not displayed: %q", s)
+			}
+			if h := scrubHidden(t, d); h != c.before {
+				t.Errorf("before scrub: %+v, want %+v", h, c.before)
+			}
+			for _, opts := range []ScrubOptions{{}, {KeepAnnotations: true}} {
+				t.Run(fmt.Sprintf("%+v", opts), func(t *testing.T) {
+					re := scrubCheckKept(t, pdf, opts)
+					if h := scrubHidden(t, re); h != (HiddenContent{}) {
+						t.Errorf("after scrub: %+v", h)
+					}
+					out, err := re.SaveBytesWithOptions(scrubSaveOpts)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !bytes.Contains(out, []byte(formTok)) {
+						t.Error("the inherited form left the file")
+					}
+					if c.before.OrphanPages > 0 {
+						scrubNoTokens(t, "parent contents", out, parentTok)
+					}
+				})
+			}
+		})
+	}
+}
+
 // Page-tree nodes MuPDF does not serve are not part of the document: a page
 // past a /Count that is too small is an orphan page, and the annotations on
 // an intermediate /Pages node are annotations on no page. Their text, the

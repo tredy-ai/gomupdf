@@ -167,7 +167,9 @@ type HiddenContent struct {
 	// counts, and so does one in it that MuPDF does not serve (a /Kids entry
 	// past a /Count that is too small). Such a page is never extracted,
 	// rendered or redacted, while a structure element's /Pg, a destination
-	// or a template can still reach it.
+	// or a template can still reach it. One that a served page has above it,
+	// up /Parent, counts only for the keys other than /Resources and
+	// /Parent, which that page inherits.
 	OrphanPages int
 
 	// ObjectMetadata counts the objects other than the catalog, pages and
@@ -304,7 +306,8 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 //     and the same on each /Type /Pages node outside the page tree it
 //     inherits from (32 levels); the dictionary itself stays, with its /Type,
 //     /MediaBox and /Annots, for those references, and its annotations are
-//     annotations on no page (below);
+//     annotations on no page (below). One that a page MuPDF serves has above
+//     it, up /Parent, keeps /Resources and /Parent, which that page inherits;
 //   - every annotation and form field on no page and not in the form (see
 //     HiddenContent's NonLinkAnnotations; pdf.js bug1722036.pdf has widgets
 //     only its structure tree reaches) that the options would remove from a
@@ -363,11 +366,13 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 //
 // Scrub never destroys kept content. Before it changes anything it loads
 // every object (so that an xref repair MuPDF needs happens first) and marks
-// as kept the catalog and every page-tree node (down /Kids from /Pages, and
-// up /Parent from every page MuPDF serves; a page dictionary MuPDF does not
-// serve is an orphan page, not a node); everything referenced, directly or not, from
-// each node's /Contents, /Resources and /Group (so the content streams and
-// the own and inherited resources of every page), from /Encrypt and from
+// as kept the catalog and every page-tree node (down /Kids from /Pages, where
+// a page dictionary MuPDF does not serve is an orphan page, not a node, and
+// up /Parent from every page MuPDF serves, where any dictionary is a node);
+// everything referenced, directly or not, from each node's /Contents,
+// /Resources and /Group (so the content streams and the own and inherited
+// resources of every page; of a page dictionary that is not a page MuPDF
+// serves, only /Resources), from /Encrypt and from
 // /OCProperties; and the annotations that stay (Links, widgets with
 // opts.KeepFormFields, or all of them with opts.KeepAnnotations), when the
 // form stays the /AcroForm dictionary and its field tree (through /Fields,
