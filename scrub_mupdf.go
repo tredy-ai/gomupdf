@@ -1391,22 +1391,57 @@ static void gomupdf_orphan_annot(fz_context *ctx, gomupdf_marks *mk, pdf_obj *a,
     if (keep_fields && widget) gomupdf_widget_fields(ctx, mk, mk, a, 1);
 }
 
-// gomupdf_layer_hidden reports whether object i (ref) is an optional-content
-// group or membership dictionary (/Type /OCG or /OCMD) that MuPDF's current
-// configuration hides for viewing. MuPDF matches groups against the
-// configuration by number and generation, so the reference it is asked about
-// carries the object's own generation.
-static int gomupdf_layer_hidden(fz_context *ctx, pdf_document *pdf, int i, pdf_obj *ref) {
-    pdf_obj *t = pdf_dict_get(ctx, ref, PDF_NAME(Type));
-    if (pdf_is_stream(ctx, ref) || !(pdf_name_eq(ctx, t, PDF_NAME(OCG)) || pdf_name_eq(ctx, t, PDF_NAME(OCMD))))
-        return 0;
-    pdf_obj *g = pdf_new_indirect(ctx, pdf, i, pdf_get_xref_entry_no_null(ctx, pdf, i)->gen);
-    int hidden = 0;
-    fz_var(hidden);
-    fz_try(ctx) hidden = pdf_is_ocg_hidden(ctx, pdf, NULL, "View", g);
+// gomupdf_layer adds to out[HC_HIDDENLAYERS] the optional-content group or
+// membership dictionary oc (/Type /OCG or /OCMD; anything else is ignored)
+// if MuPDF's current configuration hides it for viewing, asking MuPDF about
+// g: the reference to oc when it is indirect, oc itself when it is direct.
+// It sets *floor when oc is one HiddenLayers reports whatever its state (see
+// HiddenContent.HiddenLayers): a membership dictionary, a group with /Usage
+// or an /Intent other than /View, or a direct one. MuPDF hides nothing when
+// the configuration lists no group, so the caller asks only when it does.
+static void gomupdf_layer(fz_context *ctx, pdf_document *pdf, pdf_obj *oc, pdf_obj *g, int *out, int *floor) {
+    pdf_obj *t = pdf_dict_get(ctx, oc, PDF_NAME(Type)), *intent = pdf_dict_get(ctx, oc, PDF_NAME(Intent));
+    int ocmd = pdf_name_eq(ctx, t, PDF_NAME(OCMD));
+    if (pdf_is_stream(ctx, oc) || !pdf_is_dict(ctx, oc) || !(ocmd || pdf_name_eq(ctx, t, PDF_NAME(OCG)))) return;
+    if (ocmd || !pdf_is_indirect(ctx, oc) || pdf_dict_get(ctx, oc, PDF_NAME(Usage))
+        || (intent && !pdf_name_eq(ctx, intent, PDF_NAME(View))))
+        *floor = 1;
+    if (pdf_is_ocg_hidden(ctx, pdf, NULL, "View", g)) gomupdf_add(&out[HC_HIDDENLAYERS], 1);
+}
+
+// gomupdf_layer_direct applies gomupdf_layer to each direct value of the
+// dictionary d (an /OC value, a /Properties entry).
+static void gomupdf_layer_direct(fz_context *ctx, pdf_document *pdf, pdf_obj *d, int *out, int *floor) {
+    int n = pdf_dict_len(ctx, d);
+    for (int i = 0; i < n; i++) {
+        pdf_obj *v = pdf_dict_get_val(ctx, d, i);
+        if (!pdf_is_indirect(ctx, v)) gomupdf_layer(ctx, pdf, v, v, out, floor);
+    }
+}
+
+// gomupdf_layers applies gomupdf_layer to object i (ref) and to the direct
+// groups and membership dictionaries it holds where optional content can name
+// one: its own values (an annotation's or XObject's /OC, the entries of a
+// /Properties dictionary that is ref), the entries of a direct /Properties
+// and of the /Properties of a direct /Resources. An indirect /Properties or
+// /Resources is an object of its own, visited in its own turn. MuPDF matches
+// groups against the configuration by number and generation, and the
+// configuration names a group "N 0 R" (a generation is 0 for an object in an
+// object stream, whose xref entry holds its index in the stream where a
+// generation would be), so the reference it is asked about carries that.
+static void gomupdf_layers(fz_context *ctx, pdf_document *pdf, int i, pdf_obj *ref, int *out, int *floor) {
+    pdf_xref_entry *x = pdf_get_xref_entry_no_null(ctx, pdf, i);
+    pdf_obj *g = pdf_new_indirect(ctx, pdf, i, x->type == 'o' ? 0 : x->gen);
+    fz_try(ctx) {
+        gomupdf_layer(ctx, pdf, ref, g, out, floor);
+        gomupdf_layer_direct(ctx, pdf, ref, out, floor);
+        pdf_obj *props = pdf_dict_get(ctx, ref, PDF_NAME(Properties)), *res = pdf_dict_get(ctx, ref, PDF_NAME(Resources));
+        if (!pdf_is_indirect(ctx, props)) gomupdf_layer_direct(ctx, pdf, props, out, floor);
+        props = pdf_dict_get(ctx, res, PDF_NAME(Properties));
+        if (!pdf_is_indirect(ctx, res) && !pdf_is_indirect(ctx, props)) gomupdf_layer_direct(ctx, pdf, props, out, floor);
+    }
     fz_always(ctx) pdf_drop_obj(ctx, g);
     fz_catch(ctx) fz_rethrow(ctx);
-    return hidden;
 }
 
 // gomupdf_sweep visits every object in the xref. It finds each /AF that is an
@@ -1422,12 +1457,16 @@ static int gomupdf_layer_hidden(fz_context *ctx, pdf_document *pdf, int i, pdf_o
 // each page dictionary that is not in the page tree (not GM_NODE) and, in
 // Scrub, not page content. On every other private-data holder
 // (gomupdf_private_holder) outside the catalog and page tree it counts or
-// removes the private keys (gomupdf_private_keys). A direct dictionary nested in an object is not
-// visited. The caller has loaded every object first (gomupdf_load_all), so no
-// repair can happen during the sweep.
+// removes the private keys (gomupdf_private_keys). HiddenContent, when the
+// configuration lists a group, also counts the hidden optional content
+// (gomupdf_layers) and fails closed (at least 1) on what it cannot vouch for.
+// A direct dictionary nested in an object is not visited, except where
+// gomupdf_layers looks. The caller has loaded every object first
+// (gomupdf_load_all), so no repair can happen during the sweep.
 static void gomupdf_sweep(fz_context *ctx, pdf_document *pdf, gomupdf_marks *mk, int *out, int keep_annots,
                           int keep_fields) {
-    int n = pdf_xref_len(ctx, pdf);
+    int n = pdf_xref_len(ctx, pdf), floor = 0;
+    fz_var(floor);
     for (int i = 1; i < n; i++) {
         unsigned int m = i < mk->len ? mk->m[i] : 0;
         pdf_obj *ref = pdf_new_indirect(ctx, pdf, i, 0), *af = NULL;
@@ -1458,8 +1497,7 @@ static void gomupdf_sweep(fz_context *ctx, pdf_document *pdf, gomupdf_marks *mk,
                 else if (!out[HC_JS] && gomupdf_actions(ctx, NULL, ref, 0, mk)) out[HC_JS] = 1;
             } else if (i != mk->root && !(m & (GM_PAGE | GM_INODE | GM_DONE)) && gomupdf_private_holder(ctx, ref))
                 gomupdf_private_keys(ctx, mk, ref, out);
-            else if (out && gomupdf_layer_hidden(ctx, pdf, i, ref))
-                gomupdf_add(&out[HC_HIDDENLAYERS], 1);
+            if (out && out[HC_LAYERS]) gomupdf_layers(ctx, pdf, i, ref, out, &floor);
         }
         fz_always(ctx) {
             pdf_drop_obj(ctx, af);
@@ -1467,6 +1505,7 @@ static void gomupdf_sweep(fz_context *ctx, pdf_document *pdf, gomupdf_marks *mk,
         }
         fz_catch(ctx) fz_rethrow(ctx);
     }
+    if (floor && !out[HC_HIDDENLAYERS]) out[HC_HIDDENLAYERS] = 1;
 }
 
 // gomupdf_trailer_del deletes key from the trailer. The first edit to an

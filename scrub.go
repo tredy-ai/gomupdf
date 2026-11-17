@@ -175,21 +175,37 @@ type HiddenContent struct {
 	WebCapture bool
 
 	// Layers is the number of optional-content groups the catalog
-	// /OCProperties lists in /OCGs, 0 without /OCProperties. HiddenLayers is
-	// the number of optional-content groups and membership dictionaries
-	// (indirect /Type /OCG and /Type /OCMD dictionaries, listed or not) that
-	// MuPDF's default configuration hides for viewing: an /OFF group, a group
-	// whose /Usage /View /ViewState is /OFF or whose /Intent the
-	// configuration leaves out, and a membership dictionary whose /P policy
-	// evaluates to hidden. Content marked with them is neither extracted,
-	// searched, rendered nor redacted, but stays in the file, and a viewer's
-	// user can switch it on. MuPDF does not evaluate a /VE visibility
-	// expression and shows its content (so it is extracted too); a viewer
-	// that evaluates it may hide it. HiddenLayers 0 thus means MuPDF hides
-	// nothing for viewing, not that no viewer hides anything; Layers is
-	// non-zero whenever there is a configuration at all. Scrub leaves layers
-	// alone: call Document.ShowAllLayers before extraction to make all of it
-	// ordinary content, after which both read 0.
+	// /OCProperties lists in /OCGs, 0 without /OCProperties. With Layers 0
+	// MuPDF hides nothing, whatever the file's content says.
+	//
+	// HiddenLayers is 0 when Layers is 0. Otherwise it is the number of
+	// optional-content groups and membership dictionaries (/Type /OCG and
+	// /Type /OCMD dictionaries, listed or not) that MuPDF's default
+	// configuration hides for viewing: an /OFF group, a group whose /Usage
+	// /View /ViewState is /OFF or whose /Intent the configuration leaves out,
+	// and a membership dictionary whose /P policy evaluates to hidden. It
+	// reads every indirect one (in an object stream too) and the direct ones
+	// written as an object's own value (an annotation's or XObject's /OC, an
+	// entry of an indirect /Properties dictionary) or as an entry of a
+	// direct /Properties dictionary of an object or of its direct /Resources;
+	// each indirect one counts once, each direct one once per place. It fails
+	// closed: it is at least 1 when any of those is a membership dictionary,
+	// a group with /Usage or with an /Intent other than /View, or a direct
+	// one, even if it shows. HiddenLayers 0 with Layers non-zero therefore
+	// means that every group and membership dictionary those places hold is
+	// an indirect plain group the configuration shows. It does not read
+	// content streams: a group or membership dictionary written inline as a
+	// marked-content property list (/OC << ... >> BDC) is not seen, and MuPDF
+	// honours it. Only Layers 0 rules out hidden content; a caller that must
+	// not miss any calls Document.ShowAllLayers whenever Layers is non-zero.
+	//
+	// Content marked with a hidden group is neither extracted, searched,
+	// rendered nor redacted, but stays in the file, and a viewer's user can
+	// switch it on. MuPDF does not evaluate a /VE visibility expression and
+	// shows its content (so it is extracted too); a viewer that evaluates it
+	// may hide it. Scrub leaves layers alone: call Document.ShowAllLayers
+	// before extraction to make all of it ordinary content, after which both
+	// read 0.
 	Layers, HiddenLayers int
 }
 
