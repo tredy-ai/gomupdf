@@ -76,6 +76,14 @@ type Document struct {
 // when it is first loaded, and keeps it: one read before Authenticate
 // (stock MuPDF decrypts it with the wrong key) leaves that object's
 // strings garbled for good.
+//
+// Also new in this fork, here and in OpenStream and OpenAnyStream (or, for a
+// password-locked PDF, in Authenticate, which then fails): a PDF whose page
+// tree declares more pages than the file has objects is refused with an
+// error ("page tree declares N pages but the file has only M objects"). No
+// such file can hold those pages, and the first call that makes MuPDF build
+// its page map (AddRedactionQuads, say) would allocate an entry per declared
+// page: 11 GB for a /Count of 1,410,065,407.
 func Open(filename string) (*Document, error) {
 	if defaultDriver == nil {
 		return nil, errNoBackend

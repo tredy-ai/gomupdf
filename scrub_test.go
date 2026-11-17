@@ -3,6 +3,8 @@ package gomupdf
 import (
 	"bytes"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -3809,20 +3811,50 @@ func TestScrubUnservedPageInTree(t *testing.T) {
 	}
 }
 
-// A page count larger than the file's number of objects is impossible, and
-// HiddenContent and Scrub refuse it at once rather than look up every
-// declared page. (Reduced from pdf.js poppler-67295-0.pdf, /Count
-// 1410065407.)
+// A page count larger than the file's number of objects is impossible: Open,
+// OpenStream and OpenAnyStream refuse it (it would make MuPDF allocate a page
+// map for every declared page, 11 GB for pdf.js poppler-67295-0.pdf's /Count
+// 1410065407), and HiddenContent and Scrub, on a document opened without
+// that check, refuse it at once rather than look up every declared page. A
+// count equal to the number of objects (one page listed in every /Kids
+// entry) opens.
 func TestScrubImpossiblePageCount(t *testing.T) {
 	pdf := scrubBuildPDF([]string{
 		`<< /Type /Catalog /Pages 2 0 R >>`,
 		`<< /Type /Pages /Kids [3 0 R] /Count 1048576 >>`,
 		`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>`,
 	}, "")
-	d, err := OpenStream(pdf)
-	if err != nil {
+	const msg = "page tree declares 1048576 pages but the file has only 4 objects"
+	path := filepath.Join(t.TempDir(), "count.pdf")
+	if err := os.WriteFile(path, pdf, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	for name, open := range map[string]func() (*Document, error){
+		"Open":          func() (*Document, error) { return Open(path) },
+		"OpenStream":    func() (*Document, error) { return OpenStream(pdf) },
+		"OpenAnyStream": func() (*Document, error) { return OpenAnyStream(pdf, "pdf") },
+	} {
+		if d, err := open(); err == nil || !strings.Contains(err.Error(), msg) {
+			t.Errorf("%s: %v, want %q", name, err, msg)
+			if d != nil {
+				d.Close()
+			}
+		}
+	}
+	if d, err := OpenStream(scrubBuildPDF([]string{
+		`<< /Type /Catalog /Pages 2 0 R >>`,
+		`<< /Type /Pages /Kids [3 0 R 3 0 R 3 0 R 3 0 R] /Count 4 >>`,
+		`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>`,
+	}, "")); err != nil {
+		t.Errorf("a count equal to the number of objects: %v", err)
+	} else {
+		if n := d.PageCount(); n != 4 {
+			t.Errorf("PageCount %d, want 4", n)
+		}
+		d.Close()
+	}
+
+	d := openLazy(t, pdf)
 	defer d.Close()
 	start := time.Now()
 	if _, err := d.HiddenContent(); err == nil || !strings.Contains(err.Error(), "declares 1048576 pages") {

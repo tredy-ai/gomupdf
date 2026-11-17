@@ -877,15 +877,40 @@ static void gomupdf_load_pass(fz_context *ctx, pdf_document *pdf) {
 }
 
 // gomupdf_stabilise runs gomupdf_load_all on a PDF (anything else has no
-// xref to repair). Returns 0, or -1 with err set (only running out of memory
-// fails).
+// xref to repair), then checks the page count MuPDF reports against the
+// number of objects, as gomupdf_page_count does: pdf_count_pages reads the
+// root /Count without walking the tree or allocating anything, but the first
+// call that makes MuPDF build its page map allocates an entry per declared
+// page (11 GB for pdf.js poppler-67295-0.pdf's /Count 1410065407). A count
+// MuPDF cannot read at all is left to fail where it is used, as before.
+// Returns 0; -1 with err set when loading fails (only running out of memory
+// does); or -2 with err set for an impossible page count.
 static int gomupdf_stabilise(fz_context *ctx, fz_document *doc, char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) return 0;
+    int n = 0, len = 0;
+    fz_var(n);
+    fz_var(len);
     fz_try(ctx) gomupdf_load_all(ctx, pdf);
     fz_catch(ctx) {
         snprintf(err, errlen, "%s", fz_caught_message(ctx));
         return -1;
+    }
+    fz_try(ctx) {
+        len = pdf_xref_len(ctx, pdf);
+        n = pdf_count_pages(ctx, pdf);
+    }
+    fz_catch(ctx) {
+        if (fz_caught(ctx) == FZ_ERROR_SYSTEM) {
+            snprintf(err, errlen, "%s", fz_caught_message(ctx));
+            return -1;
+        }
+        fz_ignore_error(ctx);
+        n = 0;
+    }
+    if (n > len) {
+        snprintf(err, errlen, "page tree declares %d pages but the file has only %d objects", n, len);
+        return -2;
     }
     return 0;
 }
@@ -2006,7 +2031,11 @@ func (d *mupdfDoc) stabilise() error {
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
-	if C.gomupdf_stabilise(d.ctx, d.doc, errBuf, errBufLen) != 0 {
+	switch C.gomupdf_stabilise(d.ctx, d.doc, errBuf, errBufLen) {
+	case 0:
+	case -2:
+		return errors.New("gomupdf: " + errText(errBuf))
+	default:
 		return errors.New("gomupdf: load objects: " + errText(errBuf))
 	}
 	d.stable = true
