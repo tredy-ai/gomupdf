@@ -192,8 +192,9 @@ func isFinite32(f float32) bool {
 // Also changed, in every Text mode: redaction makes the page draw redacted
 // copies of its form XObjects, but a structure element can still name the
 // original form, in a marked-content reference (/Stm) or an object reference
-// (/Obj), which keeps the unredacted original in the saved file. For the
-// structure elements under the page's and its forms' /StructParents, a
+// (/Obj), which keeps the unredacted original in the saved file. In the
+// structure elements under the page's and its forms' /StructParents and
+// /StructParent, and anywhere in the structure tree below its root, a
 // reference on this page (its /Pg, or its element's, is this page or absent)
 // is moved to the copy when the page drew that form once; otherwise an MCR
 // loses its /Stm and an OBJR is removed. The original form object stays for

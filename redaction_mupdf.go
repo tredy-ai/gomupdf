@@ -809,7 +809,104 @@ static void gomupdf_retarget_forms_res(fz_context *ctx, pdf_document *pdf, pdf_o
         sp = pdf_dict_get(ctx, x, PDF_NAME(StructParents));
         if (pdf_is_int(ctx, sp))
             gomupdf_retarget_struct(ctx, pdf, pageobj, pdf_to_int(ctx, sp), f);
+        // A form that is a structure object itself: its element.
+        sp = pdf_dict_get(ctx, x, PDF_NAME(StructParent));
+        if (pdf_is_int(ctx, sp))
+            gomupdf_retarget_struct(ctx, pdf, pageobj, pdf_to_int(ctx, sp), f);
         gomupdf_retarget_forms_res(ctx, pdf, pageobj, pdf_dict_get(ctx, x, PDF_NAME(Resources)), depth + 1, seen, f);
+    }
+}
+
+// gomupdf_tree_budget is the node budget of a whole-structure-tree walk.
+static size_t gomupdf_tree_budget(fz_context *ctx, pdf_document *pdf) {
+    return 16 * (size_t)pdf_xref_len(ctx, pdf) + 65536;
+}
+
+typedef struct {
+    pdf_obj *obj;    // a /K value: element, MCR, OBJR, MCID or array of them
+    pdf_obj *owner;  // the element whose /K holds it
+    pdf_obj *array;  // the /K array holding it, or NULL
+} gomupdf_tree_item;
+
+// gomupdf_retarget_tree walks the whole structure tree from the root's /K
+// (iteratively; indirect objects visited once, marks sized by the xref; at
+// most gomupdf_tree_budget items, else it throws) and fixes every MCR or
+// OBJR naming a tagged original on this page. It finds references the
+// /ParentTree does not lead to, such as an MCR naming a form without
+// /StructParents.
+static void gomupdf_retarget_tree(fz_context *ctx, pdf_document *pdf, pdf_obj *pageobj, const gomupdf_forms *f) {
+    pdf_obj *root = pdf_dict_getp(ctx, pdf_trailer(ctx, pdf), "Root/StructTreeRoot");
+    size_t budget = gomupdf_tree_budget(ctx, pdf), used = 0;
+    int xlen = pdf_xref_len(ctx, pdf), n = 0, cap = 0;
+    unsigned char *seen = NULL;
+    gomupdf_tree_item *stack = NULL;
+    if (!pdf_is_dict(ctx, root) || f->n == 0)
+        return;
+    fz_var(seen);
+    fz_var(stack);
+    fz_try(ctx) {
+        seen = fz_calloc(ctx, xlen > 0 ? xlen : 1, 1);
+        cap = 64;
+        stack = fz_malloc_array(ctx, cap, gomupdf_tree_item);
+        stack[n].obj = pdf_dict_get(ctx, root, PDF_NAME(K));
+        stack[n].owner = NULL;
+        stack[n].array = NULL;
+        n++;
+        while (n > 0) {
+            gomupdf_tree_item it = stack[--n];
+            int num = pdf_to_num(ctx, it.obj);
+            if (++used > budget)
+                fz_throw(ctx, FZ_ERROR_LIMIT, "structure tree too large");
+            if (pdf_is_indirect(ctx, it.obj) && num > 0 && num < xlen) {
+                if (seen[num])
+                    continue;
+                seen[num] = 1;
+            }
+            if (pdf_is_array(ctx, it.obj)) {
+                int i, len = pdf_array_len(ctx, it.obj);
+                for (i = 0; i < len; i++) {
+                    if (n == cap) {
+                        cap *= 2;
+                        stack = fz_realloc_array(ctx, stack, cap, gomupdf_tree_item);
+                    }
+                    stack[n].obj = pdf_array_get(ctx, it.obj, i);
+                    stack[n].owner = it.owner;
+                    stack[n].array = it.obj;
+                    n++;
+                }
+            } else if (pdf_is_dict(ctx, it.obj)) {
+                if (pdf_dict_gets(ctx, it.obj, "Stm") || pdf_dict_gets(ctx, it.obj, "Obj")) {
+                    if (it.owner && gomupdf_retarget(ctx, it.obj, it.owner, pageobj, f)) {
+                        if (it.array) {
+                            int i;
+                            for (i = pdf_array_len(ctx, it.array) - 1; i >= 0; i--)
+                                if (pdf_array_get(ctx, it.array, i) == it.obj) {
+                                    pdf_array_delete(ctx, it.array, i);
+                                    break;
+                                }
+                        } else {
+                            pdf_dict_del(ctx, it.owner, PDF_NAME(K));
+                        }
+                    }
+                } else {
+                    if (n == cap) {
+                        cap *= 2;
+                        stack = fz_realloc_array(ctx, stack, cap, gomupdf_tree_item);
+                    }
+                    stack[n].obj = pdf_dict_get(ctx, it.obj, PDF_NAME(K));
+                    stack[n].owner = it.obj;
+                    stack[n].array = NULL;
+                    n++;
+                }
+            }
+        }
+    }
+    fz_always(ctx) {
+        fz_free(ctx, seen);
+        fz_free(ctx, stack);
+    }
+    fz_catch(ctx) {
+        fz_rethrow(ctx);
     }
 }
 
@@ -826,6 +923,7 @@ static void gomupdf_retarget_page(fz_context *ctx, pdf_document *pdf, pdf_page *
         gomupdf_retarget_struct(ctx, pdf, page->obj, pdf_to_int(ctx, sp), f);
     seen = 0;
     gomupdf_retarget_forms_res(ctx, pdf, page->obj, res, 0, &seen, f);
+    gomupdf_retarget_tree(ctx, pdf, page->obj, f);
 }
 
 // gomupdf_untag_forms removes the tags from the originals and releases f.

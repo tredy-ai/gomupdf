@@ -230,23 +230,8 @@ func formStructDoc(page1, page2 string) declaredDoc {
 // with Garbage 1.
 func redactAllHello(t *testing.T, pdf []byte) (*Document, []byte) {
 	t.Helper()
-	d, err := OpenStream(pdf)
-	if err != nil {
-		t.Fatal(err)
-	}
+	d := applyAllHello(t, pdf)
 	defer d.Close()
-	p, _ := d.LoadPage(0)
-	gs := pageGlyphs(t, p)
-	s, n := runesOf(gs), 0
-	for i := strings.Index(s, "Hello"); i >= 0; i = strings.Index(s, "Hello") {
-		if err := p.AddRedactionQuads(quadsOf(gs[i:i+5]), RedactOptions{}); err != nil {
-			t.Fatal(err)
-		}
-		gs, s, n = gs[i+5:], s[i+5:], n+1
-	}
-	if got, err := p.ApplyRedactions(ApplyOptions{}); err != nil || got != n || n == 0 {
-		t.Fatalf("ApplyRedactions = %d, %v; want %d", got, err, n)
-	}
 	out, err := d.SaveBytesWithOptions(SaveOptions{Garbage: 1})
 	if err != nil {
 		t.Fatal(err)
@@ -257,6 +242,48 @@ func redactAllHello(t *testing.T, pdf []byte) (*Document, []byte) {
 	}
 	t.Cleanup(re.Close)
 	return re, out
+}
+
+// applyAllHello opens pdf and redacts every "Hello" page 1 shows; the
+// caller closes the document.
+func applyAllHello(t *testing.T, pdf []byte) *Document {
+	t.Helper()
+	d, err := OpenStream(pdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _ := d.LoadPage(0)
+	gs := pageGlyphs(t, p)
+	s, n := runesOf(gs), 0
+	for i := strings.Index(s, "Hello"); i >= 0; i = strings.Index(s, "Hello") {
+		if err := p.AddRedactionQuads(quadsOf(gs[i:i+5]), RedactOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		gs, s, n = gs[i+5:], s[i+5:], n+1
+	}
+	if got, err := p.ApplyRedactions(ApplyOptions{}); err != nil || got != n || n == 0 {
+		d.Close()
+		t.Fatalf("ApplyRedactions = %d, %v; want %d", got, err, n)
+	}
+	return d
+}
+
+// savesClean saves d uncompressed at Garbage 1 and 3 and fails if either
+// save contains one of words. (At Garbage 0 the page's original streams stay
+// as unreferenced objects, as in MuPDF.)
+func savesClean(t *testing.T, label string, d *Document, words ...string) {
+	t.Helper()
+	for _, g := range []int{1, 3} {
+		out, err := d.SaveBytesWithOptions(SaveOptions{Garbage: g})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, w := range words {
+			if i := bytes.Index(out, []byte(w)); i >= 0 {
+				t.Errorf("%s, Garbage %d: saved file has %q: %q", label, g, w, out[max(0, i-80):min(len(out), i+40)])
+			}
+		}
+	}
 }
 
 // A structure element whose MCR names a form's stream (/Stm) must not keep
@@ -307,4 +334,63 @@ func TestRedactionFormStructRefs(t *testing.T) {
 			t.Errorf("%d MCRs name form 8 (want 1, page 2's); form 8 present: %v", n, bytes.Contains(out, []byte("\n8 0 obj")))
 		}
 	})
+}
+
+// formObjDoc is one page drawing form 8 once. The form is a structure
+// object itself: its singular /StructParent (key 2) leads to element 12, a
+// Figure whose /K holds an OBJR naming the form. With mcid the form also has
+// /StructParents (key 1) for its marked content, owned by element 11 through
+// an MCR naming its stream. inTree puts the Figure under the root; pg adds
+// /Pg (page 1) to the elements and references.
+func formObjDoc(mcid, inTree, pg bool) declaredDoc {
+	page := ""
+	if pg {
+		page = "/Pg 3 0 R"
+	}
+	formDict := "/StructParent 2"
+	figKids := "<< /Type /OBJR /Obj 8 0 R " + page + " >>"
+	nums := "0 [] 2 12 0 R"
+	if mcid {
+		formDict += " /StructParents 1"
+		figKids = "11 0 R " + figKids
+		nums = "0 [] 1 [11 0 R] 2 12 0 R"
+	}
+	rootKids := "[]"
+	if inTree {
+		rootKids = "[12 0 R]"
+	}
+	return declaredDoc{
+		page1:      "q /Fm0 Do Q",
+		form:       "/P << /MCID 0 >> BDC " + line("", "") + " EMC",
+		formDict:   formDict,
+		structTree: "<< /Type /StructTreeRoot /K " + rootKids + " /ParentTree << /Nums [" + nums + "] >> >>",
+		elems: []string{
+			"<< /Type /StructElem /S /P /P 12 0 R " + page + " /K << /Type /MCR /MCID 0 /Stm 8 0 R " + page + " >> >>",
+			"<< /Type /StructElem /S /Figure /P 9 0 R " + page + " /K [" + figKids + "] >>",
+		},
+	}
+}
+
+// Object references (OBJR) to a form that is a structure object itself, and
+// MCRs to a form with no /StructParents, are followed too: the saved file
+// keeps no unredacted copy of the form.
+func TestRedactionFormObjectRefs(t *testing.T) {
+	for name, c := range map[string]declaredDoc{
+		"structparent and structparents": formObjDoc(true, true, true),
+		"structparent only":              formObjDoc(false, true, true),
+		"no pg":                          formObjDoc(true, true, false),
+		"not under the root":             formObjDoc(true, false, true),
+		"mcr, form without keys": {
+			page1:      "q /Fm0 Do Q",
+			form:       "/P << /MCID 0 >> BDC " + line("", "") + " EMC",
+			structTree: "<< /Type /StructTreeRoot /K [11 0 R] /ParentTree << /Nums [0 []] >> >>",
+			elems:      []string{"<< /Type /StructElem /S /P /P 9 0 R /Pg 3 0 R /K << /Type /MCR /MCID 0 /Stm 8 0 R >> >>"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := applyAllHello(t, c.pdf())
+			defer d.Close()
+			savesClean(t, name, d, "Hello")
+		})
+	}
 }
