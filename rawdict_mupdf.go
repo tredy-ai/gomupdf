@@ -126,8 +126,8 @@ import (
 )
 
 func (d *mupdfDoc) rawDictRaw(pageNo int, opts TextOptions) (string, error) {
-	if d.doc == nil {
-		return "", errors.New("gomupdf: document closed")
+	if err := d.readable(); err != nil {
+		return "", err
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))

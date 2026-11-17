@@ -37,7 +37,7 @@ func (d *Document) ShowAllLayers() error {
 		return errors.New("gomupdf: document closed")
 	}
 	if d.locked {
-		return errors.New("gomupdf: show all layers: document is locked")
+		return errLocked
 	}
 	return d.b.showAllLayers()
 }

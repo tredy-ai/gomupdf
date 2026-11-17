@@ -147,8 +147,8 @@ func (d *mupdfDoc) setPageLabels(spec string) error {
 }
 
 func (d *mupdfDoc) pageLabelsRaw() (string, error) {
-	if d.doc == nil {
-		return "", errors.New("gomupdf: document closed")
+	if err := d.readable(); err != nil {
+		return "", err
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
@@ -161,8 +161,8 @@ func (d *mupdfDoc) pageLabelsRaw() (string, error) {
 }
 
 func (d *mupdfDoc) pageLabel(pageNo int) (string, error) {
-	if d.doc == nil {
-		return "", errors.New("gomupdf: document closed")
+	if err := d.readable(); err != nil {
+		return "", err
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))

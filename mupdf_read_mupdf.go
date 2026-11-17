@@ -652,8 +652,8 @@ import (
 )
 
 func (d *mupdfDoc) textRaw(pageNo int) (string, error) {
-	if d.doc == nil {
-		return "", errors.New("gomupdf: document closed")
+	if err := d.readable(); err != nil {
+		return "", err
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
@@ -666,8 +666,8 @@ func (d *mupdfDoc) textRaw(pageNo int) (string, error) {
 }
 
 func (d *mupdfDoc) wordsRaw(pageNo int) (string, error) {
-	if d.doc == nil {
-		return "", errors.New("gomupdf: document closed")
+	if err := d.readable(); err != nil {
+		return "", err
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
@@ -680,8 +680,8 @@ func (d *mupdfDoc) wordsRaw(pageNo int) (string, error) {
 }
 
 func (d *mupdfDoc) boundRaw(pageNo int) (string, error) {
-	if d.doc == nil {
-		return "", errors.New("gomupdf: document closed")
+	if err := d.readable(); err != nil {
+		return "", err
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
@@ -694,8 +694,8 @@ func (d *mupdfDoc) boundRaw(pageNo int) (string, error) {
 }
 
 func (d *mupdfDoc) tocRaw() (string, error) {
-	if d.doc == nil {
-		return "", errors.New("gomupdf: document closed")
+	if err := d.readable(); err != nil {
+		return "", err
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
@@ -708,8 +708,8 @@ func (d *mupdfDoc) tocRaw() (string, error) {
 }
 
 func (d *mupdfDoc) linksRaw(pageNo int) (string, error) {
-	if d.doc == nil {
-		return "", errors.New("gomupdf: document closed")
+	if err := d.readable(); err != nil {
+		return "", err
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
@@ -722,8 +722,8 @@ func (d *mupdfDoc) linksRaw(pageNo int) (string, error) {
 }
 
 func (d *mupdfDoc) searchRaw(pageNo int, needle string) (string, error) {
-	if d.doc == nil {
-		return "", errors.New("gomupdf: document closed")
+	if err := d.readable(); err != nil {
+		return "", err
 	}
 	cn := C.CString(needle)
 	defer C.free(unsafe.Pointer(cn))
@@ -738,8 +738,8 @@ func (d *mupdfDoc) searchRaw(pageNo int, needle string) (string, error) {
 }
 
 func (d *mupdfDoc) structuredJSON(pageNo int) (string, error) {
-	if d.doc == nil {
-		return "", errors.New("gomupdf: document closed")
+	if err := d.readable(); err != nil {
+		return "", err
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
@@ -752,8 +752,8 @@ func (d *mupdfDoc) structuredJSON(pageNo int) (string, error) {
 }
 
 func (d *mupdfDoc) imagesRaw(pageNo int) (string, error) {
-	if d.doc == nil {
-		return "", errors.New("gomupdf: document closed")
+	if err := d.readable(); err != nil {
+		return "", err
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
@@ -766,8 +766,8 @@ func (d *mupdfDoc) imagesRaw(pageNo int) (string, error) {
 }
 
 func (d *mupdfDoc) imageBytes(pageNo, index int) ([]byte, string, error) {
-	if d.doc == nil {
-		return nil, "", errors.New("gomupdf: document closed")
+	if err := d.readable(); err != nil {
+		return nil, "", err
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
@@ -787,8 +787,8 @@ func (d *mupdfDoc) imageBytes(pageNo, index int) ([]byte, string, error) {
 }
 
 func (d *mupdfDoc) drawingsRaw(pageNo int) (string, error) {
-	if d.doc == nil {
-		return "", errors.New("gomupdf: document closed")
+	if err := d.readable(); err != nil {
+		return "", err
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
@@ -800,9 +800,9 @@ func (d *mupdfDoc) drawingsRaw(pageNo int) (string, error) {
 	return C.GoString(cstr), nil
 }
 
-func (d *mupdfDoc) lookupMeta(key string) (string, bool) {
-	if d.doc == nil {
-		return "", false
+func (d *mupdfDoc) lookupMeta(key string) (string, bool, error) {
+	if err := d.readable(); err != nil {
+		return "", false, err
 	}
 	const bufLen = 1024
 	buf := (*C.char)(C.malloc(bufLen))
@@ -811,7 +811,7 @@ func (d *mupdfDoc) lookupMeta(key string) (string, bool) {
 	defer C.free(unsafe.Pointer(ck))
 	n := C.gomupdf_lookup_meta(d.ctx, d.doc, ck, buf, bufLen)
 	if n < 0 {
-		return "", false
+		return "", false, nil
 	}
-	return strings.TrimSpace(C.GoString(buf)), true
+	return strings.TrimSpace(C.GoString(buf)), true, nil
 }

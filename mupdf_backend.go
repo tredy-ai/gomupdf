@@ -297,8 +297,12 @@ type mupdfDoc struct {
 	locked  bool           // needs a password Authenticate has not given
 }
 
-// errLocked refuses loading or changing a document before Authenticate.
-var errLocked = errors.New("gomupdf: document is locked: Authenticate first")
+// readable returns an error unless the document is open and not locked.
+// Every method that loads document content starts with it: an object
+// loaded before Authenticate is decrypted with the wrong key and stays
+// cached that way (MuPDF cannot reload it), so even a read would leave
+// garbage (a title, an outline entry) behind for after Authenticate.
+func (d *mupdfDoc) readable() error { return d.writable() }
 
 // writable returns an error unless the document is open and not locked.
 // Every method that changes or saves the document starts with it.
@@ -347,8 +351,10 @@ func (d *mupdfDoc) authenticate(password string) bool {
 	return true
 }
 
+// pageCount is 0 while the document is locked: counting loads the catalog,
+// and with it any string inline there (a page label prefix, say).
 func (d *mupdfDoc) pageCount() int {
-	if d.doc == nil {
+	if d.readable() != nil {
 		return 0
 	}
 	errBuf := newErrBuf()

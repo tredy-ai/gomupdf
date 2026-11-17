@@ -137,8 +137,8 @@ import (
 )
 
 func (d *mupdfDoc) htmlRaw(pageNo int) (string, error) {
-	if d.doc == nil {
-		return "", errors.New("gomupdf: document closed")
+	if err := d.readable(); err != nil {
+		return "", err
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
@@ -151,8 +151,8 @@ func (d *mupdfDoc) htmlRaw(pageNo int) (string, error) {
 }
 
 func (d *mupdfDoc) xhtmlRaw(pageNo int) (string, error) {
-	if d.doc == nil {
-		return "", errors.New("gomupdf: document closed")
+	if err := d.readable(); err != nil {
+		return "", err
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
@@ -165,8 +165,8 @@ func (d *mupdfDoc) xhtmlRaw(pageNo int) (string, error) {
 }
 
 func (d *mupdfDoc) xmlRaw(pageNo int) (string, error) {
-	if d.doc == nil {
-		return "", errors.New("gomupdf: document closed")
+	if err := d.readable(); err != nil {
+		return "", err
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))

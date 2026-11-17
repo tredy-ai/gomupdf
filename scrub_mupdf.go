@@ -1815,8 +1815,8 @@ func (d *mupdfDoc) repaired() bool {
 }
 
 func (d *mupdfDoc) scrub(opts ScrubOptions) error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
@@ -1834,8 +1834,8 @@ func (d *mupdfDoc) scrub(opts ScrubOptions) error {
 }
 
 func (d *mupdfDoc) hiddenContentRaw() ([]int, error) {
-	if d.doc == nil {
-		return nil, errors.New("gomupdf: document closed")
+	if err := d.readable(); err != nil {
+		return nil, err
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))

@@ -199,8 +199,8 @@ import (
 )
 
 func (d *mupdfDoc) fontsRaw(pageNo int) (string, error) {
-	if d.doc == nil {
-		return "", errors.New("gomupdf: document closed")
+	if err := d.readable(); err != nil {
+		return "", err
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
@@ -213,8 +213,8 @@ func (d *mupdfDoc) fontsRaw(pageNo int) (string, error) {
 }
 
 func (d *mupdfDoc) extractFont(xref int) (name, ext string, data []byte, err error) {
-	if d.doc == nil {
-		return "", "", nil, errors.New("gomupdf: document closed")
+	if err := d.readable(); err != nil {
+		return "", "", nil, err
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))

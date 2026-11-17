@@ -65,6 +65,17 @@ type Document struct {
 // about 1µs and 0.5KB per object: 39ms and 17MB for a file with 40000
 // objects. ApplyRedactions, AddRedaction, AddRedactionQuads and every save
 // return an error if a repair still happens during the call.
+//
+// Also changed: a document that needs a password (NeedsPass) answers only
+// IsEncrypted, NeedsPass, Authenticate and Close until Authenticate
+// succeeds. Every method that reads its content (text, metadata, XMP, TOC,
+// page labels, page geometry, fonts, images, drawings, links, annotations,
+// widgets, rendering, hidden content, conversion) returns an error, as
+// every change and save already did; LoadPage returns an error, PageCount
+// returns 0, and Pages yields nothing. MuPDF decrypts each object once,
+// when it is first loaded, and keeps it: one read before Authenticate
+// (stock MuPDF decrypts it with the wrong key) leaves that object's
+// strings garbled for good.
 func Open(filename string) (*Document, error) {
 	if defaultDriver == nil {
 		return nil, errNoBackend
@@ -83,7 +94,8 @@ func Open(filename string) (*Document, error) {
 
 // OpenStream opens a PDF from in-memory bytes. It does
 // not fail on encryption; the returned Document is left locked (NeedsPass()
-// true) until Authenticate succeeds.
+// true) until Authenticate succeeds, and until then answers nothing but
+// IsEncrypted, NeedsPass, Authenticate and Close (see Open).
 func OpenStream(pdf []byte) (*Document, error) {
 	if len(pdf) == 0 {
 		return nil, errors.New("gomupdf: empty input")
@@ -149,7 +161,7 @@ func (d *Document) NeedsPass() bool {
 // Changed from upstream: on success it loads every object of the document
 // (see Open); if that fails (only running out of memory can), it returns
 // false and the document stays locked. While a document is locked, every
-// method that changes or saves it returns an error.
+// method that reads, changes or saves it returns an error (see Open).
 func (d *Document) Authenticate(password string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -165,6 +177,10 @@ func (d *Document) Authenticate(password string) bool {
 
 // PageCount returns the number of pages. Returns 0 if the
 // document is closed or unreadable.
+//
+// Changed from upstream: it also returns 0 while the document is locked
+// (see Open): counting the pages loads the catalog, and a string in it
+// decrypted with the wrong key would stay wrong after Authenticate.
 func (d *Document) PageCount() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -176,8 +192,11 @@ func (d *Document) PageCount() int {
 
 // LoadPage returns a handle to page i (0-based).
 // The page is lightweight (it defers to the document on each call); no separate
-// Close is required.
+// Close is required. A locked document (see Open) returns an error.
 func (d *Document) LoadPage(i int) (*Page, error) {
+	if d.NeedsPass() {
+		return nil, errLocked
+	}
 	if i < 0 || i >= d.PageCount() {
 		return nil, errors.New("gomupdf: page out of range")
 	}
@@ -492,6 +511,9 @@ func splitLines(raw string) []string {
 // AllLines returns every page's Lines concatenated into a single flat line
 // stream across the whole document.
 func (d *Document) AllLines() ([]string, error) {
+	if d.NeedsPass() {
+		return nil, errLocked
+	}
 	var out []string
 	for _, page := range d.Pages() {
 		lines, err := page.Lines()
@@ -505,6 +527,9 @@ func (d *Document) AllLines() ([]string, error) {
 
 // Text returns the full document text, pages separated by a form feed ("\f").
 func (d *Document) Text() (string, error) {
+	if d.NeedsPass() {
+		return "", errLocked
+	}
 	var b strings.Builder
 	for i, page := range d.Pages() {
 		if i > 0 {
@@ -521,6 +546,9 @@ func (d *Document) Text() (string, error) {
 
 // TextByPage returns each page's text as a slice.
 func (d *Document) TextByPage() ([]string, error) {
+	if d.NeedsPass() {
+		return nil, errLocked
+	}
 	var out []string
 	for _, page := range d.Pages() {
 		t, err := page.GetText()
@@ -556,7 +584,10 @@ func (d *Document) Metadata() (map[string]string, error) {
 	}
 	out := make(map[string]string)
 	for name, key := range metaKeys {
-		v, ok := d.b.lookupMeta(key)
+		v, ok, err := d.b.lookupMeta(key)
+		if err != nil {
+			return nil, err
+		}
 		if !ok {
 			continue
 		}

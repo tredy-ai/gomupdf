@@ -27,6 +27,10 @@ import "errors"
 // backend (e.g. `-tags nomupdf`) and no driver registered itself.
 var errNoBackend = errors.New("gomupdf: no backend compiled in (build without the 'nomupdf' tag, or supply an alternative backend)")
 
+// errLocked refuses reading, changing or saving a document before
+// Authenticate.
+var errLocked = errors.New("gomupdf: document is locked: Authenticate first")
+
 // defaultDriver is set by a backend's init() (the MuPDF backend does this in a
 // `!nomupdf`-tagged file). nil means no backend is available.
 var defaultDriver driver
@@ -64,7 +68,7 @@ type docBackend interface {
 	convertToPDF() ([]byte, error)
 
 	// --- metadata & structure ---------------------------------------------
-	lookupMeta(key string) (value string, present bool)
+	lookupMeta(key string) (value string, present bool, err error)
 	setMetadata(spec string) error
 	xmp() ([]byte, error)
 	setXMP(xml []byte) error

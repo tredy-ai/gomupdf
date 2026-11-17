@@ -86,8 +86,8 @@ import (
 )
 
 func (d *mupdfDoc) extractTextRaw(pageNo int, opts TextOptions) (string, error) {
-	if d.doc == nil {
-		return "", errors.New("gomupdf: document closed")
+	if err := d.readable(); err != nil {
+		return "", err
 	}
 
 	errBuf := newErrBuf()

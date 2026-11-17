@@ -100,8 +100,8 @@ import (
 )
 
 func (d *mupdfDoc) pixmap(pageNo int, o PixmapOptions) ([]byte, error) {
-	if d.doc == nil {
-		return nil, errors.New("gomupdf: document closed")
+	if err := d.readable(); err != nil {
+		return nil, err
 	}
 
 	// Resolve zoom.

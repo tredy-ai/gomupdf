@@ -89,8 +89,8 @@ import (
 )
 
 func (d *mupdfDoc) convertToPDF() ([]byte, error) {
-	if d.doc == nil {
-		return nil, errors.New("gomupdf: document closed")
+	if err := d.readable(); err != nil {
+		return nil, err
 	}
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))

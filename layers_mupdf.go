@@ -95,13 +95,13 @@ import (
 )
 
 func (d *mupdfDoc) showAllLayers() error {
-	if d.doc == nil {
-		return errors.New("gomupdf: document closed")
+	if err := d.writable(); err != nil {
+		return err
 	}
-	errBuf := (*C.char)(C.malloc(errBufLen))
+	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_show_all_layers(d.ctx, d.doc, errBuf, errBufLen) != 0 {
-		return errors.New("gomupdf: show all layers: " + C.GoString(errBuf))
+		return errors.New("gomupdf: show all layers: " + errText(errBuf))
 	}
 	return nil
 }

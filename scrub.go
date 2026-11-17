@@ -412,7 +412,7 @@ func (d *Document) Scrub(opts ScrubOptions) error {
 		return errors.New("gomupdf: document closed")
 	}
 	if d.locked {
-		return errors.New("gomupdf: scrub: document is locked")
+		return errLocked
 	}
 	if d.badScrub {
 		return errors.New("gomupdf: scrub: an earlier Scrub failed on this document; discard it")
@@ -444,7 +444,7 @@ func (d *Document) HiddenContent() (HiddenContent, error) {
 		return HiddenContent{}, errors.New("gomupdf: document closed")
 	}
 	if d.locked {
-		return HiddenContent{}, errors.New("gomupdf: hidden content: document is locked")
+		return HiddenContent{}, errLocked
 	}
 	c, err := d.b.hiddenContentRaw()
 	if err != nil {
