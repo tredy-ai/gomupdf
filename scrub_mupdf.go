@@ -43,7 +43,7 @@ static void gomupdf_add(int *x, long long v) {
 enum {
     HC_INFO, HC_XMP, HC_ACROFORM, HC_OUTLINES, HC_EMBEDDED, HC_AF, HC_JS,
     HC_NONLINK, HC_WIDGETS, HC_THUMBS, HC_PAGEMETA, HC_PIECEINFO, HC_XFA, HC_TRAILER, HC_ORPHANPAGES,
-    HC_COUNT
+    HC_OBJMETA, HC_LASTMOD, HC_PERMS, HC_DSS, HC_WEBCAPTURE, HC_COUNT
 };
 
 // Kinds of removed object. gomupdf_is_kind identifies each positively, so a
@@ -52,7 +52,7 @@ enum {
 enum {
     GK_INFO, GK_XMP, GK_TREE, GK_FILESPEC, GK_EF, GK_EMBEDDED, GK_ACTION, GK_SCRIPT,
     GK_ANNOT, GK_FIELD, GK_ACROFORM, GK_THUMB, GK_STRING, GK_LAUNCHP, GK_XFA, GK_ANYACTION,
-    GK_CONTENTS, GK_XOBJECT
+    GK_CONTENTS, GK_XOBJECT, GK_PIECEINFO, GK_PRIVATE, GK_SIG, GK_DSS
 };
 
 // gomupdf_name_in reports whether name is in the NULL-terminated list.
@@ -116,6 +116,9 @@ static int gomupdf_name_in(const char *name, const char **list) {
 #define GM_ABAD 8192   // an action gomupdf_action_walk decided unsafe
 #define GM_AREC 16384  // an action gomupdf_record_chain has recorded
 #define GM_FWALK 32768 // a field gomupdf_fields has walked (a shared kid is walked once)
+#define GM_PIYES 0x10000  // decided a page-piece dictionary (gomupdf_pieceinfo)
+#define GM_PINO 0x20000   // decided not one
+#define GM_PIWALK 0x40000 // walked by gomupdf_destroy_pieceinfo
 
 enum { GS_WALK, GS_TOP, GS_DOWN, GS_UP, GS_LINK, GS_COUNT };
 
@@ -426,9 +429,10 @@ static void gomupdf_keep_tops(fz_context *ctx, gomupdf_marks *mk) {
 // other object, whatever other role it has, is walked through every key: in a
 // resource subdictionary any name, /P or /Thumb included, can be a resource.
 static int gomupdf_walk_skips(fz_context *ctx, int is_page, int is_root, pdf_obj *k) {
-    static const char *page[] = {"Thumb", "AA", "AF", "Metadata", "PieceInfo", "Annots", NULL};
-    static const char *root[] = {"Metadata", "AA", "AF", "PieceInfo", "AcroForm", "Outlines",
-                                 "OpenAction", "Names", "Pages", "StructTreeRoot", NULL};
+    static const char *page[] = {"Thumb", "AA", "AF", "Metadata", "PieceInfo", "LastModified", "Annots", NULL};
+    static const char *root[] = {"Metadata", "AA", "AF", "PieceInfo", "LastModified", "AcroForm", "Outlines",
+                                 "OpenAction", "Names", "Pages", "StructTreeRoot", "Perms", "DSS", "SpiderInfo",
+                                 NULL};
     const char *name = pdf_to_name(ctx, k);
     return (is_page && gomupdf_name_in(name, page)) || (is_root && gomupdf_name_in(name, root));
 }
@@ -454,6 +458,48 @@ static int gomupdf_page_shaped(fz_context *ctx, pdf_obj *ref) {
         && (pdf_dict_get(ctx, ref, PDF_NAME(Contents)) || pdf_dict_get(ctx, ref, PDF_NAME(Parent)));
 }
 
+// gomupdf_private_holder reports whether ref (an indirect object) is one on
+// which /Metadata, /PieceInfo and /LastModified have their documented
+// meaning, besides the catalog and the page tree, which Scrub handles with
+// their other keys: an image or form XObject, a font, font descriptor,
+// structure element or output intent, an ICC profile stream (no /Type or
+// /Subtype, an integer /N) or an embedded file. Resource dictionaries, where
+// these names can be resource names, are none of these.
+static int gomupdf_private_holder(fz_context *ctx, pdf_obj *ref) {
+    pdf_obj *t = pdf_dict_get(ctx, ref, PDF_NAME(Type)), *st = pdf_dict_get(ctx, ref, PDF_NAME(Subtype));
+    if (pdf_is_stream(ctx, ref)) {
+        if (pdf_name_eq(ctx, st, PDF_NAME(Form)) || pdf_name_eq(ctx, st, PDF_NAME(Image)))
+            return !t || pdf_name_eq(ctx, t, PDF_NAME(XObject));
+        return pdf_name_eq(ctx, t, PDF_NAME(EmbeddedFile))
+            || (!t && !st && pdf_is_int(ctx, pdf_dict_get(ctx, ref, PDF_NAME(N))));
+    }
+    return pdf_is_dict(ctx, ref)
+        && (pdf_name_eq(ctx, t, PDF_NAME(Font)) || pdf_name_eq(ctx, t, PDF_NAME(FontDescriptor))
+            || pdf_name_eq(ctx, t, PDF_NAME(OutputIntent)) || gomupdf_type_is(ctx, ref, "StructElem"));
+}
+
+// gomupdf_pieceinfo reports whether v is a page-piece dictionary
+// (GK_PIECEINFO), caching the verdict on an indirect one in mk, so that one
+// shared by many objects is checked once.
+static int gomupdf_pieceinfo(fz_context *ctx, gomupdf_marks *mk, pdf_obj *v) {
+    unsigned int *m = gomupdf_mark(ctx, mk, v);
+    if (m && (*m & (GM_PIYES | GM_PINO))) return (*m & GM_PIYES) != 0;
+    int yes = gomupdf_is_kind(ctx, v, GK_PIECEINFO);
+    if (m) *m |= yes ? GM_PIYES : GM_PINO;
+    return yes;
+}
+
+// gomupdf_private_key reports whether Scrub removes key name, holding v, from
+// a private-data holder (gomupdf_private_holder): /Metadata when v is an XMP
+// stream, /PieceInfo when v is a page-piece dictionary (gomupdf_pieceinfo),
+// /LastModified when v is a string. The marking walk skips exactly these
+// keys of a holder, so what they hold is not kept through it.
+static int gomupdf_private_key(fz_context *ctx, gomupdf_marks *mk, const char *name, pdf_obj *v) {
+    if (!strcmp(name, "Metadata")) return gomupdf_is_kind(ctx, v, GK_XMP);
+    if (!strcmp(name, "LastModified")) return pdf_is_string(ctx, v);
+    return !strcmp(name, "PieceInfo") && gomupdf_pieceinfo(ctx, mk, v);
+}
+
 // gomupdf_keep_walk keeps the transitive closure of the queued objects,
 // iteratively: the visited marks bound the work by the size of the file. It
 // follows every key, except those gomupdf_walk_skips names on pages, on
@@ -464,8 +510,10 @@ static int gomupdf_page_shaped(fz_context *ctx, pdf_obj *ref) {
 // (gomupdf_keep_value), which Scrub removes everywhere. A page dictionary
 // that is not in the page tree (an orphan page, which Scrub empties), reached
 // other than as page content (a kept Link's destination, say), is kept but
-// not expanded, so what it holds is not kept through it. The object is held
-// while expanding it, as that check resolves others.
+// not expanded, so what it holds is not kept through it. On an indirect
+// private-data holder (gomupdf_private_holder) it skips the keys Scrub
+// removes there (gomupdf_private_key), which play no part in drawing. The
+// object is held while expanding it, as those checks resolve others.
 static void gomupdf_keep_walk(fz_context *ctx, gomupdf_marks *mk) {
     gomupdf_stack *s = &mk->s[GS_WALK];
     while (s->n) {
@@ -474,6 +522,7 @@ static void gomupdf_keep_walk(fz_context *ctx, gomupdf_marks *mk) {
         int is_page = m && ((*m & GM_PAGE) || (*m & (GM_INODE | GM_CONTENT)) == GM_INODE);
         int is_root = m && pdf_to_num(ctx, mk->cur) == mk->root;
         int orphan = m && !(*m & (GM_NODE | GM_CONTENT)) && gomupdf_page_shaped(ctx, mk->cur);
+        int holder = m && gomupdf_private_holder(ctx, mk->cur);
         pdf_obj *o = pdf_keep_obj(ctx, pdf_resolve_indirect(ctx, mk->cur));
         pdf_drop_obj(ctx, mk->cur);
         mk->cur = o;
@@ -483,9 +532,11 @@ static void gomupdf_keep_walk(fz_context *ctx, gomupdf_marks *mk) {
         } else if (!orphan && pdf_is_dict(ctx, o)) {
             int n = pdf_dict_len(ctx, o);
             for (int i = 0; i < n; i++) {
-                pdf_obj *k = pdf_dict_get_key(ctx, o, i);
-                if (!gomupdf_walk_skips(ctx, is_page, is_root, k))
-                    gomupdf_keep_value(ctx, mk, GS_WALK, k, pdf_dict_get_val(ctx, o, i));
+                pdf_obj *k = pdf_dict_get_key(ctx, o, i), *v = pdf_dict_get_val(ctx, o, i);
+                if (gomupdf_walk_skips(ctx, is_page, is_root, k)
+                    || (holder && gomupdf_private_key(ctx, mk, pdf_to_name(ctx, k), v)))
+                    continue;
+                gomupdf_keep_value(ctx, mk, GS_WALK, k, v);
             }
         }
         pdf_drop_obj(ctx, mk->cur);
@@ -606,6 +657,12 @@ static void gomupdf_keep_pass(fz_context *ctx, pdf_document *pdf, gomupdf_marks 
     // removed script chain that shares one of them only unlinks it.
     if (!gomupdf_open_action_unsafe(ctx, root, mk, NULL))
         gomupdf_keep(ctx, mk, pdf_dict_gets(ctx, root, "OpenAction"));
+    // A kept form keeps the signature dictionaries and the security store its
+    // signature fields may rely on.
+    if (keep_fields) {
+        gomupdf_keep(ctx, mk, pdf_dict_get(ctx, root, PDF_NAME(Perms)));
+        gomupdf_keep(ctx, mk, pdf_dict_gets(ctx, root, "DSS"));
+    }
 
     // Kept annotations: Links, widgets with keep_fields, or every /Annots
     // entry with keep_annots.
@@ -706,6 +763,22 @@ static int gomupdf_is_kind(fz_context *ctx, pdf_obj *o, int kind) {
     case GK_STRING: return pdf_is_string(ctx, o);
     case GK_XFA: case GK_CONTENTS: return stream && !t && !st;
     case GK_XOBJECT: return stream && (!t || GK_IS(t, XObject)) && (GK_IS(st, Form) || GK_IS(st, Image));
+    case GK_PRIVATE: return !t && (dict || (stream && !st));
+    case GK_SIG: return dict && (GK_IS(t, Sig) || gomupdf_type_is(ctx, o, "DocTimeStamp"));
+    case GK_DSS: return dict && (!t || gomupdf_type_is(ctx, o, "DSS"));
+    case GK_PIECEINFO: {
+        // An untyped dictionary whose every value is a data dictionary
+        // (/LastModified or /Private).
+        int n = pdf_dict_len(ctx, o);
+        if (!dict || t || !n) return 0;
+        for (int i = 0; i < n; i++) {
+            pdf_obj *d = pdf_dict_get_val(ctx, o, i);
+            if (!pdf_is_dict(ctx, d) || pdf_is_stream(ctx, d)
+                || !(pdf_dict_gets(ctx, d, "LastModified") || pdf_dict_get(ctx, d, PDF_NAME(Private))))
+                return 0;
+        }
+        return 1;
+    }
     case GK_THUMB:
         return stream && GK_HAS(Width) && (!t || GK_IS(t, XObject)) && (!st || GK_IS(st, Image));
     }
@@ -731,6 +804,93 @@ static void gomupdf_destroy_filespec(fz_context *ctx, gomupdf_marks *mk, pdf_obj
     gomupdf_destroy(ctx, mk, ef, GK_EF);
     int n = pdf_dict_len(ctx, ef);
     for (int i = 0; i < n; i++) gomupdf_destroy(ctx, mk, pdf_dict_get_val(ctx, ef, i), GK_EMBEDDED);
+}
+
+// gomupdf_walked reports whether obj is indirect and was already walked
+// (GM_PIWALK), marking it walked.
+static int gomupdf_walked(fz_context *ctx, gomupdf_marks *mk, pdf_obj *obj) {
+    unsigned int *m = gomupdf_mark(ctx, mk, obj);
+    if (!m) return 0;
+    if (*m & GM_PIWALK) return 1;
+    *m |= GM_PIWALK;
+    return 0;
+}
+
+// gomupdf_destroy_pieceinfo records a removed /PieceInfo for destruction, if
+// it is a page-piece dictionary (gomupdf_pieceinfo): the dictionary, each
+// data dictionary in it, each one's /Private value (an untyped dictionary or
+// stream) and, when that is a dictionary, the untyped streams it holds
+// (Illustrator keeps its private copy of the artwork in such streams). Each
+// indirect object is walked once (GM_PIWALK), so private data shared by many
+// objects costs one walk.
+static void gomupdf_destroy_pieceinfo(fz_context *ctx, gomupdf_marks *mk, pdf_obj *pi) {
+    if (!mk || !gomupdf_pieceinfo(ctx, mk, pi) || gomupdf_walked(ctx, mk, pi)) return;
+    gomupdf_destroy(ctx, mk, pi, GK_PIECEINFO);
+    for (int i = 0; i < pdf_dict_len(ctx, pi); i++) {
+        pdf_obj *d = pdf_dict_get_val(ctx, pi, i);
+        if (gomupdf_walked(ctx, mk, d)) continue;
+        gomupdf_destroy(ctx, mk, d, GK_EF);
+        pdf_obj *p = pdf_dict_get(ctx, d, PDF_NAME(Private));
+        if (gomupdf_walked(ctx, mk, p) || !gomupdf_is_kind(ctx, p, GK_PRIVATE)) continue;
+        gomupdf_destroy(ctx, mk, p, GK_PRIVATE);
+        if (pdf_is_stream(ctx, p)) continue;
+        for (int j = 0; j < pdf_dict_len(ctx, p); j++)
+            gomupdf_destroy(ctx, mk, pdf_dict_get_val(ctx, p, j), GK_CONTENTS);
+    }
+}
+
+// gomupdf_private_keys counts into out (HiddenContent) or removes (Scrub, mk)
+// the keys gomupdf_private_key names on the private-data holder o, recording
+// the XMP streams and page-piece data for destruction. It edits o in place
+// even when o is page content (an image the page draws): these keys play no
+// part in drawing, and the value checks keep a resource of the same name out
+// of reach.
+static void gomupdf_private_keys(fz_context *ctx, gomupdf_marks *mk, pdf_obj *o, int *out) {
+    static const char *keys[] = {"Metadata", "PieceInfo", "LastModified"};
+    static const int counts[] = {HC_OBJMETA, HC_PIECEINFO, HC_LASTMOD};
+    for (int k = 0; k < 3; k++) {
+        pdf_obj *v = pdf_dict_gets(ctx, o, keys[k]);
+        if (!v || !gomupdf_private_key(ctx, mk, keys[k], v)) continue;
+        if (out) {
+            gomupdf_add(&out[counts[k]], 1);
+            continue;
+        }
+        if (k == 0) gomupdf_destroy(ctx, mk, v, GK_XMP);
+        if (k == 1) gomupdf_destroy_pieceinfo(ctx, mk, v);
+        pdf_dict_dels(ctx, o, keys[k]);
+    }
+}
+
+// gomupdf_destroy_signatures records the catalog's /Perms and /DSS for
+// destruction: the /Perms dictionary and its signature dictionaries (/Type
+// /Sig or /DocTimeStamp), and the /DSS dictionary with the untyped streams of
+// its /Certs, /OCSPs and /CRLs arrays. The /VRI entries are only unlinked;
+// they normally list the same streams.
+static void gomupdf_destroy_signatures(fz_context *ctx, gomupdf_marks *mk, pdf_obj *root) {
+    static const char *lists[] = {"Certs", "OCSPs", "CRLs"};
+    pdf_obj *perms = pdf_dict_get(ctx, root, PDF_NAME(Perms)), *dss = pdf_dict_gets(ctx, root, "DSS");
+    gomupdf_destroy(ctx, mk, perms, GK_EF);
+    for (int i = 0; i < pdf_dict_len(ctx, perms); i++) gomupdf_destroy(ctx, mk, pdf_dict_get_val(ctx, perms, i), GK_SIG);
+    if (!gomupdf_is_kind(ctx, dss, GK_DSS)) return;
+    gomupdf_destroy(ctx, mk, dss, GK_DSS);
+    for (int k = 0; k < 3; k++) {
+        pdf_obj *a = pdf_dict_gets(ctx, dss, lists[k]);
+        for (int i = 0; i < pdf_array_len(ctx, a); i++) gomupdf_destroy(ctx, mk, pdf_array_get(ctx, a, i), GK_CONTENTS);
+    }
+}
+
+// gomupdf_destroy_spiderset records a web-capture content set (a
+// /Names/IDS or /Names/URLS value, /Type /SpiderContentSet) for destruction
+// with its untyped /SI source-information dictionaries (one, or an array of
+// them), which hold the captured URLs. The pages and images its /O lists are
+// only unlinked.
+static void gomupdf_destroy_spiderset(fz_context *ctx, gomupdf_marks *mk, pdf_obj *set) {
+    unsigned int *m = gomupdf_mark(ctx, mk, set);
+    if (!m || (*m & GM_DEL)) return; // a set many names share is walked once
+    *m |= GM_DEL; // the caller checked /Type /SpiderContentSet
+    pdf_obj *si = pdf_dict_gets(ctx, set, "SI");
+    gomupdf_destroy(ctx, mk, si, GK_EF);
+    for (int i = 0; i < pdf_array_len(ctx, si); i++) gomupdf_destroy(ctx, mk, pdf_array_get(ctx, si, i), GK_EF);
 }
 
 // gomupdf_destroy_file records a removed file reference: a filespec, or a
@@ -801,6 +961,7 @@ static long long gomupdf_name_tree(fz_context *ctx, pdf_obj *node, int depth, pd
     for (int i = 0; i < pairs; i++) {
         pdf_obj *v = pdf_array_get(ctx, names, 2 * i + 1);
         if (js && del) gomupdf_action_unsafe(ctx, v, js, del);
+        else if (gomupdf_type_is(ctx, v, "SpiderContentSet")) gomupdf_destroy_spiderset(ctx, del, v);
         else gomupdf_destroy_filespec(ctx, del, v);
     }
     long long count = pairs;
@@ -891,7 +1052,8 @@ static int gomupdf_outline(fz_context *ctx, gomupdf_marks *mk, pdf_obj *node, in
 
 // gomupdf_page_keys counts into out (HiddenContent) or removes (Scrub, mk) the
 // keys Scrub removes from a page or intermediate page-tree node: /Thumb, /AA,
-// /AF, /Metadata and /PieceInfo, recording what they hold for destruction.
+// /AF, /Metadata, /PieceInfo and /LastModified, recording what they hold for
+// destruction.
 static void gomupdf_page_keys(fz_context *ctx, gomupdf_marks *mk, pdf_obj *o, int *out, gomupdf_marks *ax) {
     pdf_obj *af = pdf_dict_get(ctx, o, PDF_NAME(AF)), *aa = pdf_dict_get(ctx, o, PDF_NAME(AA));
     if (out) {
@@ -899,11 +1061,13 @@ static void gomupdf_page_keys(fz_context *ctx, gomupdf_marks *mk, pdf_obj *o, in
         gomupdf_add(&out[HC_PAGEMETA], pdf_dict_get(ctx, o, PDF_NAME(Metadata)) != NULL);
         gomupdf_add(&out[HC_AF], af != NULL);
         gomupdf_add(&out[HC_PIECEINFO], pdf_dict_get(ctx, o, PDF_NAME(PieceInfo)) != NULL);
+        gomupdf_add(&out[HC_LASTMOD], pdf_dict_gets(ctx, o, "LastModified") != NULL);
         if (!out[HC_JS] && gomupdf_aa_unsafe(ctx, aa, ax, NULL)) out[HC_JS] = 1;
         return;
     }
     gomupdf_destroy(ctx, mk, pdf_dict_get(ctx, o, PDF_NAME(Thumb)), GK_THUMB);
     gomupdf_destroy(ctx, mk, pdf_dict_get(ctx, o, PDF_NAME(Metadata)), GK_XMP);
+    gomupdf_destroy_pieceinfo(ctx, mk, pdf_dict_get(ctx, o, PDF_NAME(PieceInfo)));
     for (int i = 0; i < pdf_array_len(ctx, af); i++)
         gomupdf_destroy_filespec(ctx, mk, pdf_array_get(ctx, af, i));
     gomupdf_aa_unsafe(ctx, aa, ax, mk);
@@ -912,6 +1076,7 @@ static void gomupdf_page_keys(fz_context *ctx, gomupdf_marks *mk, pdf_obj *o, in
     pdf_dict_del(ctx, o, PDF_NAME(AF));
     pdf_dict_del(ctx, o, PDF_NAME(Metadata));
     pdf_dict_del(ctx, o, PDF_NAME(PieceInfo));
+    pdf_dict_dels(ctx, o, "LastModified");
 }
 
 // gomupdf_page_nodes walks up /Parent from page through the intermediate
@@ -979,6 +1144,11 @@ static int gomupdf_hidden_content(fz_context *ctx, fz_document *doc, int *out,
         if (incomplete && out[HC_EMBEDDED] == 0) out[HC_EMBEDDED] = 1;
         out[HC_AF] = pdf_dict_get(ctx, root, PDF_NAME(AF)) != NULL;
         out[HC_PIECEINFO] = pdf_dict_get(ctx, root, PDF_NAME(PieceInfo)) != NULL;
+        out[HC_LASTMOD] = pdf_dict_gets(ctx, root, "LastModified") != NULL;
+        out[HC_PERMS] = pdf_dict_get(ctx, root, PDF_NAME(Perms)) != NULL;
+        out[HC_DSS] = pdf_dict_gets(ctx, root, "DSS") != NULL;
+        out[HC_WEBCAPTURE] = pdf_dict_gets(ctx, root, "SpiderInfo") || pdf_dict_gets(ctx, names, "IDS")
+            || pdf_dict_gets(ctx, names, "URLS");
         out[HC_JS] = pdf_dict_get(ctx, names, PDF_NAME(JavaScript)) != NULL
             || gomupdf_open_action_unsafe(ctx, root, &mk, NULL)
             || gomupdf_aa_unsafe(ctx, pdf_dict_get(ctx, root, PDF_NAME(AA)), &mk, NULL);
@@ -1036,7 +1206,7 @@ static int gomupdf_hidden_content(fz_context *ctx, fz_document *doc, int *out,
 static void gomupdf_orphan_page(fz_context *ctx, gomupdf_marks *mk, pdf_obj *page, int *out, int keep_annots,
                                 int keep_fields) {
     static const char *keys[] = {"Contents", "Resources", "Annots", "B", "Group", "StructParents",
-                                 "Thumb", "AA", "AF", "Metadata", "PieceInfo", NULL};
+                                 "Thumb", "AA", "AF", "Metadata", "PieceInfo", "LastModified", NULL};
     if (out) {
         for (const char **k = keys; *k; k++)
             if (pdf_dict_gets(ctx, page, *k)) {
@@ -1071,7 +1241,9 @@ static void gomupdf_orphan_page(fz_context *ctx, gomupdf_marks *mk, pdf_obj *pag
 // filespecs become null. Among the objects the marks cover (not the copies
 // Scrub makes), it counts or empties (gomupdf_orphan_page, with the options)
 // each page dictionary that is not in the page tree (not GM_NODE) and, in
-// Scrub, not page content. A direct dictionary nested in an object is not
+// Scrub, not page content. On every other private-data holder
+// (gomupdf_private_holder) outside the catalog and page tree it counts or
+// removes the private keys (gomupdf_private_keys). A direct dictionary nested in an object is not
 // visited. The caller has loaded every object first (gomupdf_load_all), so no
 // repair can happen during the sweep.
 static void gomupdf_sweep(fz_context *ctx, pdf_document *pdf, gomupdf_marks *mk, int *out, int keep_annots,
@@ -1093,6 +1265,8 @@ static void gomupdf_sweep(fz_context *ctx, pdf_document *pdf, gomupdf_marks *mk,
             }
             if (i < mk->len && !(m & (GM_NODE | GM_CONTENT)) && gomupdf_page_shaped(ctx, ref))
                 gomupdf_orphan_page(ctx, mk, ref, out, keep_annots, keep_fields);
+            else if (i != mk->root && !(m & (GM_PAGE | GM_INODE | GM_DONE)) && gomupdf_private_holder(ctx, ref))
+                gomupdf_private_keys(ctx, mk, ref, out);
         }
         fz_always(ctx) {
             pdf_drop_obj(ctx, af);
@@ -1304,6 +1478,11 @@ static int gomupdf_scrub(fz_context *ctx, fz_document *doc, int keep_annots, int
         }
         gomupdf_destroy_xfa(ctx, &mk, pdf_dict_getp(ctx, root, "AcroForm/XFA"));
         gomupdf_aa_unsafe(ctx, pdf_dict_get(ctx, root, PDF_NAME(AA)), &mk, &mk);
+        gomupdf_destroy_pieceinfo(ctx, &mk, pdf_dict_get(ctx, root, PDF_NAME(PieceInfo)));
+        gomupdf_destroy(ctx, &mk, pdf_dict_gets(ctx, root, "SpiderInfo"), GK_EF);
+        gomupdf_destroy_name_tree(ctx, &mk, pdf_dict_gets(ctx, names, "IDS"), 0);
+        gomupdf_destroy_name_tree(ctx, &mk, pdf_dict_gets(ctx, names, "URLS"), 0);
+        if (!keep_fields) gomupdf_destroy_signatures(ctx, &mk, root);
 
         gomupdf_trailer_del(ctx, pdf, PDF_NAME(Info));
         gomupdf_trailer_strip(ctx, pdf);
@@ -1311,6 +1490,13 @@ static int gomupdf_scrub(fz_context *ctx, fz_document *doc, int keep_annots, int
         pdf_dict_del(ctx, root, PDF_NAME(AA));
         pdf_dict_del(ctx, root, PDF_NAME(AF));
         pdf_dict_del(ctx, root, PDF_NAME(PieceInfo));
+        pdf_dict_dels(ctx, root, "LastModified");
+        pdf_dict_dels(ctx, root, "SpiderInfo");
+        // A kept form keeps the signature data its signature fields may use.
+        if (!keep_fields) {
+            pdf_dict_del(ctx, root, PDF_NAME(Perms));
+            pdf_dict_dels(ctx, root, "DSS");
+        }
         // Unlink /AcroForm before the page loop: pdf_delete_annot on a widget
         // walks /Fields recursively with no depth cap and no cycle check on
         // direct /Kids arrays, so a hostile field tree would overflow the stack.
@@ -1325,6 +1511,8 @@ static int gomupdf_scrub(fz_context *ctx, fz_document *doc, int keep_annots, int
             names = gomupdf_own(ctx, &mk, root, PDF_NAME(Names), 0, 0);
             pdf_dict_del(ctx, names, PDF_NAME(EmbeddedFiles));
             pdf_dict_del(ctx, names, PDF_NAME(JavaScript));
+            pdf_dict_dels(ctx, names, "IDS");
+            pdf_dict_dels(ctx, names, "URLS");
         }
         if (gomupdf_open_action_unsafe(ctx, root, &mk, &mk)) pdf_dict_dels(ctx, root, "OpenAction");
         if (!keep_outlines) {

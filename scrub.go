@@ -32,7 +32,12 @@ type ScrubOptions struct {
 	// says. Form field values are not reliably part of page text extraction
 	// (only an appearance stream that shows a value is), so a caller that
 	// keeps form fields must inspect the values itself (Page.Widgets) to
-	// detect or clear sensitive ones. KeepFormFields is new in this fork.
+	// detect or clear sensitive ones. The form keeps its signatures too:
+	// with KeepFormFields or KeepAnnotations the catalog /Perms and /DSS
+	// stay, and so does every signature field's /V signature dictionary,
+	// whose /Contents holds the signer's certificates (a name and often an
+	// e-mail address) and whose /Name, /Reason, /Location and /ContactInfo
+	// are free text. KeepFormFields is new in this fork.
 	KeepFormFields bool
 	// KeepOutlines keeps the catalog /Outlines. Each item keeps its title and
 	// any /Dest but loses an /A that is or chains to a JavaScript or Launch
@@ -107,7 +112,11 @@ type HiddenContent struct {
 	// nodes with /Thumb and /Metadata.
 	Thumbnails, PageMetadata int
 	// PieceInfo counts /PieceInfo dictionaries on the catalog, on pages and on
-	// intermediate page-tree nodes.
+	// intermediate page-tree nodes, and the page-piece dictionaries (an
+	// untyped dictionary whose every value is a dictionary with /LastModified
+	// or /Private) on the objects ObjectMetadata lists. Applications keep
+	// private data there; Illustrator keeps a whole private copy of the
+	// artwork, text included.
 	PieceInfo int
 
 	// TrailerKeys counts the keys of the trailer other than /Root, /Info,
@@ -129,10 +138,32 @@ type HiddenContent struct {
 	// extracted, rendered or redacted, while a structure element's /Pg, a
 	// destination or a template can still reach it.
 	OrphanPages int
+
+	// ObjectMetadata counts the objects other than the catalog, pages and
+	// page-tree nodes whose /Metadata is an XMP stream (/Type /Metadata or
+	// /Subtype /XML): image and form XObjects, fonts (/Type /Font), font
+	// descriptors, structure elements (/Type /StructElem), output intents,
+	// ICC profile streams (no /Type or /Subtype, an integer /N) and embedded
+	// files (/Type /EmbeddedFile), the objects on which /Metadata, /PieceInfo
+	// and /LastModified have their documented meaning. Only these objects are
+	// read: elsewhere, in a resource dictionary say, the same key can be a
+	// resource name.
+	ObjectMetadata int
+	// LastModified counts /LastModified dates (strings) on the catalog, on
+	// pages and intermediate page-tree nodes and on the objects ObjectMetadata
+	// lists.
+	LastModified int
+	// Perms and DSS report the catalog /Perms (DocMDP and UR3 signature
+	// dictionaries) and /DSS (the document security store: certificates,
+	// OCSP responses and CRLs, which hold names and e-mail addresses).
+	Perms, DSS bool
+	// WebCapture reports web-capture data: the catalog /SpiderInfo, or the
+	// /Names/IDS or /Names/URLS name tree.
+	WebCapture bool
 }
 
 // hiddenContentCounts is the number of counts the backend returns.
-const hiddenContentCounts = 15
+const hiddenContentCounts = 20
 
 // hiddenContentFromCounts maps the backend's counts, in HiddenContent field
 // order, to a HiddenContent.
@@ -156,21 +187,38 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 		XFA:                c[12] != 0,
 		TrailerKeys:        c[13],
 		OrphanPages:        c[14],
+		ObjectMetadata:     c[15],
+		LastModified:       c[16],
+		Perms:              c[17] != 0,
+		DSS:                c[18] != 0,
+		WebCapture:         c[19] != 0,
 	}, nil
 }
 
 // Scrub removes document-level content that page redaction never touches:
 //
 //   - trailer /Info and every non-standard trailer key (see HiddenContent's
-//     TrailerKeys), and catalog /Metadata, /AA, /AF and /PieceInfo;
-//   - /Names/EmbeddedFiles and /Names/JavaScript;
+//     TrailerKeys), and catalog /Metadata, /AA, /AF, /PieceInfo,
+//     /LastModified and the web-capture /SpiderInfo;
+//   - /Names/EmbeddedFiles, /Names/JavaScript and the web-capture
+//     /Names/IDS and /Names/URLS;
+//   - unless opts.KeepAnnotations or opts.KeepFormFields, the catalog /Perms
+//     (DocMDP and UR3 signature dictionaries) and /DSS (certificates, OCSP
+//     responses and CRLs); see KeepFormFields for what a kept form keeps;
 //   - the catalog /OpenAction, if it or any action in its /Next chain is a
 //     JavaScript or Launch action (a destination or other action is kept);
 //   - unless opts.KeepOutlines, /Outlines (and /PageMode /UseOutlines becomes
 //     /UseNone); with it, the /A of every outline item that is or chains to a
 //     JavaScript or Launch action (the item, its title and any /Dest stay);
 //   - on every page dictionary and every intermediate page-tree node above a
-//     page (up to 32 levels), /Thumb, /AA, /AF, /Metadata and /PieceInfo;
+//     page (up to 32 levels), /Thumb, /AA, /AF, /Metadata, /PieceInfo and
+//     /LastModified;
+//   - on every object HiddenContent's ObjectMetadata lists (images, forms,
+//     fonts, structure elements and so on), /Metadata when it is an XMP
+//     stream, /PieceInfo when it is a page-piece dictionary and /LastModified
+//     when it is a string, edited in place even on an image or form the page
+//     draws, since these keys play no part in drawing; the same names in a
+//     resource dictionary are resource names and are not touched;
 //   - unless opts.KeepAnnotations, every annotation except Links and widgets,
 //     popups and replies included; unless opts.KeepAnnotations or
 //     opts.KeepFormFields, every widget and the catalog /AcroForm;
@@ -205,12 +253,17 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // filespecs, and, unless the form stays, the /AcroForm dictionary with its
 // field tree; in every case it is the content streams of a page that is not
 // in the page tree, the forms and images in its own /Resources /XObject, and
-// the annotations on it that the options remove as on a page, /Info, the XMP
-// stream,
-// page and page-tree node /Metadata and /Thumb streams, the filespecs of
+// the annotations on it that the options remove as on a page, /Info, every
+// removed /Metadata XMP stream, every removed /PieceInfo page-piece
+// dictionary with its data dictionaries, their /Private values and the
+// untyped streams a /Private dictionary holds, unless the form stays the
+// /Perms signature dictionaries and the /DSS with the streams of its /Certs,
+// /OCSPs and /CRLs, /SpiderInfo, the web-capture content sets of /Names/IDS
+// and /Names/URLS with their source information, page and page-tree node
+// /Thumb streams, the filespecs of
 // /Names/EmbeddedFiles and of every /AF Scrub removes, every such
 // filespec's /EF streams, the /Names/JavaScript actions with their script
-// strings and streams, the nodes of both name trees, the /XFA streams, and
+// strings and streams, the nodes of the removed name trees, the /XFA streams, and
 // every JavaScript or Launch action Scrub removes or removes the holder of
 // (from /OpenAction, any /AA, an /A or /PA, an outline item, a removed
 // annotation or field, the /Next chain of a /Names/JavaScript action) with
@@ -223,7 +276,8 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // as HiddenContent's JavaScript field defines it, another action has /S and
 // no /Type other than /Action, an XFA stream or content stream has no /Type
 // or /Subtype, an image or form has /Subtype /Image or /Form and no /Type
-// other than /XObject, and so on).
+// other than /XObject, a signature dictionary has /Type /Sig or
+// /DocTimeStamp, and so on).
 //
 // Scrub never destroys kept content. Before it changes anything it loads
 // every object (so that an xref repair MuPDF needs happens first) and marks
@@ -242,10 +296,12 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // field, outline item), except on a page or an intermediate page-tree node
 // that Scrub edits, where the walk skips the keys Scrub removes there and
 // /Annots, on the catalog, where it skips the keys Scrub removes or edits
-// there, /Pages and /StructTreeRoot, and on any object the file
-// specifications in an /AF array (an image the page draws may carry one;
-// Scrub removes them in place, which does not change the drawing, and a
-// resource named /AF never holds a file specification). A page dictionary
+// there, /Pages and /StructTreeRoot, on the objects ObjectMetadata lists the
+// /Metadata, /PieceInfo and /LastModified Scrub removes there, and on any
+// object the file specifications in an /AF array (an image the page draws
+// may carry one; Scrub removes them in place, which does not change the
+// drawing, and a resource named /AF never holds a file specification). A
+// kept form keeps /Perms and /DSS with all they reference. A page dictionary
 // that is not in the page tree and is reached other than as page content (a
 // kept Link's or outline item's destination) is kept but not walked, so what
 // it holds is still destroyed. A removed entry that points at kept
@@ -258,8 +314,9 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 //
 // Everything else is only unlinked too: annotation appearance streams and
 // resources, what a non-standard trailer key references, actions other than
-// JavaScript and Launch, /PieceInfo,
-// /Outlines, objects not recognisably of the removed kind, and the parts of
+// JavaScript and Launch, the /VRI entries of /DSS, the pages and images a
+// web-capture content set lists, /Outlines, objects not recognisably of the
+// removed kind, and the parts of
 // a name tree, field tree or outline beyond 32 levels or 65,536 units of
 // walk work (a field listed by several parents is walked once), and of a
 // page tree more than 32 levels above a page. Unlinked

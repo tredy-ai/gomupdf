@@ -3052,3 +3052,138 @@ func TestScrubOrphanPages(t *testing.T) {
 		})
 	}
 }
+
+// Tokens of scrubPrivateDataPDF, each in exactly one object.
+const (
+	pvFontXMP   = "GomupdfPvFontXMP3a1b"
+	pvFormXMP   = "GomupdfPvFormXMP7c2d"
+	pvStructXMP = "GomupdfPvStructXMP5e4f"
+	pvDescXMP   = "GomupdfPvDescXMP1a8b"
+	pvICCXMP    = "GomupdfPvICCXMP9d3c"
+	pvImagePriv = "GomupdfPvImagePrivate2b6e"
+	pvAIPriv    = "GomupdfPvAIPrivate8f1a"
+	pvLM        = "D:1999GomupdfPvLastMod"
+	pvSig       = "GomupdfPvSigName4c7e"
+	pvCert      = "GomupdfPvCert6a2d@example.com"
+	pvSpider    = "GomupdfPvSpiderURL5b9c"
+	pvSpiderSet = "GomupdfPvSpiderSet3e8a"
+	pvTrap      = "GomupdfPvTrapProperty7d4b"
+	pvTrapXMP   = "GomupdfPvTrapXMPProperty2c5a"
+	pvTrapLM    = "GomupdfPvTrapLMProperty8e3f"
+)
+
+var (
+	pvPrivate   = []string{pvFontXMP, pvFormXMP, pvStructXMP, pvDescXMP, pvICCXMP, pvImagePriv, pvAIPriv, pvLM, pvSpider, pvSpiderSet}
+	pvSignature = []string{pvSig, pvCert}
+)
+
+// scrubPrivateDataPDF is a tagged one-page PDF with private data on objects
+// other than the catalog and pages: XMP /Metadata on a font (6), a form
+// XObject (7), a structure element (17), a font descriptor (20) and an ICC
+// profile (22, an output intent's; the intent is referenced only from the
+// structure element, so MuPDF does not try to load the fake profile);
+// /PieceInfo on the form (Illustrator's
+// shape: a data dictionary whose /Private dictionary holds a private stream)
+// and on an image (8); /LastModified on the catalog, the page, the form and
+// the image; catalog /Perms (a DocMDP signature, 24) and /DSS (a certificate
+// stream, 26); and the web-capture /SpiderInfo with /Names/IDS and /URLS (the
+// content set 27). The structure element references every removed object.
+// The page also draws through resources named /Metadata (a form), /PieceInfo
+// (a graphics state, and a marked-content property list that looks like a
+// page-piece dictionary) and /LastModified (a font), and marked-content
+// property lists named /Metadata (an XMP-typed stream) and /LastModified (a
+// string), in indirect resource dictionaries, which Scrub must not touch.
+func scrubPrivateDataPDF() []byte {
+	xmp := func(tok string) string {
+		return "/Type /Metadata /Subtype /XML\nstream\n<x:xmpmeta>" + tok + "</x:xmpmeta>"
+	}
+	lm := `/LastModified (` + pvLM + `)`
+	return scrubBuildPDF([]string{
+		/* 1 */ `<< /Type /Catalog /Pages 2 0 R ` + lm + ` /MarkInfo << /Marked true >> /StructTreeRoot 19 0 R
+   /Perms << /DocMDP 24 0 R >> /DSS 25 0 R /SpiderInfo << /V 1.0 /C [<< /URL (` + pvSpider + `) >>] >>
+   /Names << /IDS << /Names [(id1) 27 0 R] >> /URLS << /Names [(http://example.com/) 27 0 R] >> >> >>`,
+		/* 2 */ `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+		/* 3 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources 5 0 R /Contents 4 0 R ` + lm + ` >>`,
+		/* 4 */ "\nstream\nBT /F1 12 Tf 20 150 Td (" + scrubPageText + ") Tj ET q /PieceInfo gs 1 0 0 rg 10 10 30 30 re f Q /Fm1 Do" +
+			" q 40 0 0 40 120 20 cm /Im1 Do Q /Metadata Do /Span /PieceInfo BDC BT /LastModified 10 Tf 20 120 Td (Trap) Tj ET EMC" +
+			" /Span /Metadata BDC EMC /Span /LastModified BDC EMC",
+		/* 5 */ `<< /Font 31 0 R /XObject 32 0 R /ExtGState 33 0 R /Properties 30 0 R >>`,
+		/* 6 */ `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Metadata 11 0 R >>`,
+		/* 7 */ "/Type /XObject /Subtype /Form /BBox [0 0 300 200] /PieceInfo << /Illustrator 12 0 R >> /Metadata 13 0 R " + lm +
+			"\nstream\n0 0 1 rg 60 60 20 20 re f",
+		/* 8 */ "/Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8 " + lm +
+			" /PieceInfo << /App << " + lm + " /Private 14 0 R >> >>\nstream\n\x00\xff\xff\x00",
+		/* 9 */ "/Type /XObject /Subtype /Form /BBox [0 0 300 200]\nstream\n0 1 0 rg 100 100 20 20 re f",
+		/* 10 */ `<< /ca 0.5 >>`,
+		/* 11 */ xmp(pvFontXMP),
+		/* 12 */ `<< ` + lm + ` /Private 15 0 R >>`,
+		/* 13 */ xmp(pvFormXMP),
+		/* 14 */ "\nstream\n" + pvImagePriv,
+		/* 15 */ `<< /AIPrivateData1 16 0 R /NumBlock 1 >>`,
+		/* 16 */ "\nstream\n" + pvAIPriv,
+		/* 17 */ `<< /Type /StructElem /S /Figure /P 19 0 R /Metadata 18 0 R
+   /GomupdfRefs [11 0 R 12 0 R 13 0 R 14 0 R 15 0 R 16 0 R 20 0 R 21 0 R 23 0 R 24 0 R 26 0 R 27 0 R 29 0 R] >>`,
+		/* 18 */ xmp(pvStructXMP),
+		/* 19 */ `<< /Type /StructTreeRoot /K [17 0 R] >>`,
+		/* 20 */ `<< /Type /FontDescriptor /FontName /GomupdfDesc /Flags 32 /Metadata 29 0 R >>`,
+		/* 21 */ `<< /Type /OutputIntent /S /GTS_PDFA1 /OutputConditionIdentifier (sRGB) /DestOutputProfile 22 0 R >>`,
+		/* 22 */ "/N 1 /Metadata 23 0 R\nstream\nnot a real profile",
+		/* 23 */ xmp(pvICCXMP),
+		/* 24 */ `<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /Name (` + pvSig + `) /Contents <00> >>`,
+		/* 25 */ `<< /Certs [26 0 R] >>`,
+		/* 26 */ "\nstream\n" + pvCert,
+		/* 27 */ `<< /Type /SpiderContentSet /S /SPS /ID <00> /O [] /SI << /AU (` + pvSpiderSet + `) >> >>`,
+		/* 28 */ `<< /A << /Private (` + pvTrap + `) >> >>`,
+		/* 29 */ xmp(pvDescXMP),
+		/* 30 */ `<< /PieceInfo 28 0 R /Metadata 34 0 R /LastModified (` + pvTrapLM + `) >>`,
+		/* 31 */ `<< /F1 6 0 R /LastModified 6 0 R >>`,
+		/* 32 */ `<< /Fm1 7 0 R /Im1 8 0 R /Metadata 9 0 R >>`,
+		/* 33 */ `<< /PieceInfo 10 0 R >>`,
+		/* 34 */ xmp(pvTrapXMP),
+	}, "")
+}
+
+// Scrub removes /Metadata, /PieceInfo and /LastModified from every object on
+// which they have that meaning and destroys their XMP streams and private
+// data, although the structure tree references them and the page draws the
+// form and image that held them; it removes /SpiderInfo with /Names/IDS and
+// /URLS always, and /Perms and /DSS unless the form stays. Resources with
+// those names are not touched: the page draws and extracts as before.
+func TestScrubPrivateData(t *testing.T) {
+	pdf := scrubPrivateDataPDF()
+	traps := []string{pvTrap, pvTrapXMP, pvTrapLM}
+	scrubControl(t, pdf, slices.Concat(pvPrivate, pvSignature, traps)...)
+	d, err := OpenStream(pdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	want := HiddenContent{PieceInfo: 2, ObjectMetadata: 5, LastModified: 4, Perms: true, DSS: true, WebCapture: true}
+	if h := scrubHidden(t, d); h != want {
+		t.Errorf("before scrub:\n got %+v\nwant %+v", h, want)
+	}
+	for _, opts := range []ScrubOptions{{}, {KeepFormFields: true}, {KeepAnnotations: true}} {
+		t.Run(fmt.Sprintf("%+v", opts), func(t *testing.T) {
+			re := scrubCheckKept(t, pdf, opts)
+			out, err := re.SaveBytesWithOptions(scrubSaveOpts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			scrubNoTokens(t, "private data", out, pvPrivate...)
+			for _, tok := range traps {
+				if !bytes.Contains(out, []byte(tok)) {
+					t.Errorf("the property list holding %q was removed", tok)
+				}
+			}
+			keep := opts != (ScrubOptions{})
+			for _, tok := range pvSignature {
+				if got := bytes.Contains(out, []byte(tok)); got != keep {
+					t.Errorf("%q in save = %v, want %v", tok, got, keep)
+				}
+			}
+			if h := scrubHidden(t, re); h != (HiddenContent{Perms: keep, DSS: keep}) {
+				t.Errorf("after scrub: %+v", h)
+			}
+		})
+	}
+}
