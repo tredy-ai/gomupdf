@@ -78,12 +78,20 @@ type Document struct {
 // strings garbled for good.
 //
 // Also new in this fork, here and in OpenStream and OpenAnyStream (or, for a
-// password-locked PDF, in Authenticate, which then fails): a PDF whose page
-// tree declares more than 8,388,607 pages (MuPDF's maximum object number) is
-// refused with an error ("page tree declares N pages, more than the 8388607
-// this package accepts"). The first call that makes MuPDF build its page map
-// (AddRedactionQuads, say) allocates 16 bytes per declared page: 128 MiB at
-// that ceiling, 22 GB for a /Count of 1,410,065,407.
+// password-locked PDF, in Authenticate, which then fails): a page tree that
+// claims more pages than it can serve is refused with an error that names
+// the rule and the numbers ("page tree declares N pages, ..."). A declared
+// page count within the file's number of objects is accepted as before, at
+// no cost. A larger one, possible only with direct page dictionaries in
+// /Kids or a page or node listed more than once, is accepted only if it is
+// at most 1,048,576 and MuPDF can build its page map from the tree with
+// every page in it a dictionary; MuPDF then serves the pages the tree holds.
+// A count above 8,388,607 (MuPDF's maximum object number) is refused
+// whatever the file. MuPDF's page map takes 16 bytes per declared page (16
+// MiB at 1,048,576; 22 GB for pdf.js poppler-67295-0.pdf's /Count
+// 1,410,065,407), and a count it cannot serve (a missing /Kids entry, a
+// cycle) would otherwise cost a page lookup in every page loop, per declared
+// page.
 func Open(filename string) (*Document, error) {
 	if defaultDriver == nil {
 		return nil, errNoBackend
@@ -104,7 +112,7 @@ func Open(filename string) (*Document, error) {
 // not fail on encryption; the returned Document is left locked (NeedsPass()
 // true) until Authenticate succeeds, and until then answers nothing but
 // IsEncrypted, NeedsPass, Authenticate and Close (see Open). Like Open, it
-// refuses a page tree that declares more than 8,388,607 pages.
+// refuses a page tree that claims more pages than it can serve.
 func OpenStream(pdf []byte) (*Document, error) {
 	if len(pdf) == 0 {
 		return nil, errors.New("gomupdf: empty input")
@@ -169,8 +177,10 @@ func (d *Document) NeedsPass() bool {
 //
 // Changed from upstream: on success it loads every object of the document
 // (see Open); if that fails (only running out of memory can), it returns
-// false and the document stays locked. While a document is locked, every
-// method that reads, changes or saves it returns an error (see Open).
+// false and the document stays locked. It also returns false, and the
+// document stays locked, for a page tree that claims more pages than it can
+// serve (see Open). While a document is locked, every method that reads,
+// changes or saves it returns an error (see Open).
 func (d *Document) Authenticate(password string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()

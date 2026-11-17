@@ -572,22 +572,60 @@ static void gomupdf_keep_walk(fz_context *ctx, gomupdf_marks *mk, int which) {
 }
 
 // GOMUPDF_MAX_PAGES is the largest page count this package accepts: MuPDF's
-// own maximum object number. MuPDF's page map takes 16 bytes per declared
-// page (a pdf_rev_page_map of two ints and a pdf_obj pointer), so this bounds
-// it at about 128 MiB.
+// own maximum object number. A file whose page count is within its number of
+// objects never exceeds it in practice; it bounds the declared count anyway.
+// GOMUPDF_MAX_EXTRA_PAGES bounds a page count above the number of objects,
+// which only direct page dictionaries in /Kids or a page or node listed more
+// than once can serve: MuPDF's page map takes 16 bytes per declared page (a
+// pdf_rev_page_map of two ints and a pdf_obj pointer), 16 MiB at this bound.
 #define GOMUPDF_MAX_PAGES PDF_MAX_OBJECT_NUMBER
+#define GOMUPDF_MAX_EXTRA_PAGES (1 << 20)
 
-// gomupdf_page_count returns the number of pages MuPDF reports (the root
-// /Count, read without walking the tree), and fails when it exceeds
-// GOMUPDF_MAX_PAGES: the page loops, which go on past a page MuPDF cannot
-// look up, would otherwise try every declared page (pdf.js
-// poppler-67295-0.pdf declares 1,410,065,407).
+// gomupdf_page_count returns the number of pages MuPDF serves, and fails
+// (FZ_ERROR_FORMAT, saying which rule and the numbers) on a page tree that
+// claims more pages than it can serve. Open (gomupdf_stabilise) and
+// HiddenContent and Scrub, on a document opened without that check, all use
+// it. The page loops go on past a page MuPDF cannot look up, so without it a
+// /Count MuPDF cannot serve (pdf.js poppler-67295-0.pdf declares
+// 1,410,065,407) would cost a lookup, and a warning, per declared page.
+//   - A count within the number of objects (the xref length) is accepted as
+//     MuPDF reads it, with no further work.
+//   - A count above GOMUPDF_MAX_PAGES, or above the number of objects and
+//     GOMUPDF_MAX_EXTRA_PAGES, is refused.
+//   - Any other count above the number of objects makes MuPDF build its page
+//     map now (its first page lookup does), and the file is refused unless
+//     that succeeds and every page in the map is a dictionary. MuPDF then
+//     serves the pages the tree holds (its count drops to them), each in
+//     constant time.
 static int gomupdf_page_count(fz_context *ctx, pdf_document *pdf) {
-    int n = pdf_count_pages(ctx, pdf);
+    int n = pdf_count_pages(ctx, pdf), len = pdf_xref_len(ctx, pdf);
     if (n > GOMUPDF_MAX_PAGES)
         fz_throw(ctx, FZ_ERROR_FORMAT, "page tree declares %d pages, more than the %d this package accepts", n,
                  GOMUPDF_MAX_PAGES);
-    return n;
+    if (n <= len) return n;
+    if (n > GOMUPDF_MAX_EXTRA_PAGES)
+        fz_throw(ctx, FZ_ERROR_FORMAT,
+                 "page tree declares %d pages, more than the file's %d objects and more than the %d such pages "
+                 "this package accepts", n, len, GOMUPDF_MAX_EXTRA_PAGES);
+    char why[256] = "";
+    fz_try(ctx) pdf_lookup_page_obj(ctx, pdf, 0); // builds the page map
+    fz_catch(ctx) {
+        fz_rethrow_if(ctx, FZ_ERROR_SYSTEM);
+        snprintf(why, sizeof why, "%s", fz_caught_message(ctx));
+        fz_ignore_error(ctx);
+    }
+    if (!why[0] && (pdf->page_tree_broken || !pdf->fwd_page_map)) snprintf(why, sizeof why, "broken page tree");
+    if (why[0])
+        fz_throw(ctx, FZ_ERROR_FORMAT,
+                 "page tree declares %d pages, more than the file's %d objects, and MuPDF cannot serve them (%s)",
+                 n, len, why);
+    int served = pdf_count_pages(ctx, pdf);
+    for (int p = 0; p < served; p++)
+        if (!pdf_is_dict(ctx, pdf->fwd_page_map[p]))
+            fz_throw(ctx, FZ_ERROR_FORMAT,
+                     "page tree declares %d pages, more than the file's %d objects, and page %d is not a page "
+                     "dictionary", n, len, p + 1);
+    return served;
 }
 
 // gomupdf_page_obj returns page p as MuPDF serves it (pdf_lookup_page_obj),
@@ -930,37 +968,36 @@ static void gomupdf_load_pass(fz_context *ctx, pdf_document *pdf) {
 }
 
 // gomupdf_stabilise runs gomupdf_load_all on a PDF (anything else has no
-// xref to repair), then checks the page count MuPDF reports against
-// GOMUPDF_MAX_PAGES, as gomupdf_page_count does: pdf_count_pages reads the
-// root /Count without walking the tree or allocating anything, but the first
-// call that makes MuPDF build its page map allocates 16 bytes per declared
-// page (22 GB for pdf.js poppler-67295-0.pdf's /Count 1410065407). A count
-// MuPDF cannot read at all is left to fail where it is used, as before.
-// Returns 0; -1 with err set when loading fails (only running out of memory
-// does); or -2 with err set for a page count above the ceiling.
+// xref to repair), then checks the page count with gomupdf_page_count:
+// pdf_count_pages reads the root /Count without walking the tree or
+// allocating anything, but the first call that makes MuPDF build its page map
+// allocates 16 bytes per declared page (22 GB for pdf.js
+// poppler-67295-0.pdf's /Count 1410065407), and a count MuPDF cannot serve
+// costs a lookup per declared page in every page loop. A count MuPDF cannot
+// read at all is left to fail where it is used, as before. Returns 0; -1 with
+// err set when loading fails (only running out of memory does); or -2 with
+// err set for a page tree gomupdf_page_count refuses.
 static int gomupdf_stabilise(fz_context *ctx, fz_document *doc, char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) return 0;
-    int n = 0;
-    fz_var(n);
     fz_try(ctx) gomupdf_load_all(ctx, pdf);
     fz_catch(ctx) {
         snprintf(err, errlen, "%s", fz_caught_message(ctx));
         return -1;
     }
-    fz_try(ctx) n = pdf_count_pages(ctx, pdf);
+    fz_try(ctx) pdf_count_pages(ctx, pdf);
     fz_catch(ctx) {
         if (fz_caught(ctx) == FZ_ERROR_SYSTEM) {
             snprintf(err, errlen, "%s", fz_caught_message(ctx));
             return -1;
         }
         fz_ignore_error(ctx);
-        n = 0;
+        return 0;
     }
-    if (n > GOMUPDF_MAX_PAGES) {
-        snprintf(err, errlen, "page tree declares %d pages, more than the %d this package accepts", n,
-                 GOMUPDF_MAX_PAGES);
-        return -2;
+    fz_try(ctx) gomupdf_page_count(ctx, pdf);
+    fz_catch(ctx) {
+        snprintf(err, errlen, "%s", fz_caught_message(ctx));
+        return fz_caught(ctx) == FZ_ERROR_SYSTEM ? -1 : -2;
     }
     return 0;
 }

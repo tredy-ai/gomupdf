@@ -4024,57 +4024,121 @@ func TestScrubUnservedPageInTree(t *testing.T) {
 	}
 }
 
-// A page count above 8,388,607 (MuPDF's maximum object number) is refused:
-// Open, OpenStream and OpenAnyStream refuse it (the first call that makes
-// MuPDF build its page map would allocate 16 bytes per declared page, 22 GB
-// for pdf.js poppler-67295-0.pdf's /Count 1410065407), and HiddenContent and
-// Scrub, on a document opened without that check, refuse it at once rather
-// than look up every declared page. A count of 8,388,607 opens.
+// A page count above the file's number of objects is possible only with
+// direct page dictionaries or a page listed more than once, and is checked at
+// open: above 1,048,576 it is refused outright (and above 8,388,607, MuPDF's
+// maximum object number, whatever the file), and otherwise MuPDF must build
+// its page map from the tree, or the file is refused. A count MuPDF cannot
+// serve (a missing /Kids entry, a cycle) used to cost a page lookup and a
+// warning per declared page in every HiddenContent and Scrub call; now Open,
+// OpenStream and OpenAnyStream refuse it in well under a second, and so do
+// HiddenContent and Scrub on a document opened without that check. pdf.js
+// poppler-67295-0.pdf declares 1,410,065,407 pages: its page map would take
+// 22 GB, and it is refused without one. A count above the number of pages
+// in a tree MuPDF can map opens, with the pages that are there.
 func TestScrubPageCountCeiling(t *testing.T) {
-	countPDF := func(n int) []byte {
-		return scrubBuildPDF([]string{
+	const ceiling, extra, cannot = "more than the 8388607 this package accepts",
+		"more than the 1048576 such pages this package accepts", "and MuPDF cannot serve them"
+	for _, c := range []struct {
+		kids  string
+		count int
+		msg   string // "" opens with one page
+	}{
+		{"[3 0 R]", 1410065407, ceiling},
+		{"[3 0 R]", 8388608, ceiling},
+		{"[3 0 R 99 0 R]", 8388607, extra},
+		{"[3 0 R 2 0 R]", 8388607, extra},
+		{"[3 0 R]", 1048577, extra},
+		{"[3 0 R 99 0 R]", 1048576, cannot},
+		{"[99 0 R 3 0 R]", 1048576, cannot},
+		{"[3 0 R 2 0 R]", 1048576, cannot},
+		{"[3 0 R]", 1048576, ""},
+	} {
+		name := fmt.Sprintf("/Kids %s /Count %d", c.kids, c.count)
+		pdf := scrubBuildPDF([]string{
 			`<< /Type /Catalog /Pages 2 0 R >>`,
-			fmt.Sprintf(`<< /Type /Pages /Kids [3 0 R] /Count %d >>`, n),
+			fmt.Sprintf(`<< /Type /Pages /Kids %s /Count %d >>`, c.kids, c.count),
 			`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>`,
 		}, "")
-	}
-	for _, n := range []int{1410065407, 8388608} {
-		pdf := countPDF(n)
-		msg := fmt.Sprintf("page tree declares %d pages, more than the 8388607 this package accepts", n)
 		path := filepath.Join(t.TempDir(), "count.pdf")
 		if err := os.WriteFile(path, pdf, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		for name, open := range map[string]func() (*Document, error){
+		msg := fmt.Sprintf("page tree declares %d pages, ", c.count)
+		for oname, open := range map[string]func() (*Document, error){
 			"Open":          func() (*Document, error) { return Open(path) },
 			"OpenStream":    func() (*Document, error) { return OpenStream(pdf) },
 			"OpenAnyStream": func() (*Document, error) { return OpenAnyStream(pdf, "pdf") },
 		} {
-			if d, err := open(); err == nil || !strings.Contains(err.Error(), msg) {
-				t.Errorf("%s: %v, want %q", name, err, msg)
-				if d != nil {
-					d.Close()
-				}
+			start := time.Now()
+			d, err := open()
+			if el := time.Since(start); el > 500*time.Millisecond {
+				t.Errorf("%s: %s took %v", name, oname, el)
 			}
+			if c.msg == "" {
+				if err != nil {
+					t.Errorf("%s: %s: %v", name, oname, err)
+				} else if n := d.PageCount(); n != 1 {
+					t.Errorf("%s: %s: %d pages, want 1", name, oname, n)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), msg) || !strings.Contains(err.Error(), c.msg) {
+				t.Errorf("%s: %s: %v, want %q ... %q", name, oname, err, msg, c.msg)
+			}
+			if d != nil {
+				d.Close()
+			}
+		}
+		if c.msg == "" {
+			continue
 		}
 		d := openLazy(t, pdf)
 		start := time.Now()
-		if _, err := d.HiddenContent(); err == nil || !strings.Contains(err.Error(), msg) {
-			t.Errorf("HiddenContent: %v, want %q", err, msg)
+		if _, err := d.HiddenContent(); err == nil || !strings.Contains(err.Error(), c.msg) {
+			t.Errorf("%s: HiddenContent: %v, want %q", name, err, c.msg)
 		}
-		if err := d.Scrub(ScrubOptions{}); err == nil || !strings.Contains(err.Error(), msg) {
-			t.Errorf("Scrub: %v, want %q", err, msg)
+		if err := d.Scrub(ScrubOptions{}); err == nil || !strings.Contains(err.Error(), c.msg) {
+			t.Errorf("%s: Scrub: %v, want %q", name, err, c.msg)
 		}
 		if el := time.Since(start); el > time.Second {
-			t.Errorf("/Count %d: took %v", n, el)
+			t.Errorf("%s: HiddenContent and Scrub took %v", name, el)
 		}
 		d.Close()
 	}
-	d, err := OpenStream(countPDF(8388607))
-	if err != nil {
-		t.Fatalf("/Count 8388607: %v", err)
+}
+
+// A well-formed file of 5,000 pages, whose page count is within its object
+// count, opens with no extra work, and HiddenContent and Scrub stay fast.
+func TestScrubManyPagesOpen(t *testing.T) {
+	const pages = 5000
+	objs := []string{`<< /Type /Catalog /Pages 2 0 R >>`, "", `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>`}
+	var kids []int
+	for i := range pages {
+		kids = append(kids, len(objs)+1)
+		objs = append(objs, fmt.Sprintf(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << /Font << /F1 3 0 R >> >> /Contents %d 0 R >>`, len(objs)+2),
+			fmt.Sprintf("\nstream\nBT /F1 12 Tf 20 100 Td (page %d) Tj ET", i))
 	}
-	d.Close()
+	objs[1] = fmt.Sprintf(`<< /Type /Pages /Kids [%s] /Count %d >>`, scrubRefs(kids...), pages)
+	pdf := scrubBuildPDF(objs, "")
+	start := time.Now()
+	d, err := OpenStream(pdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	t.Logf("OpenStream of %d pages: %v", pages, time.Since(start))
+	if n := d.PageCount(); n != pages {
+		t.Fatalf("%d pages, want %d", n, pages)
+	}
+	start = time.Now()
+	if h := scrubHidden(t, d); h != (HiddenContent{}) {
+		t.Errorf("HiddenContent: %+v", h)
+	}
+	if err := d.Scrub(ScrubOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if el := time.Since(start); el > 2*time.Second {
+		t.Errorf("HiddenContent and Scrub took %v", el)
+	}
 }
 
 // Page trees that declare more pages than the file has objects, which MuPDF

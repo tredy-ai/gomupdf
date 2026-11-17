@@ -231,11 +231,18 @@ stated. The exported doc comments carry the exact limits and the corner cases.
 - `Authenticate` loads every object on success; if that fails it returns false
   and the document stays locked.
 - `Open`, `OpenStream` and `OpenAnyStream` (and `Authenticate`, for a locked
-  file, which then fails) refuse a PDF whose page tree declares more than
-  8,388,607 pages (MuPDF's maximum object number): `page tree declares N pages,
-  more than the 8388607 this package accepts`. The first call that makes
-  MuPDF build its page map allocates 16 bytes per declared page (128 MiB at the
-  ceiling, 22 GB for a `/Count` of 1,410,065,407). A page count MuPDF cannot
+  file, which then fails) refuse a page tree that claims more pages than it can
+  serve, with an error naming the rule (`page tree declares N pages, ...`). A
+  declared count within the file's number of objects is accepted as before, at
+  no cost. A larger one (possible only with direct page dictionaries in `/Kids`
+  or a page or node listed more than once) is accepted only if it is at most
+  1,048,576 and MuPDF builds its page map from the tree at open with every page
+  a dictionary; MuPDF then serves the pages the tree holds. A count above
+  8,388,607 (MuPDF's maximum object number) is refused whatever the file. The
+  page map takes 16 bytes per declared page (16 MiB at 1,048,576, 22 GB for a
+  `/Count` of 1,410,065,407), and a count MuPDF cannot serve would otherwise
+  cost a lookup per declared page in every `HiddenContent` and `Scrub` call.
+  `HiddenContent` and `Scrub` apply the same rule. A page count MuPDF cannot
   read at all is left to fail where it is used.
 - Errors from the C helpers never have an empty message; a helper that fails
   without one reports `unknown error (MuPDF gave no message)`. Out-of-memory
@@ -394,7 +401,7 @@ small, or a damaged file's extra pages). `Scrub` empties orphans completely
 inherited resources reach, down through nested forms), keeps the dictionary
 page-shaped for references to it, and `HiddenContent.OrphanPages` counts them.
 A page MuPDF cannot look up in a damaged or cyclic page tree is skipped, not an
-error. A page count above 8,388,607 is refused (4.2).
+error. A page tree that claims more pages than it can serve is refused (4.2).
 
 **Options:**
 

@@ -28,6 +28,8 @@ func OpenAny(filename string) (*Document, error) {
 // OpenAnyStream opens in-memory bytes of any MuPDF-supported format. filetype
 // is a format hint — a file extension ("png", "xps", "epub"), a leading-dot
 // extension (".pdf"), or a MIME type. An empty filetype is treated as PDF.
+// Like Open, it refuses a PDF whose page tree claims more pages than it can
+// serve.
 func OpenAnyStream(data []byte, filetype string) (*Document, error) {
 	if len(data) == 0 {
 		return nil, errors.New("gomupdf: empty input")
