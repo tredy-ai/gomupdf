@@ -172,6 +172,10 @@ func (d *mupdfDoc) save(opts SaveOptions, orig []byte) ([]byte, error) {
 	if opts.Incremental && (d.data == nil || d.dataLen == 0) {
 		return nil, errors.New("gomupdf: incremental save needs a document opened with OpenStream")
 	}
+	repaired, err := d.beforeSave(opts.Incremental)
+	if err != nil {
+		return nil, err
+	}
 	cu := C.CString(opts.UserPassword)
 	defer C.free(unsafe.Pointer(cu))
 	co := C.CString(opts.OwnerPassword)
@@ -197,12 +201,44 @@ func (d *mupdfDoc) save(opts SaveOptions, orig []byte) ([]byte, error) {
 		return nil, errors.New("gomupdf: save: " + C.GoString(errBuf))
 	}
 	defer C.free(unsafe.Pointer(ptr))
+	if err := d.saveRepaired(repaired); err != nil {
+		return nil, err
+	}
 	return C.GoBytes(unsafe.Pointer(ptr), outLen), nil
+}
+
+// beforeSave stabilises the document before a full save (which loads every
+// object anyway), so that a repair the save would trigger happens before
+// MuPDF starts writing. An incremental save loads only what changed, and a
+// repaired file cannot be saved incrementally, so it is left alone. Returns
+// whether the xref was repaired before the save.
+func (d *mupdfDoc) beforeSave(incremental bool) (bool, error) {
+	if !incremental {
+		if err := d.stabilise(); err != nil {
+			return false, err
+		}
+	}
+	return d.repaired(), nil
+}
+
+// saveRepaired is the backstop for a repair during the save: MuPDF rebuilt
+// the xref from the file in the middle of writing, so the output is neither
+// the document as changed nor, necessarily, a whole file.
+func (d *mupdfDoc) saveRepaired(repaired bool) error {
+	if !repaired && d.repaired() {
+		return errors.New("gomupdf: save: MuPDF repaired the file's cross-reference table while saving, " +
+			"which discards the changes made to the document; nothing was saved")
+	}
+	return nil
 }
 
 func (d *mupdfDoc) savePath(path string, opts SaveOptions) error {
 	if d.doc == nil {
 		return errors.New("gomupdf: document closed")
+	}
+	repaired, err := d.beforeSave(false)
+	if err != nil {
+		return err
 	}
 	cp := C.CString(path)
 	defer C.free(unsafe.Pointer(cp))
@@ -219,12 +255,16 @@ func (d *mupdfDoc) savePath(path string, opts SaveOptions) error {
 		errBuf, errBufLen) != 0 {
 		return errors.New("gomupdf: save: " + C.GoString(errBuf))
 	}
-	return nil
+	return d.saveRepaired(repaired)
 }
 
 func (d *mupdfDoc) saveEncrypted(userPwd, ownerPwd string) ([]byte, error) {
 	if d.doc == nil {
 		return nil, errors.New("gomupdf: document closed")
+	}
+	repaired, err := d.beforeSave(false)
+	if err != nil {
+		return nil, err
 	}
 	cu := C.CString(userPwd)
 	defer C.free(unsafe.Pointer(cu))
@@ -238,5 +278,8 @@ func (d *mupdfDoc) saveEncrypted(userPwd, ownerPwd string) ([]byte, error) {
 		return nil, errors.New("gomupdf: save encrypted: " + C.GoString(errBuf))
 	}
 	defer C.free(unsafe.Pointer(ptr))
+	if err := d.saveRepaired(repaired); err != nil {
+		return nil, err
+	}
 	return C.GoBytes(unsafe.Pointer(ptr), outLen), nil
 }

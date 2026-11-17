@@ -51,6 +51,19 @@ type Document struct {
 // while the Document is open (unlinking it is fine on Linux). Because there is
 // no in-memory original, an incremental save needs a document opened with
 // OpenStream.
+//
+// Also changed from upstream: every object of a PDF is loaded once at open
+// (for a password-locked PDF, when Authenticate succeeds), here and in
+// OpenStream and OpenAnyStream. MuPDF repairs a damaged cross-reference
+// table lazily, the first time an object fails to load, by rebuilding it
+// from the file; a repair after open could change the page count and the
+// pages (a file can have no pages until it is repaired) and discards every
+// change made before it, so a redaction or an edit reported as done would
+// not be in the saved file. Loading everything makes any repair happen
+// first. It costs one parse of each object (streams are not decoded),
+// about 1µs and 0.5KB per object: 39ms and 17MB for a file with 40000
+// objects. ApplyRedactions, AddRedaction, AddRedactionQuads and every save
+// return an error if a repair still happens during the call.
 func Open(filename string) (*Document, error) {
 	if defaultDriver == nil {
 		return nil, errNoBackend

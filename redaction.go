@@ -159,7 +159,10 @@ func isFinite32(f float32) bool {
 // returns the same error. Any other error (one MuPDF raises while rewriting
 // the page, or running out of memory) can come after the page has started to
 // change: an error from ApplyRedactions means the page must not be treated as
-// redacted.
+// redacted. In particular, if MuPDF repairs the file's cross-reference table
+// during the call (which loading every object at open prevents; see Open),
+// the changes made so far are lost and ApplyRedactions, like AddRedaction
+// and AddRedactionQuads, returns an error saying so.
 //
 // Changed from upstream: it takes ApplyOptions. Upstream passed zeroed MuPDF
 // options, so no box was drawn, and always removed overlapping images whole.

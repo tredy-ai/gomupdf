@@ -1315,12 +1315,27 @@ func (d *mupdfDoc) addRedaction(pageNo int, rect [4]float64) error {
 	if d.doc == nil {
 		return errors.New("gomupdf: document closed")
 	}
+	if err := d.stabilise(); err != nil {
+		return err
+	}
+	repaired := d.repaired()
 	errBuf := (*C.char)(C.malloc(errBufLen))
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_add_redaction(d.ctx, d.doc, C.int(pageNo),
 		C.float(rect[0]), C.float(rect[1]), C.float(rect[2]), C.float(rect[3]),
 		errBuf, errBufLen) != 0 {
 		return errors.New("gomupdf: add redaction: " + C.GoString(errBuf))
+	}
+	return d.lateRepair("add redaction", repaired)
+}
+
+// lateRepair is the backstop for a repair that stabilise did not make happen
+// first: a repair during the call (repaired is the state before it) rebuilt
+// the xref from the file and dropped the document's changes.
+func (d *mupdfDoc) lateRepair(op string, repaired bool) error {
+	if !repaired && d.repaired() {
+		return errors.New("gomupdf: " + op + ": MuPDF repaired the file's cross-reference table during the call, " +
+			"which discards the changes made to the document; the page must not be treated as redacted")
 	}
 	return nil
 }
@@ -1332,6 +1347,10 @@ func (d *mupdfDoc) addRedactionQuads(pageNo int, quads []float32) error {
 	if len(quads) == 0 || len(quads)%8 != 0 {
 		return errors.New("gomupdf: add redaction quads: want 8 floats per quad")
 	}
+	if err := d.stabilise(); err != nil {
+		return err
+	}
+	repaired := d.repaired()
 	errBuf := (*C.char)(C.malloc(errBufLen))
 	defer C.free(unsafe.Pointer(errBuf))
 	if C.gomupdf_add_redaction_quads(d.ctx, d.doc, C.int(pageNo),
@@ -1339,7 +1358,7 @@ func (d *mupdfDoc) addRedactionQuads(pageNo int, quads []float32) error {
 		errBuf, errBufLen) != 0 {
 		return errors.New("gomupdf: add redaction quads: " + C.GoString(errBuf))
 	}
-	return nil
+	return d.lateRepair("add redaction quads", repaired)
 }
 
 func (d *mupdfDoc) applyRedactions(pageNo int, opts ApplyOptions) (int, error) {
@@ -1358,12 +1377,19 @@ func (d *mupdfDoc) applyRedactions(pageNo int, opts ApplyOptions) (int, error) {
 	if opts.NoBox {
 		boxes = 0
 	}
+	if err := d.stabilise(); err != nil {
+		return 0, err
+	}
+	repaired := d.repaired()
 	errBuf := (*C.char)(C.malloc(errBufLen))
 	defer C.free(unsafe.Pointer(errBuf))
 	n := C.gomupdf_apply_redactions(d.ctx, d.doc, C.int(pageNo), boxes,
 		C.int(opts.Images), C.int(opts.LineArt), C.int(opts.Text), errBuf, errBufLen)
 	if n < 0 {
 		return 0, errors.New("gomupdf: apply redactions: " + C.GoString(errBuf))
+	}
+	if err := d.lateRepair("apply redactions", repaired); err != nil {
+		return 0, err
 	}
 	return int(n), nil
 }

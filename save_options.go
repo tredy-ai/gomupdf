@@ -38,7 +38,10 @@ type SaveOptions struct {
 
 	// Incremental appends changes to the original bytes instead of rewriting
 	// the whole file. Valid only for documents opened with OpenStream;
-	// incompatible with Garbage, Linear, and Encrypt.
+	// incompatible with Garbage, Linear, and Encrypt. A file MuPDF had to
+	// repair cannot be saved incrementally; since OpenStream loads every
+	// object (see Open), that now includes a file whose damage is only in
+	// objects nothing else reads (changed from upstream).
 	Incremental bool
 }
 

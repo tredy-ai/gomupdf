@@ -594,6 +594,25 @@ static void gomupdf_load_all(fz_context *ctx, pdf_document *pdf) {
     }
 }
 
+// gomupdf_stabilise runs gomupdf_load_all on a PDF (anything else has no
+// xref to repair). Returns 0, or -1 with err set (only running out of memory
+// fails).
+static int gomupdf_stabilise(fz_context *ctx, fz_document *doc, char *err, int errlen) {
+    pdf_document *pdf = pdf_specifics(ctx, doc);
+    if (!pdf) return 0;
+    fz_try(ctx) gomupdf_load_all(ctx, pdf);
+    fz_catch(ctx) {
+        snprintf(err, errlen, "%s", fz_caught_message(ctx));
+        return -1;
+    }
+    return 0;
+}
+
+static int gomupdf_repair_attempted(fz_context *ctx, fz_document *doc) {
+    pdf_document *pdf = pdf_specifics(ctx, doc);
+    return pdf && pdf->repair_attempted;
+}
+
 // gomupdf_keep_all allocates the marks and runs gomupdf_keep_pass. A broken
 // object can make MuPDF repair (rebuild) the xref while the pass loads it, so
 // a pass during which that happened is redone on the repaired xref (a
@@ -1248,6 +1267,32 @@ import (
 	"errors"
 	"unsafe"
 )
+
+// stabilise loads every object of a PDF once, so that any xref repair MuPDF
+// needs happens now. MuPDF repairs a damaged xref at most once, lazily, the
+// first time an object fails to load, and the repair rebuilds the xref from
+// the file: every change made before it (new objects, edited dictionaries)
+// is dropped from the document, and the page tree, page count and objects
+// can differ from what was read before. Done once per document; later calls
+// are free. The cost is one pass over the objects, parsing each (streams are
+// not decoded), comparable to a garbage-collecting save.
+func (d *mupdfDoc) stabilise() error {
+	if d.stable {
+		return nil
+	}
+	errBuf := (*C.char)(C.malloc(errBufLen))
+	defer C.free(unsafe.Pointer(errBuf))
+	if C.gomupdf_stabilise(d.ctx, d.doc, errBuf, errBufLen) != 0 {
+		return errors.New("gomupdf: load objects: " + C.GoString(errBuf))
+	}
+	d.stable = true
+	return nil
+}
+
+// repaired reports whether MuPDF has repaired (or tried to repair) the xref.
+func (d *mupdfDoc) repaired() bool {
+	return C.gomupdf_repair_attempted(d.ctx, d.doc) != 0
+}
 
 func (d *mupdfDoc) scrub(opts ScrubOptions) error {
 	if d.doc == nil {

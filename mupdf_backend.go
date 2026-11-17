@@ -175,12 +175,14 @@ func init() {
 	defaultDriver = mupdfDriver{}
 }
 
-// mupdfDriver is the MuPDF implementation of the driver SPI.
-type mupdfDriver struct{}
+// mupdfDriver is the MuPDF implementation of the driver SPI. lazy (tests
+// only) skips loading every object at open, so that a repair can still
+// happen later.
+type mupdfDriver struct{ lazy bool }
 
 func (mupdfDriver) name() string { return "mupdf" }
 
-func (mupdfDriver) open(data []byte, magic string) (docBackend, bool, error) {
+func (drv mupdfDriver) open(data []byte, magic string) (docBackend, bool, error) {
 	if magic == "" {
 		magic = ".pdf"
 	}
@@ -201,10 +203,10 @@ func (mupdfDriver) open(data []byte, magic string) (docBackend, bool, error) {
 		return nil, false, errors.New("gomupdf: open failed: " + C.GoString(errBuf))
 	}
 	needsPass := C.gomupdf_needs_password(ctx, doc) != 0
-	return &mupdfDoc{ctx: ctx, doc: doc, data: cdata, dataLen: len(data)}, needsPass, nil
+	return drv.opened(&mupdfDoc{ctx: ctx, doc: doc, data: cdata, dataLen: len(data)}, needsPass)
 }
 
-func (mupdfDriver) openPath(path string) (docBackend, bool, error) {
+func (drv mupdfDriver) openPath(path string) (docBackend, bool, error) {
 	ctx := C.gomupdf_new_context()
 	if ctx == nil {
 		return nil, false, errors.New("gomupdf: failed to create context")
@@ -219,7 +221,21 @@ func (mupdfDriver) openPath(path string) (docBackend, bool, error) {
 		return nil, false, errors.New("gomupdf: open failed: " + C.GoString(errBuf))
 	}
 	needsPass := C.gomupdf_needs_password(ctx, doc) != 0
-	return &mupdfDoc{ctx: ctx, doc: doc}, needsPass, nil
+	return drv.opened(&mupdfDoc{ctx: ctx, doc: doc}, needsPass)
+}
+
+// opened stabilises a document that is not locked (see stabilise), so that
+// page count, extraction and every change see the document MuPDF will
+// save. A locked document is stabilised when authenticate succeeds: objects
+// loaded before that would be decrypted with the wrong key.
+func (drv mupdfDriver) opened(d *mupdfDoc, needsPass bool) (docBackend, bool, error) {
+	if !needsPass && !drv.lazy {
+		if err := d.stabilise(); err != nil {
+			d.close()
+			return nil, false, err
+		}
+	}
+	return d, needsPass, nil
 }
 
 func (mupdfDriver) newPDF() (docBackend, error) {
@@ -234,7 +250,7 @@ func (mupdfDriver) newPDF() (docBackend, error) {
 		C.fz_drop_context(ctx)
 		return nil, errors.New("gomupdf: new pdf: " + C.GoString(errBuf))
 	}
-	return &mupdfDoc{ctx: ctx, doc: doc}, nil
+	return &mupdfDoc{ctx: ctx, doc: doc, stable: true}, nil
 }
 
 func (mupdfDriver) newFont(name string) (fontBackend, error) {
@@ -257,6 +273,7 @@ type mupdfDoc struct {
 	doc     *C.fz_document
 	data    unsafe.Pointer // C-malloc'd copy backing the in-memory stream
 	dataLen int            // length of the original bytes at data (incremental save)
+	stable  bool           // every object loaded once (see stabilise)
 }
 
 func (d *mupdfDoc) close() {
@@ -280,7 +297,13 @@ func (d *mupdfDoc) authenticate(password string) bool {
 	}
 	cpw := C.CString(password)
 	defer C.free(unsafe.Pointer(cpw))
-	return C.gomupdf_authenticate(d.ctx, d.doc, cpw) != 0
+	if C.gomupdf_authenticate(d.ctx, d.doc, cpw) == 0 {
+		return false
+	}
+	// Only running out of memory fails; the document then stays lazy, and
+	// redaction and save still refuse to report a late repair as success.
+	_ = d.stabilise()
+	return true
 }
 
 func (d *mupdfDoc) pageCount() int {

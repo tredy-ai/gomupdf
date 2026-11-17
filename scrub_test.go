@@ -2756,12 +2756,11 @@ func TestScrubAFMixedEntries(t *testing.T) {
 	scrubNoTokens(t, "default", out, tok, bodyTok)
 }
 
-// HiddenContent loads every object first, so a file whose cross-reference
-// table is broken (it lists too few objects, so MuPDF counts 0 pages, and one
-// entry points at the wrong object, so loading every object makes MuPDF
-// repair it) is repaired before anything is read: the page that appears is
-// checked, and PageCount afterwards is what a save would give. (Reduced from
-// pdf.js GHOSTSCRIPT-698804-1-fuzzed.pdf.)
+// A file whose cross-reference table is broken (it lists too few objects, so
+// MuPDF would count 0 pages, and one entry points at the wrong object, so
+// loading every object makes MuPDF repair it) is repaired before anything is
+// read: the page that appears is checked, and PageCount is what a save would
+// give. (Reduced from pdf.js GHOSTSCRIPT-698804-1-fuzzed.pdf.)
 func TestScrubHiddenContentRepairsFirst(t *testing.T) {
 	pdf := scrubBuildPDF([]string{
 		/* 1 */ `<< /Type /Catalog /Pages 3 0 R /Outline 2 0 R >>`, // sic, as in the original
@@ -2777,12 +2776,8 @@ func TestScrubHiddenContentRepairsFirst(t *testing.T) {
 	short := fmt.Appendf(append([]byte(nil), pdf[:x]...), "xref\n0 3\n%s%010d 00000 n \n",
 		rows[:40], bytes.Index(pdf, []byte("\n4 0 obj"))+1)
 	short = fmt.Appendf(short, "trailer\n<< /Size 3 /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n", x)
-	if d, err := OpenStream(short); err != nil || d.PageCount() != 0 {
-		t.Fatalf("fixture: %v, want a document with 0 pages before repair", err)
-	} else {
-		d.Close()
-	}
-
+	// Open repairs a damaged file before anything reads it, so the page is
+	// already there; before that, this file opened with 0 pages.
 	d, err := OpenStream(short)
 	if err != nil {
 		t.Fatal(err)
@@ -2793,7 +2788,7 @@ func TestScrubHiddenContentRepairsFirst(t *testing.T) {
 		t.Errorf("HiddenContent missed the Link script on the repaired page: %+v", h)
 	}
 	if n := d.PageCount(); n != 1 {
-		t.Errorf("PageCount after HiddenContent = %d, want 1", n)
+		t.Errorf("PageCount = %d, want 1", n)
 	}
 }
 
