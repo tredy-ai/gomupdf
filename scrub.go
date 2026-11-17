@@ -247,7 +247,10 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 //
 // Removed objects that may be reachable from elsewhere are destroyed, not
 // just unlinked, so a reference that survives (a structure-tree /OBJR or /AF,
-// as tagged PDFs carry) resolves to null instead of keeping the content.
+// as tagged PDFs carry) resolves to null instead of keeping the content (to
+// an empty dictionary for an object created since the document was opened,
+// such as an annotation added through this package, which MuPDF 1.25 could
+// otherwise no longer save).
 // Unless opts.KeepAnnotations, that is the removed annotations (and widgets,
 // unless opts.KeepFormFields) with their /Popup and their /FS and /AF
 // filespecs, and, unless the form stays, the /AcroForm dictionary with its

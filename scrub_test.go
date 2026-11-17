@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/tredy-ai/gomupdf/geometry"
 )
 
 // Distinctive tokens stored as plain (uncompressed, literal) strings in the
@@ -990,6 +992,48 @@ func TestScrubFileAttachmentFS(t *testing.T) {
 			t.Errorf("scrubbed save still contains %q", tok)
 		}
 	}
+	if h := scrubHidden(t, re); h != (HiddenContent{}) {
+		t.Errorf("after scrub: %+v", h)
+	}
+}
+
+// Scrub destroys an annotation created since the document was opened (a
+// Circle added through the API) and the file still saves: MuPDF 1.25.6 marks
+// such an object, once deleted, as never having existed, and every later
+// save then fails on it ("cannot find object in xref"), so Scrub replaces it
+// with an empty dictionary instead. Run on MuPDF 1.25 to see the failure;
+// 1.26 tolerates it.
+func TestScrubDestroysCreatedObjects(t *testing.T) {
+	d, err := OpenStream(scrubMiniPDF("", "", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	p, err := d.LoadPage(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.AddCircle(geometry.Rect{X0: 60, Y0: 60, X1: 120, Y1: 120}, AnnotStyle{}); err != nil {
+		t.Fatal(err)
+	}
+	if h := scrubHidden(t, d); h.NonLinkAnnotations != 1 {
+		t.Fatalf("before scrub: %+v, want the Circle", h)
+	}
+	if err := d.Scrub(ScrubOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := d.SaveBytesWithOptions(scrubSaveOpts)
+	if err != nil {
+		t.Fatalf("save after scrub: %v", err)
+	}
+	if regexp.MustCompile(`/Subtype\s*/Circle`).Match(out) {
+		t.Error("the Circle is still in the saved file")
+	}
+	re, err := OpenStream(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer re.Close()
 	if h := scrubHidden(t, re); h != (HiddenContent{}) {
 		t.Errorf("after scrub: %+v", h)
 	}

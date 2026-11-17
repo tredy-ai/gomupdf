@@ -930,9 +930,22 @@ static void gomupdf_destroy_xfa(fz_context *ctx, gomupdf_marks *mk, pdf_obj *xfa
 // gomupdf_destroy_all deletes every recorded object that is not kept: every
 // reference to it that survives elsewhere (a StructElem /OBJR or /AF, say)
 // then resolves to null, and a garbage-collecting save rewrites it as null.
+// An object created since the file was opened (an annotation added through
+// the API, a redaction annotation ApplyRedactions left behind) becomes, once
+// deleted, an entry MuPDF says never existed, and MuPDF 1.25's save loads
+// every entry first and fails on it; such an object becomes an empty
+// dictionary instead (MuPDF cannot store a null object: pdf_update_object
+// with null deletes), which holds nothing.
 static void gomupdf_destroy_all(fz_context *ctx, pdf_document *pdf, gomupdf_marks *mk) {
-    for (int i = 1; i < mk->len; i++)
-        if ((mk->m[i] & (GM_DEL | GM_KEEP)) == GM_DEL) pdf_delete_object(ctx, pdf, i);
+    for (int i = 1; i < mk->len; i++) {
+        if ((mk->m[i] & (GM_DEL | GM_KEEP)) != GM_DEL) continue;
+        pdf_delete_object(ctx, pdf, i);
+        if (pdf_get_xref_entry_no_null(ctx, pdf, i)->type != 0) continue;
+        pdf_obj *empty = pdf_new_dict(ctx, pdf, 0);
+        fz_try(ctx) pdf_update_object(ctx, pdf, i, empty);
+        fz_always(ctx) pdf_drop_obj(ctx, empty);
+        fz_catch(ctx) fz_rethrow(ctx);
+    }
 }
 
 // gomupdf_name_tree counts the key/value pairs of a name tree, following
