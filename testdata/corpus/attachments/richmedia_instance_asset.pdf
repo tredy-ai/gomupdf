@@ -1,0 +1,67 @@
+%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << >> /Annots [4 0 R] >>
+endobj
+4 0 obj
+<< /Type /Annot /Subtype /RichMedia /Rect [10 10 190 190] /RichMediaContent << /Assets << /Names [(poster.png) 5 0 R (trailer.mp4) 7 0 R] >> /Configurations [<< /Subtype /Video /Instances [9 0 R 10 0 R 11 0 R 12 0 R 13 0 R] >>] >> >>
+endobj
+5 0 obj
+<< /Type /Filespec /F (poster.png) /UF (poster.png) /EF << /F 6 0 R >> >>
+endobj
+6 0 obj
+<< /Type /EmbeddedFile /Length 12 >>
+stream
+poster bytes
+endstream
+endobj
+7 0 obj
+<< /Type /Filespec /F (trailer.mp4) /UF (trailer.mp4) /EF << /F 8 0 R >> >>
+endobj
+8 0 obj
+<< /Type /EmbeddedFile /Length 11 >>
+stream
+video bytes
+endstream
+endobj
+9 0 obj
+<< /Type /RichMediaInstance /Subtype /Video /Asset 7 0 R >>
+endobj
+10 0 obj
+<< /Type /RichMediaInstance /Subtype /Video >>
+endobj
+11 0 obj
+<< /Type /RichMediaInstance /Subtype /Video /Asset (trailer.mp4) >>
+endobj
+12 0 obj
+<< /Type /RichMediaInstance /Subtype /Video /Asset << /Type /Filespec /F (trailer.mp4) >> >>
+endobj
+13 0 obj
+<< /Type /RichMediaInstance /Subtype /Video /Asset << /Type /Filespec >> >>
+endobj
+xref
+0 14
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000219 00000 n 
+0000000468 00000 n 
+0000000557 00000 n 
+0000000639 00000 n 
+0000000730 00000 n 
+0000000811 00000 n 
+0000000886 00000 n 
+0000000949 00000 n 
+0000001033 00000 n 
+0000001142 00000 n 
+trailer
+<< /Size 14 /Root 1 0 R >>
+startxref
+1234
+%%EOF
