@@ -397,9 +397,13 @@ JavaScript or Launch action.
 authoritative. Any other page dictionary is an orphan: one outside the page
 tree, or in it but not served (a `/Kids` entry past a `/Count` that is too
 small, or a damaged file's extra pages). `Scrub` empties orphans completely
-(`/Contents`, `/Resources`, `/Parent`, and the forms and images their own and
-inherited resources reach, down through nested forms), keeps the dictionary
-page-shaped for references to it, and `HiddenContent.OrphanPages` counts them.
+(`/Contents`, `/Resources`, `/Parent`, and the content their own and
+inherited resources reach: forms and images, tiling patterns, Type 3 glyph
+procedures and soft-mask groups, down through the resources of each at any
+depth), keeps the dictionary page-shaped for references to it, and
+`HiddenContent.OrphanPages` counts them. An annotation on no page that `Scrub`
+keeps, a Link under the default options included, keeps its appearance stream,
+even when an orphan page's resources list the same stream.
 A page MuPDF cannot look up in a damaged or cyclic page tree is skipped, not an
 error. A page tree that claims more pages than it can serve is refused (4.2).
 

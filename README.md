@@ -247,8 +247,9 @@ Changed from upstream: `Open` reads the file on demand instead of loading it
 (do not modify the file while the document is open); every object of a PDF is
 loaded at open, so a damaged file is repaired before anything is read or
 changed; and a password-protected PDF answers nothing (`PageCount` is 0,
-`LoadPage` fails) until `Authenticate` succeeds. A PDF whose page tree declares more pages than the file has
-objects is refused at open.
+`LoadPage` fails) until `Authenticate` succeeds. A page tree that claims more pages than it can serve is
+refused at open: one declaring more pages than the file has objects is accepted only up to 1,048,576 pages and
+only if MuPDF can build its page map from it, and one declaring more than 8,388,607 never.
 
 ### Text & geometry
 
