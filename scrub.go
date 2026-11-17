@@ -72,8 +72,9 @@ type HiddenContent struct {
 	// JavaScript reports /Names/JavaScript, or a script action (directly or
 	// through its /Next chain) in the catalog /OpenAction, the
 	// catalog /AA, the /AA of a page or intermediate page-tree node, the /AA,
-	// /A or /PA of any entry in a page's /Annots (annotations, widgets and
-	// Links, including those a default Scrub removes), the /AA or /A of any
+	// /A or /PA of any entry in a page's /Annots or of any annotation or field
+	// on no page (see NonLinkAnnotations; annotations, widgets and Links,
+	// including those a default Scrub removes), the /AA or /A of any
 	// node of the /AcroForm field tree or of any field above a widget (up
 	// /Parent, which reaches fields /Fields leaves out), or the /A of any
 	// outline item. It does not know which ScrubOptions a later Scrub uses, so
@@ -105,7 +106,18 @@ type HiddenContent struct {
 	// NonLinkAnnotations and Widgets count the entries of every page's /Annots
 	// array: Widgets those with /Subtype /Widget, NonLinkAnnotations all other
 	// dictionaries except /Subtype /Link (Popups included). An /Annots array
-	// shared by several pages counts once per page.
+	// shared by several pages counts once per page. They also count the
+	// annotations and form fields on no page: indirect dictionaries in no
+	// page-tree node's /Annots and not in the form (the nodes reached down
+	// /Kids from /AcroForm /Fields and from the fields above each widget on a
+	// page), which only a structure element's /OBJR or a /Popup or /IRT
+	// reaches; Widgets the widgets and fields, NonLinkAnnotations the rest but
+	// Links. An annotation is a dictionary with /Type /Annot, or with no
+	// /Type, a /Subtype that names an annotation type and a /Rect array; a
+	// field is one with no /Type other than /Annot and an /FT name, or a /T
+	// string and a /Kids array. One that is also page content (a resource
+	// dictionary shaped like an annotation) is not counted: Scrub leaves it
+	// as it is.
 	NonLinkAnnotations, Widgets int
 
 	// Thumbnails and PageMetadata count pages and intermediate page-tree
@@ -235,7 +247,13 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 //     or /Names/Templates can still reach one), /Contents, /Resources,
 //     /Annots, /B, /Group, /StructParents and the keys removed from pages
 //     above; the dictionary itself stays, page-shaped, for those references;
-//   - on every annotation that stays, /AA, and each of /A and /PA that is or
+//   - every annotation and form field on no page and not in the form (see
+//     HiddenContent's NonLinkAnnotations; pdf.js bug1722036.pdf has widgets
+//     only its structure tree reaches) that the options would remove from a
+//     page: by default all but Links, with opts.KeepFormFields all but Links,
+//     widgets and fields, with opts.KeepAnnotations none; a field in the
+//     form but on no page goes or stays with the form;
+//   - on every annotation that stays, on a page or not, /AA, and each of /A and /PA that is or
 //     chains through /Next to a JavaScript or Launch action; when the form
 //     stays (opts.KeepAnnotations or opts.KeepFormFields), the same on every
 //     node of the /AcroForm field tree (fields with /Kids as well as widgets,
@@ -251,8 +269,9 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // an empty dictionary for an object created since the document was opened,
 // such as an annotation added through this package, which MuPDF 1.25 could
 // otherwise no longer save).
-// Unless opts.KeepAnnotations, that is the removed annotations (and widgets,
-// unless opts.KeepFormFields) with their /Popup and their /FS and /AF
+// Unless opts.KeepAnnotations, that is the removed annotations, on a page or
+// not (and widgets and fields, unless opts.KeepFormFields), with their
+// /Popup and their /FS and /AF
 // filespecs, and, unless the form stays, the /AcroForm dictionary with its
 // field tree; in every case it is the content streams of a page that is not
 // in the page tree, the forms and images in its own /Resources /XObject, and
@@ -334,9 +353,10 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // Out of scope: the scripts of 3D and RichMedia annotations when annotations
 // are kept; actions of other kinds that reach outside the file (URI, GoToR,
 // GoToE, SubmitForm, ImportData); content beyond the limits above; a
-// field-tree node, outline item or page-tree node that is also page content;
-// an annotation or widget that is on no page's /Annots and not in the
-// /AcroForm field tree (one only the structure tree references); and text
+// field-tree node, outline item or page-tree node that is also page content,
+// and an annotation, field or page dictionary on no page that is also page
+// content; one of those that is a direct object nested in another (Scrub
+// finds them among the indirect objects); and text
 // in structure elements, optional-content groups, name trees and other
 // document-level dictionaries Scrub does not list here.
 //

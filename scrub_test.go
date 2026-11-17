@@ -3063,8 +3063,9 @@ func TestScrubOrphanPages(t *testing.T) {
 	if d.PageCount() != 1 {
 		t.Fatalf("fixture: %d pages, want 1", d.PageCount())
 	}
-	if h := scrubHidden(t, d); h != (HiddenContent{OrphanPages: 4}) {
-		t.Errorf("before scrub: %+v, want OrphanPages 4", h)
+	// The Square on the orphan page A is an annotation on no page.
+	if h := scrubHidden(t, d); h != (HiddenContent{OrphanPages: 4, NonLinkAnnotations: 1}) {
+		t.Errorf("before scrub: %+v, want OrphanPages 4 and one annotation", h)
 	}
 	for _, opts := range []ScrubOptions{{}, {KeepAnnotations: true}} {
 		t.Run(fmt.Sprintf("%+v", opts), func(t *testing.T) {
@@ -3077,8 +3078,12 @@ func TestScrubOrphanPages(t *testing.T) {
 			if got := bytes.Contains(out, []byte(orphanAnnot)); got != opts.KeepAnnotations {
 				t.Errorf("orphan page annotation in save = %v, want %v", got, opts.KeepAnnotations)
 			}
-			if h := scrubHidden(t, re); h != (HiddenContent{}) {
-				t.Errorf("after scrub: %+v", h)
+			want := HiddenContent{}
+			if opts.KeepAnnotations {
+				want.NonLinkAnnotations = 1
+			}
+			if h := scrubHidden(t, re); h != want {
+				t.Errorf("after scrub: %+v, want %+v", h, want)
 			}
 			if n := len(regexp.MustCompile(`/Type\s*/Page\b`).FindAll(out, -1)); n != 3 {
 				t.Errorf("%d /Type /Page dictionaries after scrub, want 3", n)
@@ -3227,6 +3232,108 @@ func TestScrubPrivateData(t *testing.T) {
 			}
 			if h := scrubHidden(t, re); h != (HiddenContent{Perms: keep, DSS: keep}) {
 				t.Errorf("after scrub: %+v", h)
+			}
+		})
+	}
+}
+
+// Tokens of scrubOrphanAnnotsPDF, each in exactly one object.
+const (
+	oaWidget   = "GomupdfOrphanWidgetValue3c8e"
+	oaWidgetJS = "GomupdfOrphanWidgetJS6a1d"
+	oaAP       = "GomupdfOrphanAppearance9b2f"
+	oaField    = "GomupdfOrphanFieldValue4d7a"
+	oaSquare   = "GomupdfOrphanSquare1e5c"
+	oaLinkJS   = "GomupdfOrphanLinkJS8f3b"
+	oaFormKid  = "GomupdfOrphanFormKid2a6d"
+)
+
+// scrubOrphanAnnotsPDF is a tagged one-page form whose page lists a Link (4)
+// and the hidden widget 5 of /Fields (hidden, so the page renders the same
+// with or without it). Only the structure tree reaches the rest
+// (pdf.js bug1722036.pdf, where /T (lea) widgets are on no page and in no
+// field tree): the widget 6 (with a keystroke script /AA and an appearance
+// stream 7), the field 8 (no /Subtype), the Square 9 and the Link 11 with a
+// JavaScript /A. The field 12 of /Fields has a kid widget 13 that is on no
+// page, which is part of the form.
+func scrubOrphanAnnotsPDF() []byte {
+	var objr strings.Builder
+	for _, n := range []int{6, 8, 9, 11, 13} {
+		fmt.Fprintf(&objr, "<< /Type /OBJR /Obj %d 0 R >> ", n)
+	}
+	return scrubBuildPDF([]string{
+		/* 1 */ `<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R 12 0 R] >> /MarkInfo << /Marked true >> /StructTreeRoot 10 0 R >>`,
+		/* 2 */ `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+		/* 3 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 15 0 R >> >> /Contents 16 0 R /Annots [4 0 R 5 0 R] >>`,
+		/* 4 */ `<< /Type /Annot /Subtype /Link /Rect [0 0 50 50] /A << /S /URI /URI (https://example.com/) >> >>`,
+		/* 5 */ `<< /Type /Annot /Subtype /Widget /FT /Tx /T (real) /V (real value) /Rect [20 150 200 170] /F 2 /P 3 0 R >>`,
+		/* 6 */ `<< /Type /Annot /Subtype /Widget /FT /Tx /T (lea) /TU (Appropriate LEA) /V (` + oaWidget + `) /Rect [20 100 200 120]
+   /AP << /N 7 0 R >> /AA << /K << /S /JavaScript /JS (var ` + oaWidgetJS + ` = 1;) >> >> >>`,
+		/* 7 */ "/Type /XObject /Subtype /Form /BBox [0 0 180 20] /Resources << /Font << /F1 15 0 R >> >>\nstream\nBT /F1 10 Tf 2 5 Td (" + oaAP + ") Tj ET",
+		/* 8 */ `<< /FT /Tx /T (lone) /V (` + oaField + `) >>`,
+		/* 9 */ `<< /Type /Annot /Subtype /Square /Rect [150 20 250 60] /Contents (` + oaSquare + `) >>`,
+		/* 10 */ `<< /Type /StructTreeRoot /K [14 0 R] >>`,
+		/* 11 */ `<< /Subtype /Link /Rect [60 0 110 50] /A << /S /JavaScript /JS (var ` + oaLinkJS + ` = 1;) >> >>`,
+		/* 12 */ `<< /FT /Tx /T (pair) /V (` + oaFormKid + `) /Kids [13 0 R] >>`,
+		/* 13 */ `<< /Type /Annot /Subtype /Widget /Parent 12 0 R /Rect [20 60 200 80] >>`,
+		/* 14 */ `<< /Type /StructElem /S /Form /P 10 0 R /Pg 3 0 R /K [` + objr.String() + `] >>`,
+		/* 15 */ `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>`,
+		/* 16 */ "\nstream\nBT /F1 12 Tf 20 150 Td (" + scrubPageText + ") Tj ET",
+	}, "")
+}
+
+// Annotations and fields on no page and in no field tree are reported, and
+// Scrub removes what the options would remove from a page: by default all of
+// them but the Link, with KeepFormFields the Square, with KeepAnnotations
+// nothing. Whatever stays loses its scripts, as on a page; the orphan Link
+// stays inert. A widget of the form that is on no page is part of the form.
+func TestScrubOrphanAnnotations(t *testing.T) {
+	pdf := scrubOrphanAnnotsPDF()
+	all := []string{oaWidget, oaWidgetJS, oaAP, oaField, oaSquare, oaLinkJS, oaFormKid}
+	scrubControl(t, pdf, all...)
+	d, err := OpenStream(pdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	want := HiddenContent{AcroForm: true, JavaScript: true, Widgets: 3, NonLinkAnnotations: 1}
+	if h := scrubHidden(t, d); h != want {
+		t.Errorf("before scrub:\n got %+v\nwant %+v", h, want)
+	}
+	cases := []struct {
+		opts  ScrubOptions
+		kept  []string
+		after HiddenContent
+	}{
+		{ScrubOptions{}, nil, HiddenContent{}},
+		{ScrubOptions{KeepFormFields: true}, []string{oaWidget, oaAP, oaField, oaFormKid}, HiddenContent{AcroForm: true, Widgets: 3}},
+		{ScrubOptions{KeepAnnotations: true}, []string{oaWidget, oaAP, oaField, oaFormKid, oaSquare},
+			HiddenContent{AcroForm: true, Widgets: 3, NonLinkAnnotations: 1}},
+	}
+	for _, c := range cases {
+		t.Run(fmt.Sprintf("%+v", c.opts), func(t *testing.T) {
+			re := scrubCheckKept(t, pdf, c.opts)
+			out, err := re.SaveBytesWithOptions(scrubSaveOpts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, tok := range all {
+				if got := bytes.Contains(out, []byte(tok)); got != slices.Contains(c.kept, tok) {
+					t.Errorf("%q in save = %v, want %v", tok, got, !got)
+				}
+			}
+			if h := scrubHidden(t, re); h != c.after {
+				t.Errorf("after scrub:\n got %+v\nwant %+v", h, c.after)
+			}
+			if n := len(scrubLinkRe.FindAll(out, -1)); n != 2 {
+				t.Errorf("%d Link annotations after scrub, want 2", n)
+			}
+			p, err := re.LoadPage(0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if l, err := p.Links(); err != nil || len(l) != 1 || l[0].URI != "https://example.com/" {
+				t.Errorf("links after scrub = %+v, %v; want the URI link", l, err)
 			}
 		})
 	}
