@@ -1335,7 +1335,10 @@ func (c *corpusCheck) scrub(data []byte, pages []*corpusPage) {
 		c.fail("control-hidden-error", "HiddenContent of the unscrubbed save: %v", err)
 		return
 	}
-	ctrlText, ctrlLinks := map[int]string{}, map[int][]string{}
+	// What the control serves: a post-scrub step that fails is a failure
+	// only if the same step succeeds here (a missing /Kids entry, which any
+	// save writes as null, breaks both).
+	ctrlText, ctrlLinks, ctrlRender := map[int]string{}, map[int][]string{}, map[int]bool{}
 	for _, pg := range pages {
 		if p, err := dc.LoadPage(pg.n); err == nil {
 			if lines, err := corpusChars(p, TextOptions{}); err == nil {
@@ -1344,6 +1347,8 @@ func (c *corpusCheck) scrub(data []byte, pages []*corpusPage) {
 			if ls, err := p.Links(); err == nil {
 				ctrlLinks[pg.n] = webLinks(ls)
 			}
+			_, _, err := lowRender(p, pg.bound, true)
+			ctrlRender[pg.n] = err == nil
 		}
 	}
 
@@ -1414,7 +1419,11 @@ func (c *corpusCheck) scrub(data []byte, pages []*corpusPage) {
 				}
 			}
 			if _, _, err := lowRender(p, pg.bound, true); err != nil && pg.render != nil {
-				c.fail("render-error", "scrub %s page %d: %v", mode.name, pg.n, err)
+				if ctrlRender[pg.n] {
+					c.fail("render-error", "scrub %s page %d: %v", mode.name, pg.n, err)
+				} else {
+					c.note("scrub-render-control-error", "scrub %s page %d: %v (the unscrubbed save fails too)", mode.name, pg.n, err)
+				}
 			}
 		}
 		da.Close()
