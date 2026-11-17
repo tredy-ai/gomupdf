@@ -182,6 +182,16 @@ func isFinite32(f float32) bool {
 // glyph's ink, over the next glyph, so redacting a glyph by its quad also
 // removes the next glyph (whose ink the black box covers).
 //
+// Extraction gives a ligature's trailing components ("i" of "fi") and a
+// zero-advance mark (an accent with no width) a zero-width quad at the next
+// glyph's origin. Such a character under a redaction removes glyphs at its
+// origin except one that starts with the next character, so the glyph after
+// a redacted ligature or mark stays. A zero-advance mark lying on a redacted
+// letter's edge goes with it; a ligature goes when its first component's
+// quad is redacted, not for its trailing components alone (as in stock
+// MuPDF). A glyph that is genuinely zero-width (no character with an advance
+// shares its origin) is matched as before.
+//
 // Also changed: with opts.Text TextRemove and at least one redaction, the
 // page's declared text is removed: /ActualText, /Alt and /E, from every
 // marked-content property list the redaction reaches (inline in the page's

@@ -102,6 +102,7 @@ typedef struct {
 
 typedef struct {
     double x, y;
+    int exclude;  // a glyph at this origin whose first character is this is not matched (0: none)
 } gomupdf_origin;
 
 typedef struct {
@@ -205,8 +206,9 @@ static int gomupdf_cmp_origin(const void *a, const void *b) {
     return x < y ? -1 : x > y ? 1 : 0;
 }
 
-// gomupdf_origin_hit reports whether (x, y) matches a recorded origin.
-static int gomupdf_origin_hit(const gomupdf_regions *rs, double x, double y) {
+// gomupdf_origin_hit reports whether a glyph at (x, y) whose characters are
+// ucsbuf matches a recorded origin.
+static int gomupdf_origin_hit(const gomupdf_regions *rs, double x, double y, const int *ucsbuf, int ucslen) {
     double tol = GOMUPDF_ORIGIN_TOL + 1e-6 * (fabs(x) + fabs(y));
     int lo = 0, hi = rs->no, i;
     if (!(x == x) || !(y == y)) return 0; // NaN: left to the box rule
@@ -216,7 +218,9 @@ static int gomupdf_origin_hit(const gomupdf_regions *rs, double x, double y) {
         else hi = mid;
     }
     for (i = lo; i < rs->no && rs->o[i].x <= x + tol; i++)
-        if (fabs(rs->o[i].y - y) <= tol) return 1;
+        if (fabs(rs->o[i].y - y) <= tol &&
+            !(rs->o[i].exclude && ucslen > 0 && ucsbuf[0] == rs->o[i].exclude))
+            return 1;
     return 0;
 }
 
@@ -242,9 +246,9 @@ static int gomupdf_glyph_filter(fz_context *ctx, void *opaque, int *ucsbuf, int 
     float w = r.x1 - r.x0, h = r.y1 - r.y0;
     double gx[4], gy[4], bx0, by0, bx1, by1;
     int i;
-    (void)ctx; (void)ucsbuf; (void)ucslen;
+    (void)ctx;
     // Extraction put a character under a region at this glyph's origin.
-    if (gomupdf_origin_hit(rs, m.e, m.f))
+    if (gomupdf_origin_hit(rs, m.e, m.f, ucsbuf, ucslen))
         return 1;
     r.x0 += w / 10; r.x1 -= w / 10;
     r.y0 += h / 10; r.y1 -= h / 10;
@@ -371,6 +375,30 @@ static int gomupdf_char_hits(const gomupdf_regions *rs, fz_quad q) {
 // point moved along the advance (the quad's ll->lr edge). Returns 0, or -1
 // (recording nothing usable) past GOMUPDF_MAX_REDACT_ORIGINS. Caller frees
 // rs->o.
+//
+// A character with no advance (zero extent along its line) can sit at
+// another glyph's origin: a ligature's trailing components (extraction
+// expands "fi" into f, with the glyph's quad and origin, and a zero-width i
+// at the next glyph's origin), or a zero-advance mark (its origin is where
+// the next glyph starts). Its origin then identifies that next glyph too.
+// So when such a character's neighbour on the line (next, else previous;
+// not a space extraction made up) has the same origin and an advance, its
+// origin is recorded excluding glyphs whose first character is that
+// neighbour's: the mark's own glyph still matches, the neighbour does not.
+// A genuinely zero-width glyph (a font with /Widths 0) has no such
+// neighbour, so its origin matches as before.
+static int gomupdf_zero_advance(const fz_stext_char *ch) {
+    return hypot(ch->quad.ur.x - ch->quad.ul.x, ch->quad.ur.y - ch->quad.ul.y) < 1e-3 &&
+        hypot(ch->quad.lr.x - ch->quad.ll.x, ch->quad.lr.y - ch->quad.ll.y) < 1e-3;
+}
+
+// gomupdf_shares_origin reports whether n is a real character with an
+// advance at ch's origin.
+static int gomupdf_shares_origin(const fz_stext_char *ch, const fz_stext_char *n) {
+    return n && !(n->flags & FZ_STEXT_SYNTHETIC) && !gomupdf_zero_advance(n) &&
+        fabs(n->origin.x - ch->origin.x) < 0.01 && fabs(n->origin.y - ch->origin.y) < 0.01;
+}
+
 static int gomupdf_collect_origins(fz_context *ctx, pdf_page *page, gomupdf_regions *rs) {
     fz_stext_page *text = NULL;
     fz_stext_options so;
@@ -393,11 +421,23 @@ static int gomupdf_collect_origins(fz_context *ctx, pdf_page *page, gomupdf_regi
             if (b->type != FZ_STEXT_BLOCK_TEXT)
                 continue;
             for (l = b->u.t.first_line; l && !over; l = l->next) {
-                fz_stext_char *ch;
+                fz_stext_char *ch, *prev = NULL;
                 for (ch = l->first_char; ch; ch = ch->next) {
                     fz_point o = ch->origin;
+                    fz_stext_char *next = ch->next, *last = prev;
+                    int exclude = 0;
+                    if (!(ch->flags & FZ_STEXT_SYNTHETIC))
+                        prev = ch;
                     if (!gomupdf_char_hits(rs, fz_transform_quad(ch->quad, inv)))
                         continue;
+                    while (next && (next->flags & FZ_STEXT_SYNTHETIC))
+                        next = next->next;
+                    if (gomupdf_zero_advance(ch)) {
+                        if (gomupdf_shares_origin(ch, next))
+                            exclude = next->c;
+                        else if (gomupdf_shares_origin(ch, last))
+                            exclude = last->c;
+                    }
                     if (l->wmode) {
                         o.x += ch->quad.lr.x - ch->quad.ll.x;
                         o.y += ch->quad.lr.y - ch->quad.ll.y;
@@ -410,6 +450,7 @@ static int gomupdf_collect_origins(fz_context *ctx, pdf_page *page, gomupdf_regi
                     }
                     rs->o[rs->no].x = o.x;
                     rs->o[rs->no].y = o.y;
+                    rs->o[rs->no].exclude = exclude;
                     rs->no++;
                 }
             }

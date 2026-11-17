@@ -385,3 +385,63 @@ func TestRedactionNarrowWidthsEmbedded(t *testing.T) {
 		redactionHits(t, label, pdf, []int{1, 2, 3, 4, 5}, true)
 	}
 }
+
+// Fonts for the ligature and zero-advance tests: Helvetica with
+// StandardEncoding (\256 is the fi ligature, \257 fl, \302 the acute); the
+// same with every width 556 but the acute's 0; and the same with a
+// ToUnicode CMap (object 6) mapping \256 to "fl".
+const (
+	stdHelvetica  = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /StandardEncoding >>"
+	flToUnicode   = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /StandardEncoding /ToUnicode 6 0 R >>"
+	flToUnicodeCM = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CMapName /Lig def 1 begincodespacerange <00> <FF> endcodespacerange 1 beginbfchar <AE> <0066006C> endbfchar endcmap CMapName currentdict /CMap defineresource pop end end"
+)
+
+func zeroAcuteHelvetica() string {
+	var b strings.Builder
+	for c := 32; c <= 255; c++ {
+		if c == 0302 {
+			b.WriteString("0 ")
+		} else {
+			b.WriteString("556 ")
+		}
+	}
+	return "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /StandardEncoding /FirstChar 32 /LastChar 255 /Widths [" + b.String() + "] >>"
+}
+
+// A ligature's trailing components, and a zero-advance mark, have a
+// zero-width quad at the next glyph's origin. Redacting them must not remove
+// that next glyph; a mark redacted with its base goes with it.
+func TestRedactionLigaturesAndMarks(t *testing.T) {
+	cm := fmt.Sprintf("<< /Length %d >>\nstream\n%s\nendstream", len(flToUnicodeCM), flToUnicodeCM)
+	for _, c := range []struct {
+		name, font, text string
+		extra            []string
+		targets          []int // chars (spaces dropped) whose BBox is redacted, one rect each
+		want             string
+	}{
+		// MuPDF removes f and i; so must we, and keep the c.
+		{"fi ligature", stdHelvetica, `(o\256ce)`, nil, []int{1}, "oce"},
+		// Only the zero-width i: MuPDF removes nothing.
+		{"fi trailing i", stdHelvetica, `(o\256ce)`, nil, []int{2}, "ofice"},
+		// A ToUnicode ligature: MuPDF removes the ligature only.
+		{"tounicode fl", flToUnicode, `(\256o)`, []string{cm}, []int{0}, "o"},
+		// MuPDF removes the e only; the mark on it goes too here (it lies on
+		// the e's edge), and the x stays.
+		{"zero-width acute", zeroAcuteHelvetica(), `(cafe\302x)`, nil, []int{3}, "cafx"},
+		{"Staff.", stdHelvetica, `(Sta\257.)`, nil, []int{0, 1, 2, 3, 4}, "."},
+		{"José,", zeroAcuteHelvetica(), `(Jose\302,)`, nil, []int{0, 1, 2, 3, 4}, ","},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			pdf := pdfPageFont(c.font, "/MediaBox [0 0 300 200]", "BT /F1 12 Tf 20 100 Td "+c.text+" Tj ET", c.extra...)
+			gs := glyphsOf(pdfChars(t, pdf))
+			var adds []func(*Page) error
+			for _, i := range c.targets {
+				adds = append(adds, addRect(gs[i].BBox))
+			}
+			got, _ := applySaveReopen(t, pdf, ApplyOptions{}, adds...)
+			if s := runesOf(got); s != c.want {
+				t.Errorf("chars %q, rects on %v: left %q, want %q", runesOf(gs), c.targets, s, c.want)
+			}
+		})
+	}
+}
