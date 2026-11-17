@@ -645,6 +645,206 @@ static void gomupdf_undeclare_page(fz_context *ctx, pdf_document *pdf, pdf_page 
     gomupdf_undeclare_res(ctx, pdf, pdf_dict_get(ctx, page->obj, PDF_NAME(Resources)), 0, &forms);
 }
 
+// --- structure references to replaced forms ---------------------------------
+//
+// Redaction draws a filtered copy of every form XObject the page uses
+// (MuPDF's instancing: pdf_copy_dict of the form, so the copy keeps its
+// /StructParents, with a new stream and resources). A structure element can
+// name the original form's stream in an MCR (/Stm) or the form itself in an
+// OBJR (/Obj); that reference keeps the unredacted original in the saved
+// file. Before the passes, each form the page reaches is tagged with a
+// private key (GOMUPDF_FORM_TAG = its index); copies inherit it, so after the
+// passes each final copy names its original. Then the page's own references
+// are moved to the copy when the page drew the form once, and dropped
+// otherwise. The originals are left in place, untagged, for other pages.
+
+#define GOMUPDF_FORM_TAG "GomupdfRedactSrc"
+
+typedef struct {
+    int n, cap;
+    pdf_obj **orig;   // tagged originals (kept)
+    int *copies;      // final copies of each on the page
+    pdf_obj **copy;   // the last of them (borrowed)
+} gomupdf_forms;
+
+// gomupdf_tag_forms tags every form XObject reachable from res (depth- and
+// count-bounded; a form already tagged is not walked again).
+static void gomupdf_tag_forms(fz_context *ctx, pdf_obj *res, int depth, gomupdf_forms *f) {
+    pdf_obj *xobjs = pdf_dict_get(ctx, res, PDF_NAME(XObject));
+    int i, n = pdf_dict_len(ctx, xobjs);
+    if (depth > GOMUPDF_MD_MAX_DEPTH)
+        fz_throw(ctx, FZ_ERROR_LIMIT, "form XObjects nested too deep");
+    for (i = 0; i < n; i++) {
+        pdf_obj *x = pdf_dict_get_val(ctx, xobjs, i);
+        if (pdf_dict_get(ctx, x, PDF_NAME(Subtype)) != PDF_NAME(Form) || pdf_dict_gets(ctx, x, GOMUPDF_FORM_TAG))
+            continue;
+        if (f->n == f->cap) {
+            int cap = f->cap ? f->cap * 2 : 16;
+            if (f->cap >= GOMUPDF_MD_MAX_FORMS)
+                fz_throw(ctx, FZ_ERROR_LIMIT, "too many form XObjects");
+            f->orig = fz_realloc_array(ctx, f->orig, cap, pdf_obj *);
+            f->copies = fz_realloc_array(ctx, f->copies, cap, int);
+            f->copy = fz_realloc_array(ctx, f->copy, cap, pdf_obj *);
+            f->cap = cap;
+        }
+        f->orig[f->n] = pdf_keep_obj(ctx, x);
+        f->copies[f->n] = 0;
+        f->copy[f->n] = NULL;
+        f->n++;
+        pdf_dict_puts_drop(ctx, x, GOMUPDF_FORM_TAG, pdf_new_int(ctx, f->n - 1));
+        gomupdf_tag_forms(ctx, pdf_dict_get(ctx, x, PDF_NAME(Resources)), depth + 1, f);
+    }
+}
+
+// gomupdf_form_index returns the tag of a tagged form, or -1.
+static int gomupdf_form_index(fz_context *ctx, pdf_obj *x, const gomupdf_forms *f) {
+    pdf_obj *tag = pdf_dict_gets(ctx, x, GOMUPDF_FORM_TAG);
+    int i;
+    if (!pdf_is_int(ctx, tag))
+        return -1;
+    i = pdf_to_int(ctx, tag);
+    return i >= 0 && i < f->n ? i : -1;
+}
+
+// gomupdf_count_copies walks the forms the page now draws, counts the copies
+// of each original and untags them.
+static void gomupdf_count_copies(fz_context *ctx, pdf_obj *res, int depth, int *seen, gomupdf_forms *f) {
+    pdf_obj *xobjs = pdf_dict_get(ctx, res, PDF_NAME(XObject));
+    int i, n = pdf_dict_len(ctx, xobjs);
+    if (depth > GOMUPDF_MD_MAX_DEPTH)
+        fz_throw(ctx, FZ_ERROR_LIMIT, "form XObjects nested too deep");
+    for (i = 0; i < n; i++) {
+        pdf_obj *x = pdf_dict_get_val(ctx, xobjs, i);
+        int k;
+        if (pdf_dict_get(ctx, x, PDF_NAME(Subtype)) != PDF_NAME(Form))
+            continue;
+        if (++*seen > GOMUPDF_MD_MAX_FORMS)
+            fz_throw(ctx, FZ_ERROR_LIMIT, "too many form XObjects");
+        k = gomupdf_form_index(ctx, x, f);
+        if (k >= 0 && pdf_to_num(ctx, x) != pdf_to_num(ctx, f->orig[k])) {
+            f->copies[k]++;
+            f->copy[k] = x;
+            pdf_dict_dels(ctx, x, GOMUPDF_FORM_TAG);
+        } else if (k >= 0) {
+            // Not copied (MuPDF draws the original itself, e.g. in a cycle).
+            f->copies[k] = 2;
+        }
+        gomupdf_count_copies(ctx, pdf_dict_get(ctx, x, PDF_NAME(Resources)), depth + 1, seen, f);
+    }
+}
+
+// gomupdf_same_obj reports whether a and b are the same indirect object.
+static int gomupdf_same_obj(fz_context *ctx, pdf_obj *a, pdf_obj *b) {
+    return pdf_is_indirect(ctx, a) && pdf_is_indirect(ctx, b) && pdf_to_num(ctx, a) == pdf_to_num(ctx, b);
+}
+
+// gomupdf_retarget fixes one /K item of element e: an MCR (/Stm) or OBJR
+// (/Obj) naming a tagged original, on this page (its /Pg, else e's /Pg, is
+// this page or absent). Returns 1 if the item must be removed from /K.
+static int gomupdf_retarget(fz_context *ctx, pdf_obj *item, pdf_obj *e, pdf_obj *pageobj, const gomupdf_forms *f) {
+    pdf_obj *target, *pg;
+    const char *key;
+    int k;
+    if (!pdf_is_dict(ctx, item))
+        return 0;
+    key = pdf_dict_gets(ctx, item, "Stm") ? "Stm" : "Obj";
+    target = pdf_dict_gets(ctx, item, key);
+    if (!target || (k = gomupdf_form_index(ctx, target, f)) < 0)
+        return 0;
+    pg = pdf_dict_gets(ctx, item, "Pg");
+    if (!pg)
+        pg = pdf_dict_gets(ctx, e, "Pg");
+    if (pg && !gomupdf_same_obj(ctx, pg, pageobj))
+        return 0; // another page's reference
+    if (f->copies[k] == 1) {
+        pdf_dict_puts(ctx, item, key, f->copy[k]);
+        return 0;
+    }
+    if (key[0] == 'S') {
+        pdf_dict_dels(ctx, item, key);
+        return 0;
+    }
+    return 1; // an OBJR without its object means nothing
+}
+
+// gomupdf_retarget_struct fixes the /K of the elements under struct-parents
+// key.
+static void gomupdf_retarget_struct(fz_context *ctx, pdf_document *pdf, pdf_obj *pageobj, int key, const gomupdf_forms *f) {
+    pdf_obj *root = pdf_dict_getp(ctx, pdf_trailer(ctx, pdf), "Root/StructTreeRoot");
+    pdf_obj *entry;
+    int i, n;
+    if (!pdf_is_dict(ctx, root))
+        return;
+    entry = gomupdf_lookup_number(ctx, pdf_dict_get(ctx, root, PDF_NAME(ParentTree)), key);
+    n = pdf_is_array(ctx, entry) ? pdf_array_len(ctx, entry) : 1;
+    for (i = 0; i < n; i++) {
+        pdf_obj *e = pdf_is_array(ctx, entry) ? pdf_array_get(ctx, entry, i) : entry;
+        pdf_obj *kids = pdf_dict_get(ctx, e, PDF_NAME(K));
+        if (pdf_is_array(ctx, kids)) {
+            int j;
+            for (j = pdf_array_len(ctx, kids) - 1; j >= 0; j--)
+                if (gomupdf_retarget(ctx, pdf_array_get(ctx, kids, j), e, pageobj, f))
+                    pdf_array_delete(ctx, kids, j);
+        } else if (gomupdf_retarget(ctx, kids, e, pageobj, f)) {
+            pdf_dict_del(ctx, e, PDF_NAME(K));
+        }
+    }
+}
+
+// gomupdf_retarget_forms_res walks the forms the page now draws and fixes
+// the elements under each one's /StructParents.
+static void gomupdf_retarget_forms_res(fz_context *ctx, pdf_document *pdf, pdf_obj *pageobj, pdf_obj *res,
+                                       int depth, int *seen, const gomupdf_forms *f) {
+    pdf_obj *xobjs = pdf_dict_get(ctx, res, PDF_NAME(XObject));
+    int i, n = pdf_dict_len(ctx, xobjs);
+    if (depth > GOMUPDF_MD_MAX_DEPTH)
+        fz_throw(ctx, FZ_ERROR_LIMIT, "form XObjects nested too deep");
+    for (i = 0; i < n; i++) {
+        pdf_obj *x = pdf_dict_get_val(ctx, xobjs, i);
+        pdf_obj *sp;
+        if (pdf_dict_get(ctx, x, PDF_NAME(Subtype)) != PDF_NAME(Form))
+            continue;
+        if (++*seen > GOMUPDF_MD_MAX_FORMS)
+            fz_throw(ctx, FZ_ERROR_LIMIT, "too many form XObjects");
+        sp = pdf_dict_get(ctx, x, PDF_NAME(StructParents));
+        if (pdf_is_int(ctx, sp))
+            gomupdf_retarget_struct(ctx, pdf, pageobj, pdf_to_int(ctx, sp), f);
+        gomupdf_retarget_forms_res(ctx, pdf, pageobj, pdf_dict_get(ctx, x, PDF_NAME(Resources)), depth + 1, seen, f);
+    }
+}
+
+// gomupdf_retarget_page moves this page's structure references from the
+// tagged originals to their copies (see above).
+static void gomupdf_retarget_page(fz_context *ctx, pdf_document *pdf, pdf_page *page, gomupdf_forms *f) {
+    pdf_obj *res = pdf_dict_get(ctx, page->obj, PDF_NAME(Resources));
+    pdf_obj *sp = pdf_dict_get(ctx, page->obj, PDF_NAME(StructParents));
+    int seen = 0;
+    if (f->n == 0)
+        return;
+    gomupdf_count_copies(ctx, res, 0, &seen, f);
+    if (pdf_is_int(ctx, sp))
+        gomupdf_retarget_struct(ctx, pdf, page->obj, pdf_to_int(ctx, sp), f);
+    seen = 0;
+    gomupdf_retarget_forms_res(ctx, pdf, page->obj, res, 0, &seen, f);
+}
+
+// gomupdf_untag_forms removes the tags from the originals and releases f.
+// It must not throw (it runs in fz_always).
+static void gomupdf_untag_forms(fz_context *ctx, gomupdf_forms *f) {
+    int i;
+    for (i = 0; i < f->n; i++) {
+        fz_try(ctx)
+            pdf_dict_dels(ctx, f->orig[i], GOMUPDF_FORM_TAG);
+        fz_catch(ctx)
+            fz_ignore_error(ctx);
+        pdf_drop_obj(ctx, f->orig[i]);
+    }
+    fz_free(ctx, f->orig);
+    fz_free(ctx, f->copies);
+    fz_free(ctx, f->copy);
+    memset(f, 0, sizeof *f);
+}
+
 // gomupdf_redact_text rewrites the page's contents (and the form XObjects
 // they draw) through MuPDF's sanitize filter, stripping declared text from
 // inline marked-content properties, and removes the text under the page's
@@ -725,8 +925,11 @@ static int gomupdf_apply_redactions(fz_context *ctx, fz_document *doc, int pagen
     pdf_page *page = NULL;
     int count = 0;
     size_t regions = 0;
+    gomupdf_forms forms;
+    memset(&forms, 0, sizeof forms);
     fz_var(page);
     fz_var(regions);
+    fz_var(forms);
     fz_try(ctx) {
         // Refuse a page whose redactions hold too many regions, in every
         // text mode, before changing (or even loading) anything.
@@ -746,15 +949,20 @@ static int gomupdf_apply_redactions(fz_context *ctx, fz_document *doc, int pagen
             // deleting the annotations) without its own text removal. Past
             // the character limit, MuPDF's text removal stays on. Declared
             // text goes from every page whose text we redact.
+            // Every mode replaces the page's forms with redacted copies, so
+            // the page's structure references follow them.
             int undeclare = opts.text == PDF_REDACT_TEXT_REMOVE;
+            gomupdf_tag_forms(ctx, pdf_dict_get(ctx, page->obj, PDF_NAME(Resources)), 0, &forms);
             if (undeclare && gomupdf_redact_text(ctx, pdf, page))
                 opts.text = PDF_REDACT_TEXT_NONE;
             pdf_redact_page(ctx, pdf, page, &opts);
             if (undeclare)
                 gomupdf_undeclare_page(ctx, pdf, page);
+            gomupdf_retarget_page(ctx, pdf, page, &forms);
         }
     }
     fz_always(ctx) {
+        gomupdf_untag_forms(ctx, &forms);
         fz_drop_page(ctx, (fz_page *)page);
     }
     fz_catch(ctx) {

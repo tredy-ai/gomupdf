@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"fmt"
 	"math"
+	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -324,5 +326,62 @@ func TestRedactionNarrowWidthsSpaces(t *testing.T) {
 				redactionHits(t, c.name, pdf, []int{w + 1, w + 2, w + 3, w + 4, w + 5, w + 6}, true)
 			}
 		})
+	}
+}
+
+// narrowEmbedded rewrites test_3179.pdf by an incremental update: its
+// embedded Calibri subset (/F1, /Widths in object 23, codes 32..250) gets
+// /Widths 30 throughout, and the page (content object 16) shows text with
+// that font, 12pt, 32 Tc, at deg degrees.
+func narrowEmbedded(t *testing.T, text string, deg float64) []byte {
+	t.Helper()
+	orig, err := os.ReadFile(res + "test_3179.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := bytes.LastIndex(orig, []byte("startxref"))
+	prev, err := strconv.Atoi(strings.Fields(string(orig[i+len("startxref"):]))[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := bytes.NewBuffer(append([]byte{}, orig...))
+	content := "BT /F1 12 Tf 32 Tc " + tm(deg, 100, 200) + " (" + text + ") Tj ET"
+	off16 := b.Len() + 1
+	fmt.Fprintf(b, "\n16 0 obj\n<< /Length %d >>\nstream\n%s\nendstream\nendobj\n", len(content), content)
+	off23 := b.Len()
+	fmt.Fprintf(b, "23 0 obj\n[%s]\nendobj\n", strings.Repeat("30 ", 250-32+1))
+	xref := b.Len()
+	fmt.Fprintf(b, "xref\n0 1\n0000000000 65535 f \n16 1\n%010d 00000 n \n23 1\n%010d 00000 n \n", off16, off23)
+	fmt.Fprintf(b, "trailer\n<< /Size 33 /Root 1 0 R /Prev %d >>\nstartxref\n%d\n%%%%EOF\n", prev, xref)
+	return b.Bytes()
+}
+
+// Narrow /Widths on an embedded TrueType font (from a real file): redacting
+// glyphs by their extraction geometry removes exactly those glyphs.
+func TestRedactionNarrowWidthsEmbedded(t *testing.T) {
+	const text = "oseaito"
+	for _, deg := range []float64{0, 30, 90} {
+		pdf := narrowEmbedded(t, text, deg)
+		d, err := OpenStream(pdf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, _ := d.LoadPage(0)
+		spans, err := p.Dict()
+		d.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(spans) == 0 || len(spans[0].Spans) == 0 || !strings.Contains(spans[0].Spans[0].Font, "Calibri") {
+			t.Fatalf("%g degrees: spans %+v, want the embedded Calibri", deg, spans)
+		}
+		if s := runesOf(pdfChars(t, pdf)); s != text {
+			t.Fatalf("%g degrees: fixture chars %q", deg, s)
+		}
+		label := fmt.Sprintf("embedded, %g degrees", deg)
+		for i := 1; i <= 5; i++ {
+			redactionHits(t, label, pdf, []int{i}, true)
+		}
+		redactionHits(t, label, pdf, []int{1, 2, 3, 4, 5}, true)
 	}
 }

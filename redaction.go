@@ -189,6 +189,17 @@ func isFinite32(f float32) bool {
 // for them too. Over 32 levels of nested forms, 65536 forms or 64 levels of
 // /ParentTree, ApplyRedactions returns an error instead.
 //
+// Also changed, in every Text mode: redaction makes the page draw redacted
+// copies of its form XObjects, but a structure element can still name the
+// original form, in a marked-content reference (/Stm) or an object reference
+// (/Obj), which keeps the unredacted original in the saved file. For the
+// structure elements under the page's and its forms' /StructParents, a
+// reference on this page (its /Pg, or its element's, is this page or absent)
+// is moved to the copy when the page drew that form once; otherwise an MCR
+// loses its /Stm and an OBJR is removed. The original form object stays for
+// other pages that draw it, with their references. Stock MuPDF leaves the
+// references to the originals.
+//
 // The removal reaches what stock MuPDF's reaches: the page's content streams
 // and the form XObjects they draw, but not patterns, soft masks, Type3 glyph
 // procedures or annotation appearances. Removed glyphs leave a gap; the rest

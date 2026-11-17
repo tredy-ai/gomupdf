@@ -135,7 +135,7 @@ func TestRedactionStripsDeclaredText(t *testing.T) {
 			form:       "/P << /MCID 0 >> BDC " + line("", "") + " EMC",
 			formDict:   "/StructParents 1",
 			structTree: "<< /Type /StructTreeRoot /K 11 0 R /ParentTree << /Nums [0 [] 1 [11 0 R]] >> >>",
-			elems:      []string{"<< /Type /StructElem /S /P /P 9 0 R /Pg 3 0 R /K 0 /ActualText (aaa Hello bbb) >>"},
+			elems:      []string{"<< /Type /StructElem /S /P /P 9 0 R /Pg 3 0 R /K << /Type /MCR /MCID 0 /Stm 8 0 R /Pg 3 0 R >> /ActualText (aaa Hello bbb) >>"},
 		},
 		"struct word": {
 			page1:      line("/Span << /MCID 0 >> BDC", "EMC"),
@@ -201,4 +201,110 @@ func TestRedactionDeclaredTextFirstSpan(t *testing.T) {
 	if s := extract(t, d, 0, true); strings.Contains(s, "Hello") || !strings.Contains(s, "bbb") {
 		t.Errorf("extracted %q", s)
 	}
+}
+
+// formStructDoc draws form 8 (with /StructParents 1, "aaa Hello bbb" as
+// MCID 0) on page 1 by page1, and on page 2 by page2. Element 11 owns that
+// content for page 1 through an MCR naming the form's stream; element 12
+// does the same for page 2.
+func formStructDoc(page1, page2 string) declaredDoc {
+	c := declaredDoc{
+		page1:      page1,
+		page2:      page2,
+		form:       "/P << /MCID 0 >> BDC " + line("", "") + " EMC",
+		formDict:   "/StructParents 1",
+		structTree: "<< /Type /StructTreeRoot /K [11 0 R] /ParentTree << /Nums [0 [] 1 [11 0 R]] >> >>",
+		elems: []string{
+			"<< /Type /StructElem /S /P /P 9 0 R /Pg 3 0 R /K << /Type /MCR /MCID 0 /Stm 8 0 R /Pg 3 0 R >> >>",
+		},
+	}
+	if page2 != "" {
+		c.shared = true
+		c.structTree = strings.Replace(c.structTree, "/K [11 0 R]", "/K [11 0 R 12 0 R]", 1)
+		c.elems = append(c.elems, "<< /Type /StructElem /S /P /P 9 0 R /Pg 4 0 R /K << /Type /MCR /MCID 0 /Stm 8 0 R /Pg 4 0 R >> >>")
+	}
+	return c
+}
+
+// redactAllHello redacts every "Hello" page 1 shows and saves uncompressed
+// with Garbage 1.
+func redactAllHello(t *testing.T, pdf []byte) (*Document, []byte) {
+	t.Helper()
+	d, err := OpenStream(pdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	p, _ := d.LoadPage(0)
+	gs := pageGlyphs(t, p)
+	s, n := runesOf(gs), 0
+	for i := strings.Index(s, "Hello"); i >= 0; i = strings.Index(s, "Hello") {
+		if err := p.AddRedactionQuads(quadsOf(gs[i:i+5]), RedactOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		gs, s, n = gs[i+5:], s[i+5:], n+1
+	}
+	if got, err := p.ApplyRedactions(ApplyOptions{}); err != nil || got != n || n == 0 {
+		t.Fatalf("ApplyRedactions = %d, %v; want %d", got, err, n)
+	}
+	out, err := d.SaveBytesWithOptions(SaveOptions{Garbage: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	re, err := OpenStream(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(re.Close)
+	return re, out
+}
+
+// A structure element whose MCR names a form's stream (/Stm) must not keep
+// the original, unredacted form alive once the page draws a redacted copy:
+// /Stm follows the copy when the page drew the form once, and is dropped
+// when it drew it more than once. Another page that draws the original keeps
+// it and its own reference to it.
+func TestRedactionFormStructRefs(t *testing.T) {
+	for _, c := range []struct {
+		name, page1 string
+		stm         bool // page 1's MCR keeps a /Stm
+	}{
+		{"once", "q /Fm0 Do Q", true},
+		{"twice", "q /Fm0 Do Q q 1 0 0 1 0 -50 cm /Fm0 Do Q", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			d, out := redactAllHello(t, formStructDoc(c.page1, "").pdf())
+			if i := bytes.Index(out, []byte("Hello")); i >= 0 {
+				t.Errorf("saved file still has Hello: %q", out[max(0, i-80):min(len(out), i+40)])
+			}
+			for _, actual := range []bool{false, true} {
+				if s := extract(t, d, 0, actual); strings.Contains(s, "Hello") || !strings.Contains(s, "bbb") {
+					t.Errorf("UseActualText %v: extracted %q", actual, s)
+				}
+			}
+			if got := bytes.Contains(out, []byte("/Stm ")); got != c.stm {
+				t.Errorf("an MCR /Stm is present: %v, want %v", got, c.stm)
+			}
+			if bytes.Contains(out, []byte("/Stm 8 0 R")) {
+				t.Error("page 1's MCR still names the original form")
+			}
+			if bytes.Contains(out, []byte("GomupdfRedactSrc")) {
+				t.Error("the private form tag reached the saved file")
+			}
+		})
+	}
+
+	t.Run("other page", func(t *testing.T) {
+		d, out := redactAllHello(t, formStructDoc("q /Fm0 Do Q", "q /Fm0 Do Q").pdf())
+		if s := extract(t, d, 0, false); strings.Contains(s, "Hello") {
+			t.Errorf("page 1 extracted %q", s)
+		}
+		if s := extract(t, d, 1, false); !strings.Contains(s, "Hello") {
+			t.Errorf("page 2 lost the word: %q", s)
+		}
+		// Page 2's MCR still names form 8, which is still in the file.
+		if n := bytes.Count(out, []byte("/Stm 8 0 R")); n != 1 || !bytes.Contains(out, []byte("\n8 0 obj")) {
+			t.Errorf("%d MCRs name form 8 (want 1, page 2's); form 8 present: %v", n, bytes.Contains(out, []byte("\n8 0 obj")))
+		}
+	})
 }
