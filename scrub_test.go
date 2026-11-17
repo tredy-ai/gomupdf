@@ -3656,6 +3656,93 @@ func TestScrubKeptAppearanceResource(t *testing.T) {
 	}
 }
 
+// The annotations of a page MuPDF does not serve are annotations on no page,
+// and go or stay with the options as such: KeepAnnotations keeps them in the
+// saved file (the orphan page keeps its /Annots, so a garbage-collecting
+// save does not drop them), the default options destroy all but the Link.
+// (Reduced from veraPDF isartor-6-5-2-t01-fail-a.pdf and pdf.js
+// poppler-395-0-fuzzed.pdf, whose annotations are on such pages.)
+func TestScrubOrphanPageAnnotations(t *testing.T) {
+	const textTok, popupTok = "GomupdfOrphanNote5e3b", "GomupdfOrphanPopup9a4c"
+	pdf := scrubBuildPDF([]string{
+		/* 1 */ `<< /Type /Catalog /Pages 2 0 R /MarkInfo << /Marked true >> /StructTreeRoot 7 0 R >>`,
+		/* 2 */ `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+		/* 3 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>`,
+		/* 4 */ "\nstream\nBT /F1 12 Tf 20 150 Td (" + scrubPageText + ") Tj ET",
+		/* 5 */ `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>`,
+		/* 6 */ `<< /Type /Page /MediaBox [0 0 300 200] /Annots 9 0 R >>`,
+		/* 7 */ `<< /Type /StructTreeRoot /K [8 0 R] >>`,
+		/* 8 */ `<< /Type /StructElem /S /P /P 7 0 R /Pg 6 0 R >>`,
+		/* 9 */ `[10 0 R 11 0 R 12 0 R]`,
+		/* 10 */ `<< /Type /Annot /Subtype /Text /P 6 0 R /Rect [10 10 30 30] /Contents (` + textTok + `) /Popup 11 0 R >>`,
+		/* 11 */ `<< /Type /Annot /Subtype /Popup /Parent 10 0 R /Rect [30 30 130 90] /Contents (` + popupTok + `) >>`,
+		/* 12 */ `<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] /A << /S /URI /URI (https://example.com/) >> >>`,
+	}, "")
+	scrubControl(t, pdf, textTok, popupTok)
+	ctl := HiddenContent{NonLinkAnnotations: 2}
+	d, err := OpenStream(pdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if h := scrubHidden(t, d); h != ctl {
+		t.Errorf("before scrub: %+v, want %+v", h, ctl)
+	}
+	for _, opts := range []ScrubOptions{{}, {KeepAnnotations: true}} {
+		t.Run(fmt.Sprintf("%+v", opts), func(t *testing.T) {
+			re := scrubCheckKept(t, pdf, opts)
+			out, err := re.SaveBytesWithOptions(scrubSaveOpts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, tok := range []string{textTok, popupTok} {
+				if got := bytes.Contains(out, []byte(tok)); got != opts.KeepAnnotations {
+					t.Errorf("%q in save = %v, want %v", tok, got, opts.KeepAnnotations)
+				}
+			}
+			if n := len(scrubLinkRe.FindAll(out, -1)); n != 1 {
+				t.Errorf("%d Links in save, want 1", n)
+			}
+			want := HiddenContent{}
+			if opts.KeepAnnotations {
+				want = ctl
+			}
+			if h := scrubHidden(t, re); h != want {
+				t.Errorf("after scrub: %+v, want %+v", h, want)
+			}
+		})
+	}
+}
+
+// KeepAnnotations keeps media annotations with their embedded media (a
+// Screen's rendition and media clip, a Sound's sound stream) and strips their
+// scripts: the Screen's /AA and a Rendition action carrying /JS.
+func TestScrubKeepAnnotationsMedia(t *testing.T) {
+	const mediaTok, soundTok, jsTok, aaTok = "GomupdfScreenMedia2d8f", "GomupdfSoundData7c1a", "GomupdfRenditionJS4b6e", "GomupdfScreenAA9e3d"
+	pdf := scrubBuildPDF([]string{
+		/* 1 */ `<< /Type /Catalog /Pages 2 0 R >>`,
+		/* 2 */ `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+		/* 3 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Annots [4 0 R 5 0 R 6 0 R] >>`,
+		/* 4 */ `<< /Type /Annot /Subtype /Screen /Rect [0 0 100 100] /AA << /PO << /S /JavaScript /JS (var ` + aaTok + `;) >> >>
+   /A << /S /Rendition /OP 0 /AN 4 0 R /R << /S /MR /C << /S /MCD /D << /Type /Filespec /F (m.mp4) /EF << /F 7 0 R >> >> /CT (video/mp4) >> >> >> >>`,
+		/* 5 */ `<< /Type /Annot /Subtype /Screen /Rect [100 0 200 100] /A << /S /Rendition /OP 0 /AN 5 0 R /JS (var ` + jsTok + `;) >> >>`,
+		/* 6 */ `<< /Type /Annot /Subtype /Sound /Rect [200 0 220 20] /Sound 8 0 R >>`,
+		/* 7 */ "/Type /EmbeddedFile\nstream\n" + mediaTok,
+		/* 8 */ "/Type /Sound /R 8000\nstream\n" + soundTok,
+	}, "")
+	scrubControl(t, pdf, mediaTok, soundTok, jsTok, aaTok)
+	out, re := scrubRoundTrip(t, pdf, ScrubOptions{KeepAnnotations: true})
+	scrubNoTokens(t, "KeepAnnotations", out, jsTok, aaTok)
+	for _, tok := range []string{mediaTok, soundTok} {
+		if !bytes.Contains(out, []byte(tok)) {
+			t.Errorf("%q removed", tok)
+		}
+	}
+	if h := scrubHidden(t, re); h != (HiddenContent{NonLinkAnnotations: 3}) {
+		t.Errorf("after scrub: %+v, want the three annotations", h)
+	}
+}
+
 // A kept Link's /IRT does not keep the annotation it points at: the Square
 // the default options remove is destroyed and its /Contents leaves the file.
 func TestScrubKeptLinkIRT(t *testing.T) {

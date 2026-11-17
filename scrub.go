@@ -19,8 +19,17 @@ type ScrubOptions struct {
 	// a JavaScript or Launch action. /AcroForm /XFA is removed regardless:
 	// it is a second, XML copy of the form with its own scripts and values,
 	// which MuPDF ignores, so Page.Widgets and SetTextField never see or
-	// clear what it holds. The zero value removes all annotations except Link
-	// annotations, all widgets, and /AcroForm.
+	// clear what it holds. Embedded media in kept annotations stay: a
+	// FileAttachment's file, a Sound's sound, a Movie's movie file, a
+	// Screen's rendition action (unless it carries /JS) with its media clip
+	// and embedded file, the assets of a RichMedia annotation and the 3D
+	// stream of a 3D annotation (whose scripts are out of scope, see Scrub).
+	// The annotations of a page MuPDF does not serve and other annotations
+	// on no page are kept as well; one that only something Scrub removes
+	// references (an outline item's GoTo3DView action, without
+	// KeepOutlines) is kept by Scrub but has nothing left referencing it, so
+	// a garbage-collecting save drops it. The zero value removes all
+	// annotations except Link annotations, all widgets, and /AcroForm.
 	KeepAnnotations bool
 	// KeepFormFields keeps the form: every widget annotation and the catalog
 	// /AcroForm with its whole field tree (fields on no page included), with
@@ -150,7 +159,8 @@ type HiddenContent struct {
 
 	// OrphanPages counts the page dictionaries that are not pages MuPDF
 	// serves (the PageCount pages) but still hold content (any key Scrub
-	// removes from them, /Parent included). A page dictionary is one with
+	// removes from them, /Parent included; not /Annots, whose entries count
+	// as annotations on no page). A page dictionary is one with
 	// /Type /Page or /Type /Template (a template /Names/Templates lists), or
 	// with no /Type, a /MediaBox and a /Contents or /Parent; one with /Kids
 	// is a page-tree node and never counts. A page outside the page tree
@@ -289,11 +299,12 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 //     is not searched;
 //   - on every page dictionary that is not a page MuPDF serves (see
 //     HiddenContent's OrphanPages; a structure element's /Pg, a destination
-//     or /Names/Templates can still reach one), /Contents, /Resources,
-//     /Annots, /B, /Group, /StructParents, /Parent and the keys removed from
-//     pages above, and the same on each /Type /Pages node outside the page
-//     tree it inherits from (32 levels); the dictionary itself stays, with
-//     its /Type and /MediaBox, for those references;
+//     or /Names/Templates can still reach one), /Contents, /Resources, /B,
+//     /Group, /StructParents, /Parent and the keys removed from pages above,
+//     and the same on each /Type /Pages node outside the page tree it
+//     inherits from (32 levels); the dictionary itself stays, with its /Type,
+//     /MediaBox and /Annots, for those references, and its annotations are
+//     annotations on no page (below);
 //   - every annotation and form field on no page and not in the form (see
 //     HiddenContent's NonLinkAnnotations; pdf.js bug1722036.pdf has widgets
 //     only its structure tree reaches) that the options would remove from a

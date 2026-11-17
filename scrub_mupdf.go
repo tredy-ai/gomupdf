@@ -1398,21 +1398,24 @@ static void gomupdf_orphan_closure(fz_context *ctx, gomupdf_marks *mk, pdf_obj *
 
 // gomupdf_orphan_page counts into out (HiddenContent) or empties (Scrub, mk)
 // the page dictionary page, which is not a page MuPDF serves: it removes
-// /Contents, /Resources, /Annots, /B, /Group, /StructParents, /Parent and the
-// keys gomupdf_page_keys removes, recording for destruction the content
+// /Contents, /Resources, /B, /Group, /StructParents, /Parent and the keys
+// gomupdf_page_keys removes, recording for destruction the content
 // streams (/Contents or the entries of a /Contents array, walked once however
 // many orphan pages share it), the forms and images its /Resources reach
 // (gomupdf_orphan_closure) and what gomupdf_page_keys records. A /Pages node
 // it inherits from that is outside the page tree (/Type /Pages, not GM_NODE
 // and not page content), and each such node above that one, up to
 // GOMUPDF_MAX_DEPTH levels, is orphan content too and emptied the same way,
-// once. Its annotations are then on no page, and gomupdf_sweep handles them
-// as such. The dictionary stays, with its other keys (/Type, /MediaBox), for
-// the destinations and structure elements that reference it. HiddenContent
+// once. Its /Annots stays: those annotations are on no page MuPDF serves,
+// and gomupdf_sweep removes or keeps each as such (KeepAnnotations keeps
+// them, and the /Annots reference keeps a garbage-collecting save from
+// dropping them). The dictionary stays, with its other keys (/Type,
+// /MediaBox, /Annots), for the destinations and structure elements that
+// reference it. HiddenContent
 // counts it only if it holds one of those keys, so an emptied one reads
 // clean.
 static void gomupdf_orphan_page(fz_context *ctx, gomupdf_marks *mk, pdf_obj *page, int *out) {
-    static const char *keys[] = {"Contents", "Resources", "Annots", "B", "Group", "StructParents", "Parent",
+    static const char *keys[] = {"Contents", "Resources", "B", "Group", "StructParents", "Parent",
                                  "Thumb", "AA", "AF", "Metadata", "PieceInfo", "LastModified", NULL};
     if (out) {
         for (const char **k = keys; *k; k++)
