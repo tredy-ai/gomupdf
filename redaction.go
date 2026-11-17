@@ -159,6 +159,22 @@ func isFinite32(f float32) bool {
 // glyph's ink, over the next glyph, so redacting a glyph by its quad also
 // removes the next glyph (whose ink the black box covers).
 //
+// Also changed: with opts.Text TextRemove and at least one redaction, the
+// page's declared text is removed: /ActualText, /Alt and /E, from every
+// marked-content property list the redaction reaches (inline in the page's
+// content streams and the form XObjects they draw, and named in their
+// /Resources /Properties), and from the structure elements that own the
+// page's marked content (through the page's and those forms' /StructParents)
+// and their ancestors up to the structure tree root. Declared text repeats
+// the glyphs (or describes them), so a redacted word would otherwise survive
+// there, invisible to extraction that ignores /ActualText. Stock MuPDF leaves
+// inline and named property lists as they are and edits structure elements
+// only partly. The cost is the page's accessibility text. Another page that
+// shares a named property dictionary keeps it (this page gets a stripped
+// copy); a structure ancestor that spans other pages loses its declared text
+// for them too. Over 32 levels of nested forms, 65536 forms or 64 levels of
+// /ParentTree, ApplyRedactions returns an error instead.
+//
 // The removal reaches what stock MuPDF's reaches: the page's content streams
 // and the form XObjects they draw, but not patterns, soft masks, Type3 glyph
 // procedures or annotation appearances. Removed glyphs leave a gap; the rest

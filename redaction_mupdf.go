@@ -10,6 +10,7 @@ package gomupdf
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdatomic.h>
 #include "gomupdf_stext.h"
 
 static int gomupdf_add_redaction(fz_context *ctx, fz_document *doc, int pageno,
@@ -405,38 +406,259 @@ static int gomupdf_collect_origins(fz_context *ctx, pdf_page *page, gomupdf_regi
     return over ? -1 : 0;
 }
 
-// gomupdf_redact_text removes the text under the page's redaction
-// annotations, glyph by glyph, without touching anything else. Returns 1 if
-// it did, 0 if the page is over a limit and needs MuPDF's own text removal.
-// Throws.
+// --- declared text on redacted pages ----------------------------------------
+//
+// Marked content can declare text for the glyphs it wraps: /ActualText (the
+// replacement text), /Alt (alternate description) and /E (expansion), in an
+// inline BDC/DP property dictionary, a named one in /Resources /Properties, or
+// a structure element reached through /MCID. MuPDF's redaction leaves inline
+// and named ones as they are, and edits structure elements only partly, so a
+// redacted word survives there. On a page we redact text on, all three keys
+// are removed from all of these, wherever the redaction pass reaches.
+
+typedef void (gomupdf_md_op)(fz_context *ctx, pdf_processor *proc, const char *tag, pdf_obj *raw, pdf_obj *cooked);
+
+// The buffer processor's own BDC and DP, set by gomupdf_md_filter. Every
+// buffer processor has the same two functions, so concurrent stores write
+// the same values; atomics keep that race-free.
+static _Atomic(gomupdf_md_op *) gomupdf_md_orig_BDC;
+static _Atomic(gomupdf_md_op *) gomupdf_md_orig_DP;
+
+// gomupdf_declares reports whether obj is a dictionary with declared text.
+static int gomupdf_declares(fz_context *ctx, pdf_obj *obj) {
+    return pdf_is_dict(ctx, obj) &&
+        (pdf_dict_get(ctx, obj, PDF_NAME(ActualText)) ||
+         pdf_dict_get(ctx, obj, PDF_NAME(Alt)) ||
+         pdf_dict_get(ctx, obj, PDF_NAME(E)));
+}
+
+static void gomupdf_undeclare(fz_context *ctx, pdf_obj *dict) {
+    pdf_dict_del(ctx, dict, PDF_NAME(ActualText));
+    pdf_dict_del(ctx, dict, PDF_NAME(Alt));
+    pdf_dict_del(ctx, dict, PDF_NAME(E));
+}
+
+// gomupdf_md_forward passes a marked-content operator on to orig, with an
+// inline property dictionary that declares text replaced by a stripped copy
+// (the parser's dictionary is not ours to edit).
+static void gomupdf_md_forward(fz_context *ctx, gomupdf_md_op *orig, pdf_processor *proc,
+                               const char *tag, pdf_obj *raw, pdf_obj *cooked) {
+    pdf_obj *copy = NULL;
+    if (!orig)
+        return;
+    if (!gomupdf_declares(ctx, raw)) {
+        orig(ctx, proc, tag, raw, cooked);
+        return;
+    }
+    copy = pdf_copy_dict(ctx, raw);
+    fz_try(ctx) {
+        gomupdf_undeclare(ctx, copy);
+        orig(ctx, proc, tag, copy, copy);
+    }
+    fz_always(ctx) {
+        pdf_drop_obj(ctx, copy);
+    }
+    fz_catch(ctx) {
+        fz_rethrow(ctx);
+    }
+}
+
+static void gomupdf_md_BDC(fz_context *ctx, pdf_processor *proc, const char *tag, pdf_obj *raw, pdf_obj *cooked) {
+    gomupdf_md_forward(ctx, atomic_load(&gomupdf_md_orig_BDC), proc, tag, raw, cooked);
+}
+
+static void gomupdf_md_DP(fz_context *ctx, pdf_processor *proc, const char *tag, pdf_obj *raw, pdf_obj *cooked) {
+    gomupdf_md_forward(ctx, atomic_load(&gomupdf_md_orig_DP), proc, tag, raw, cooked);
+}
+
+// gomupdf_md_filter is a pdf_filter_factory_fn for the last place in the
+// filter list, so chain is the buffer processor that writes the new content
+// stream (pdf_filter_content_stream makes one per stream). It reroutes that
+// processor's BDC and DP through gomupdf_md_BDC / gomupdf_md_DP and returns
+// it with a reference for the caller's filter list.
+static pdf_processor *gomupdf_md_filter(fz_context *ctx, pdf_document *doc, pdf_processor *chain,
+                                        int struct_parents, fz_matrix transform,
+                                        pdf_filter_options *options, void *factory_options) {
+    (void)doc; (void)struct_parents; (void)transform; (void)options; (void)factory_options;
+    if (chain->op_BDC && chain->op_BDC != gomupdf_md_BDC) {
+        atomic_store(&gomupdf_md_orig_BDC, chain->op_BDC);
+        chain->op_BDC = gomupdf_md_BDC;
+    }
+    if (chain->op_DP && chain->op_DP != gomupdf_md_DP) {
+        atomic_store(&gomupdf_md_orig_DP, chain->op_DP);
+        chain->op_DP = gomupdf_md_DP;
+    }
+    return pdf_keep_processor(ctx, chain);
+}
+
+// Bounds on the walks below: form XObjects nested deeper than this, more
+// forms than this per page, number-tree levels, and structure ancestors.
+// Past the first three the walk throws (the caller reports an error rather
+// than leave declared text behind); the ancestor walk just stops (only a
+// cycle or a pathological tree is that deep).
+#define GOMUPDF_MD_MAX_DEPTH 32
+#define GOMUPDF_MD_MAX_FORMS (1 << 16)
+#define GOMUPDF_MD_MAX_TREE_DEPTH 64
+#define GOMUPDF_MD_MAX_ANCESTORS 256
+
+// gomupdf_lookup_number finds key in a number tree without recursion,
+// depth-bounded: binary search over /Kids by /Limits, then /Nums (sorted,
+// then a linear scan, as MuPDF's own lookup allows unsorted arrays).
+static pdf_obj *gomupdf_lookup_number(fz_context *ctx, pdf_obj *node, int key) {
+    int depth;
+    for (depth = 0; node; depth++) {
+        pdf_obj *kids = pdf_dict_get(ctx, node, PDF_NAME(Kids));
+        pdf_obj *nums = pdf_dict_get(ctx, node, PDF_NAME(Nums));
+        pdf_obj *next = NULL;
+        int l, r;
+        if (depth > GOMUPDF_MD_MAX_TREE_DEPTH)
+            fz_throw(ctx, FZ_ERROR_LIMIT, "structure parent tree too deep");
+        if (pdf_is_array(ctx, nums)) {
+            int n = pdf_array_len(ctx, nums) / 2;
+            for (l = 0, r = n - 1; l <= r;) {
+                int m = l + (r - l) / 2, k = pdf_array_get_int(ctx, nums, 2 * m);
+                if (key < k) r = m - 1;
+                else if (key > k) l = m + 1;
+                else return pdf_array_get(ctx, nums, 2 * m + 1);
+            }
+            for (l = 0; l < n; l++)
+                if (pdf_array_get_int(ctx, nums, 2 * l) == key)
+                    return pdf_array_get(ctx, nums, 2 * l + 1);
+        }
+        if (!pdf_is_array(ctx, kids))
+            return NULL;
+        for (l = 0, r = pdf_array_len(ctx, kids) - 1; l <= r;) {
+            int m = l + (r - l) / 2;
+            pdf_obj *kid = pdf_array_get(ctx, kids, m);
+            pdf_obj *lim = pdf_dict_get(ctx, kid, PDF_NAME(Limits));
+            if (key < pdf_array_get_int(ctx, lim, 0)) r = m - 1;
+            else if (key > pdf_array_get_int(ctx, lim, 1)) l = m + 1;
+            else { next = kid; break; }
+        }
+        node = next;
+    }
+    return NULL;
+}
+
+// gomupdf_undeclare_struct strips the structure elements that own marked
+// content under struct-parents key (an MCID array, or one element), and
+// their ancestors up to the structure tree root. An ancestor that spans
+// other pages loses its declared text there too.
+static void gomupdf_undeclare_struct(fz_context *ctx, pdf_document *pdf, int key) {
+    pdf_obj *root = pdf_dict_getp(ctx, pdf_trailer(ctx, pdf), "Root/StructTreeRoot");
+    pdf_obj *entry;
+    int i, n;
+    if (!pdf_is_dict(ctx, root))
+        return;
+    entry = gomupdf_lookup_number(ctx, pdf_dict_get(ctx, root, PDF_NAME(ParentTree)), key);
+    n = pdf_is_array(ctx, entry) ? pdf_array_len(ctx, entry) : 1;
+    for (i = 0; i < n; i++) {
+        pdf_obj *e = pdf_is_array(ctx, entry) ? pdf_array_get(ctx, entry, i) : entry;
+        int up;
+        for (up = 0; up < GOMUPDF_MD_MAX_ANCESTORS && pdf_is_dict(ctx, e); up++) {
+            if (pdf_objcmp(ctx, e, root) == 0 ||
+                pdf_dict_get(ctx, e, PDF_NAME(Type)) == PDF_NAME(StructTreeRoot))
+                break;
+            gomupdf_undeclare(ctx, e);
+            e = pdf_dict_get(ctx, e, PDF_NAME(P));
+        }
+    }
+}
+
+// gomupdf_undeclare_res strips the named properties in res (each that
+// declares text is replaced, in this /Properties dictionary only, by a
+// stripped copy, so other users of the original keep it), then walks the
+// form XObjects res names, and strips the structure elements of each form
+// with /StructParents. After the redaction passes, res and the forms in it
+// are this page's own instances, made by MuPDF's filter.
+static void gomupdf_undeclare_res(fz_context *ctx, pdf_document *pdf, pdf_obj *res, int depth, int *forms) {
+    pdf_obj *props = pdf_dict_get(ctx, res, PDF_NAME(Properties));
+    pdf_obj *xobjs = pdf_dict_get(ctx, res, PDF_NAME(XObject));
+    int i, n;
+    if (depth > GOMUPDF_MD_MAX_DEPTH)
+        fz_throw(ctx, FZ_ERROR_LIMIT, "form XObjects nested too deep");
+    n = pdf_dict_len(ctx, props);
+    for (i = 0; i < n; i++) {
+        pdf_obj *v = pdf_dict_get_val(ctx, props, i);
+        if (gomupdf_declares(ctx, v)) {
+            pdf_obj *copy = pdf_copy_dict(ctx, v);
+            fz_try(ctx) {
+                gomupdf_undeclare(ctx, copy);
+                if (pdf_is_indirect(ctx, v)) {
+                    pdf_obj *ind = pdf_add_object(ctx, pdf, copy);
+                    pdf_drop_obj(ctx, copy);
+                    copy = ind;
+                }
+                pdf_dict_put(ctx, props, pdf_dict_get_key(ctx, props, i), copy);
+            }
+            fz_always(ctx) {
+                pdf_drop_obj(ctx, copy);
+            }
+            fz_catch(ctx) {
+                fz_rethrow(ctx);
+            }
+        }
+    }
+    n = pdf_dict_len(ctx, xobjs);
+    for (i = 0; i < n; i++) {
+        pdf_obj *x = pdf_dict_get_val(ctx, xobjs, i);
+        pdf_obj *sp;
+        if (pdf_dict_get(ctx, x, PDF_NAME(Subtype)) != PDF_NAME(Form))
+            continue;
+        if (++*forms > GOMUPDF_MD_MAX_FORMS)
+            fz_throw(ctx, FZ_ERROR_LIMIT, "too many form XObjects");
+        sp = pdf_dict_get(ctx, x, PDF_NAME(StructParents));
+        if (pdf_is_int(ctx, sp))
+            gomupdf_undeclare_struct(ctx, pdf, pdf_to_int(ctx, sp));
+        gomupdf_undeclare_res(ctx, pdf, pdf_dict_get(ctx, x, PDF_NAME(Resources)), depth + 1, forms);
+    }
+}
+
+// gomupdf_undeclare_page strips declared text from the page's named
+// properties, its forms and its structure elements. Inline property
+// dictionaries were stripped by gomupdf_md_filter during the text pass.
+static void gomupdf_undeclare_page(fz_context *ctx, pdf_document *pdf, pdf_page *page) {
+    int forms = 0;
+    pdf_obj *sp = pdf_dict_get(ctx, page->obj, PDF_NAME(StructParents));
+    if (pdf_is_int(ctx, sp))
+        gomupdf_undeclare_struct(ctx, pdf, pdf_to_int(ctx, sp));
+    gomupdf_undeclare_res(ctx, pdf, pdf_dict_get(ctx, page->obj, PDF_NAME(Resources)), 0, &forms);
+}
+
+// gomupdf_redact_text rewrites the page's contents (and the form XObjects
+// they draw) through MuPDF's sanitize filter, stripping declared text from
+// inline marked-content properties, and removes the text under the page's
+// redaction annotations glyph by glyph. Returns 1 if it removed the text, 0
+// if the page is over a limit and needs MuPDF's own text removal (the
+// declared text is stripped either way). Throws.
 static int gomupdf_redact_text(fz_context *ctx, pdf_document *pdf, pdf_page *page) {
     gomupdf_regions rs;
-    int ran = 0;
+    int per_glyph = 0;
     memset(&rs, 0, sizeof rs);
     fz_var(rs);
+    fz_var(per_glyph);
     fz_try(ctx) {
-        if (gomupdf_collect_regions(ctx, page, &rs) >= 0 &&
-            gomupdf_collect_origins(ctx, page, &rs) == 0) {
-            pdf_sanitize_filter_options sopts;
-            pdf_filter_factory filters[2];
-            pdf_filter_options fopts;
-            memset(&sopts, 0, sizeof sopts);
-            memset(filters, 0, sizeof filters);
-            memset(&fopts, 0, sizeof fopts);
-            sopts.opaque = &rs;
+        pdf_sanitize_filter_options sopts;
+        pdf_filter_factory filters[3];
+        pdf_filter_options fopts;
+        per_glyph = gomupdf_collect_regions(ctx, page, &rs) >= 0 &&
+            gomupdf_collect_origins(ctx, page, &rs) == 0;
+        memset(&sopts, 0, sizeof sopts);
+        memset(filters, 0, sizeof filters);
+        memset(&fopts, 0, sizeof fopts);
+        sopts.opaque = &rs;
+        if (per_glyph)
             sopts.text_filter = gomupdf_glyph_filter;
-            filters[0].filter = pdf_new_sanitize_filter;
-            filters[0].options = &sopts;
-            // As pdf_redact_page: page contents and (instanced) form
-            // XObjects; not patterns, soft masks, Type3 glyphs or
-            // annotation appearances.
-            fopts.recurse = 0;
-            fopts.instance_forms = 1;
-            fopts.ascii = 1;
-            fopts.filters = filters;
-            pdf_filter_page_contents(ctx, pdf, page, &fopts);
-            ran = 1;
-        }
+        filters[0].filter = pdf_new_sanitize_filter;
+        filters[0].options = &sopts;
+        filters[1].filter = gomupdf_md_filter;
+        // As pdf_redact_page: page contents and (instanced) form XObjects;
+        // not patterns, soft masks, Type3 glyphs or annotation appearances.
+        fopts.recurse = 0;
+        fopts.instance_forms = 1;
+        fopts.ascii = 1;
+        fopts.filters = filters;
+        pdf_filter_page_contents(ctx, pdf, page, &fopts);
     }
     fz_always(ctx) {
         fz_free(ctx, rs.r);
@@ -445,7 +667,7 @@ static int gomupdf_redact_text(fz_context *ctx, pdf_document *pdf, pdf_page *pag
     fz_catch(ctx) {
         fz_rethrow(ctx);
     }
-    return ran;
+    return per_glyph;
 }
 
 // gomupdf_apply_redactions applies every redaction annotation on the page.
@@ -493,10 +715,14 @@ static int gomupdf_apply_redactions(fz_context *ctx, fz_document *doc, int pagen
             // Our pass removes the text glyph by glyph and pdf_redact_page
             // does the rest (boxes, images, line art, links, FreeText,
             // deleting the annotations) without its own text removal. Past
-            // a limit, MuPDF's text removal stays on.
-            if (opts.text == PDF_REDACT_TEXT_REMOVE && gomupdf_redact_text(ctx, pdf, page))
+            // a limit, MuPDF's text removal stays on. Declared text goes
+            // from every page whose text we redact.
+            int undeclare = opts.text == PDF_REDACT_TEXT_REMOVE;
+            if (undeclare && gomupdf_redact_text(ctx, pdf, page))
                 opts.text = PDF_REDACT_TEXT_NONE;
             pdf_redact_page(ctx, pdf, page, &opts);
+            if (undeclare)
+                gomupdf_undeclare_page(ctx, pdf, page);
         }
     }
     fz_always(ctx) {
