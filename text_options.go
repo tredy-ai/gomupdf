@@ -35,6 +35,14 @@ type TextOptions struct {
 	// the page, not what a PDF claims is there. A consumer that wants both
 	// views extracts twice. Extraction APIs without options (GetText, Words,
 	// Search, HTML, ...) always ignore /ActualText.
+	//
+	// Warning: with UseActualText set, MuPDF 1.26.11 can crash the whole
+	// process (SIGSEGV, not a Go error) on crafted input: its structured-text
+	// device dereferences a NULL font when the drawn glyphs match a suffix of
+	// the declared text and the span is the first text on the page. Enabling
+	// this on untrusted input is unsafe; a service that does so MUST run that
+	// extraction where a crash is contained, such as a separate process. The
+	// default (false) is not affected. See TestActualTextCrashInput.
 	UseActualText bool
 }
 

@@ -1,6 +1,7 @@
 package gomupdf
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -33,6 +34,29 @@ func checkActual(t *testing.T, api, got string, err error, declared bool) {
 	}
 	if strings.Contains(got, "DECLARED") || !strings.Contains(got, "VISIBLE") {
 		t.Errorf("%s by default: %q, want VISIBLE and no DECLARED", api, got)
+	}
+}
+
+// TestActualTextCrashInput documents a MuPDF bug reproduced on 1.26.11: with
+// /ActualText honoured, the stext device (flush_actualtext, dev->last.font ==
+// NULL) dereferences NULL and the process dies with SIGSEGV when the glyphs
+// match a suffix of the declared text and the span is the first text on the
+// page. It is skipped because it kills the test binary. Set
+// GOMUPDF_TEST_ACTUALTEXT_CRASH=1 after a MuPDF upgrade to see whether it is
+// fixed; if it passes, update the UseActualText warning.
+func TestActualTextCrashInput(t *testing.T) {
+	if os.Getenv("GOMUPDF_TEST_ACTUALTEXT_CRASH") != "1" {
+		t.Skip("MuPDF 1.26.11 segfaults on this input with UseActualText; set GOMUPDF_TEST_ACTUALTEXT_CRASH=1 to retry on a newer MuPDF")
+	}
+	d := onePagePDF(t, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+		"/Span <</ActualText (AB)>> BDC BT /F1 12 Tf 50 100 Td (B) Tj ET EMC")
+	defer d.Close()
+	p, err := d.LoadPage(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.ExtractText(TextOptions{UseActualText: true}); err != nil {
+		t.Fatal(err)
 	}
 }
 
