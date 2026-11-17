@@ -93,7 +93,7 @@ func TestAddRedactionQuadsBoxFollowsQuads(t *testing.T) {
 }
 
 // A zero-area quad (a point at the centre of 'e') is accepted and still
-// removes the glyph it touches.
+// removes the glyph it touches: it falls back to the quad's bounds.
 func TestAddRedactionQuadsZeroArea(t *testing.T) {
 	content := "BT /F1 12 Tf 20 100 Td (Hello) Tj ET"
 	qs, _ := helloGeometry(t, content)
@@ -158,38 +158,35 @@ func afterRedaction(t *testing.T, content string, add func(*Page) error) string 
 	return strings.ReplaceAll(pageChars(rawDictOpts(t, p, TextOptions{})), " ", "")
 }
 
-// Documents the MuPDF 1.25.6 limitation: on 30 degree text, redacting the
-// exact quads of "Hello" removes the same characters as a rect around the
-// word, including one neighbour on each side, because MuPDF tests glyph
-// bounding boxes against each quad's bounds. Only with wide spacing do the
-// neighbours survive, and then they survive the rect too. The spec asked for
-// quads to keep the neighbours; MuPDF 1.25.6 cannot.
+// On 30 degree text, redacting the exact quads of "Hello" keeps both
+// neighbours, while a rect around the word loses one on each side (glyph
+// bounding boxes overlap it). With wide spacing both keep them.
 func TestAddRedactionQuadsSlantedNeighbours(t *testing.T) {
 	for _, c := range []struct {
-		tc   float64
-		want string
+		tc          float64
+		quads, rect string
 	}{
-		{0, "aabb"},   // one 'a' and one 'b' lost
-		{5, "aaabbb"}, // neighbours kept
+		{0, "aaabbb", "aabb"},
+		{5, "aaabbb", "aaabbb"},
 	} {
 		content := slanted(c.tc, "")
 		qs, r := helloGeometry(t, content)
 		byQuads := afterRedaction(t, content, func(p *Page) error { return p.AddRedactionQuads(qs, RedactOptions{}) })
 		byRect := afterRedaction(t, content, func(p *Page) error { return p.AddRedaction(r, RedactOptions{}) })
-		if byQuads != c.want || byRect != c.want {
-			t.Errorf("Tc %g: quads left %q, rect left %q, want %q for both", c.tc, byQuads, byRect, c.want)
+		if byQuads != c.quads || byRect != c.rect {
+			t.Errorf("Tc %g: quads left %q, rect left %q, want %q and %q", c.tc, byQuads, byRect, c.quads, c.rect)
 		}
 	}
 }
 
-// What quads do buy on 1.25.6: content inside the word's bounding rect but
-// outside every character quad's bounds is kept. A 3pt "Z" sits in the top
-// left corner of the rect around slanted "Hello".
+// Content inside the word's bounding rect but outside every character quad
+// is kept. A 3pt "Z" sits in the top left corner of the rect around slanted
+// "Hello".
 func TestAddRedactionQuadsKeepCornerText(t *testing.T) {
 	qs, r := helloGeometry(t, slanted(0, ""))
 	content := slanted(0, fmt.Sprintf("BT /F1 3 Tf %g %g Td (Z) Tj ET", r.X0+0.5, 200-r.Y0-3))
-	if got := afterRedaction(t, content, func(p *Page) error { return p.AddRedactionQuads(qs, RedactOptions{}) }); got != "aabbZ" {
-		t.Errorf("quads left %q, want %q", got, "aabbZ")
+	if got := afterRedaction(t, content, func(p *Page) error { return p.AddRedactionQuads(qs, RedactOptions{}) }); got != "aaabbbZ" {
+		t.Errorf("quads left %q, want %q", got, "aaabbbZ")
 	}
 	if got := afterRedaction(t, content, func(p *Page) error { return p.AddRedaction(r, RedactOptions{}) }); got != "aabb" {
 		t.Errorf("rect left %q, want %q", got, "aabb")

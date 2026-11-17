@@ -2,6 +2,7 @@ package gomupdf
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -61,10 +62,16 @@ func px(t *testing.T, p *Page, x, y int) [3]byte {
 	return [3]byte{s[0], s[1], s[2]}
 }
 
-func mustApply(t *testing.T, p *Page, o ApplyOptions) {
+// mustApply redacts redactArea, as a rect or (asQuad) as one quad, which
+// takes the per-glyph text pass before MuPDF's own.
+func mustApply(t *testing.T, p *Page, o ApplyOptions, asQuad bool) {
 	t.Helper()
-	if err := p.AddRedaction(redactArea, RedactOptions{}); err != nil {
-		t.Fatalf("AddRedaction: %v", err)
+	add := func() error { return p.AddRedaction(redactArea, RedactOptions{}) }
+	if asQuad {
+		add = func() error { return p.AddRedactionQuads([]geometry.Quad{redactArea.Quad()}, RedactOptions{}) }
+	}
+	if err := add(); err != nil {
+		t.Fatalf("add redaction: %v", err)
 	}
 	n, err := p.ApplyRedactions(o)
 	if err != nil {
@@ -84,7 +91,7 @@ var (
 func TestApplyZeroOptionsDrawsBox(t *testing.T) {
 	d, p := newBlankPage(t)
 	defer d.Close()
-	mustApply(t, p, ApplyOptions{})
+	mustApply(t, p, ApplyOptions{}, false)
 	if got := px(t, p, 150, 150); got != black {
 		t.Errorf("inside area = %v, want black", got)
 	}
@@ -96,7 +103,7 @@ func TestApplyZeroOptionsDrawsBox(t *testing.T) {
 func TestApplyNoBox(t *testing.T) {
 	d, p := newBlankPage(t)
 	defer d.Close()
-	mustApply(t, p, ApplyOptions{NoBox: true})
+	mustApply(t, p, ApplyOptions{NoBox: true}, false)
 	if got := px(t, p, 150, 150); got != white {
 		t.Errorf("inside area with NoBox = %v, want white", got)
 	}
@@ -114,31 +121,33 @@ func TestApplyImageMethods(t *testing.T) {
 		{"remove", ImageRemove, false, white},
 	}
 	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			d, p := newBlankPage(t)
-			defer d.Close()
-			if err := p.InsertImage(geometry.NewRect(0, 0, 400, 400), redPNG(t)); err != nil {
-				t.Fatalf("InsertImage: %v", err)
-			}
-			mustApply(t, p, ApplyOptions{NoBox: true, Images: c.method})
-			imgs, err := p.GetImages()
-			if err != nil {
-				t.Fatalf("GetImages: %v", err)
-			}
-			if (len(imgs) > 0) != c.wantImage {
-				t.Errorf("images after apply = %d, want present=%v", len(imgs), c.wantImage)
-			}
-			wantOuter := red
-			if !c.wantImage {
-				wantOuter = white
-			}
-			if got := px(t, p, 350, 350); got != wantOuter {
-				t.Errorf("outside area = %v, want %v", got, wantOuter)
-			}
-			if got := px(t, p, 150, 150); got != c.wantInner {
-				t.Errorf("inside area = %v, want %v", got, c.wantInner)
-			}
-		})
+		for _, asQuad := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/quad=%v", c.name, asQuad), func(t *testing.T) {
+				d, p := newBlankPage(t)
+				defer d.Close()
+				if err := p.InsertImage(geometry.NewRect(0, 0, 400, 400), redPNG(t)); err != nil {
+					t.Fatalf("InsertImage: %v", err)
+				}
+				mustApply(t, p, ApplyOptions{NoBox: true, Images: c.method}, asQuad)
+				imgs, err := p.GetImages()
+				if err != nil {
+					t.Fatalf("GetImages: %v", err)
+				}
+				if (len(imgs) > 0) != c.wantImage {
+					t.Errorf("images after apply = %d, want present=%v", len(imgs), c.wantImage)
+				}
+				wantOuter := red
+				if !c.wantImage {
+					wantOuter = white
+				}
+				if got := px(t, p, 350, 350); got != wantOuter {
+					t.Errorf("outside area = %v, want %v", got, wantOuter)
+				}
+				if got := px(t, p, 150, 150); got != c.wantInner {
+					t.Errorf("inside area = %v, want %v", got, c.wantInner)
+				}
+			})
+		}
 	}
 }
 
@@ -171,26 +180,28 @@ func TestApplyLineArt(t *testing.T) {
 		{"touched", LineArtRemoveIfTouched, white, white},
 	}
 	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			d, p := newBlankPage(t)
-			defer d.Close()
-			fill := [3]float64{1, 0, 0}
-			o := DrawOptions{Fill: &fill, Stroke: &fill}
-			// Raw PDF coordinates (y up), so both are symmetric about the page centre.
-			if err := p.DrawRect(geometry.NewRect(150, 150, 250, 250), o); err != nil {
-				t.Fatal(err)
-			}
-			if err := p.DrawRect(geometry.NewRect(250, 150, 350, 250), o); err != nil {
-				t.Fatal(err)
-			}
-			mustApply(t, p, ApplyOptions{NoBox: true, LineArt: c.method})
-			if got := px(t, p, 200, 200); got != c.wantInside {
-				t.Errorf("covered rect = %v, want %v", got, c.wantInside)
-			}
-			if got := px(t, p, 330, 200); got != c.wantCross {
-				t.Errorf("straddling rect outside area = %v, want %v", got, c.wantCross)
-			}
-		})
+		for _, asQuad := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/quad=%v", c.name, asQuad), func(t *testing.T) {
+				d, p := newBlankPage(t)
+				defer d.Close()
+				fill := [3]float64{1, 0, 0}
+				o := DrawOptions{Fill: &fill, Stroke: &fill}
+				// Raw PDF coordinates (y up), so both are symmetric about the page centre.
+				if err := p.DrawRect(geometry.NewRect(150, 150, 250, 250), o); err != nil {
+					t.Fatal(err)
+				}
+				if err := p.DrawRect(geometry.NewRect(250, 150, 350, 250), o); err != nil {
+					t.Fatal(err)
+				}
+				mustApply(t, p, ApplyOptions{NoBox: true, LineArt: c.method}, asQuad)
+				if got := px(t, p, 200, 200); got != c.wantInside {
+					t.Errorf("covered rect = %v, want %v", got, c.wantInside)
+				}
+				if got := px(t, p, 330, 200); got != c.wantCross {
+					t.Errorf("straddling rect outside area = %v, want %v", got, c.wantCross)
+				}
+			})
+		}
 	}
 }
 

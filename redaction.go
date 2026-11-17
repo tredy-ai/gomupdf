@@ -86,21 +86,23 @@ func (p *Page) AddRedaction(rect geometry.Rect, opts RedactOptions) error {
 //
 // New relative to upstream.
 //
-// Precision on MuPDF 1.25.6: ApplyRedactions draws the black box over each
-// quad's own shape, but it removes a glyph when the glyph's axis-aligned
-// bounding box, shrunk by 10% on each side, overlaps the axis-aligned bounds of
-// any quad. Images and line art are matched against, and image pixels blanked
-// over, each quad's bounds too. So each quad removes content exactly as
-// AddRedaction of its bounds would. On rotated or
-// skewed text, redacting the quads of a word's characters still removes
-// neighbouring characters whose bounding boxes overlap theirs, and those
-// characters disappear outside the drawn box. What quads add over one rect
-// around the whole word is that content inside that rect but outside every
-// quad's bounds is kept.
+// Precision: ApplyRedactions (with TextRemove) removes a glyph when the
+// glyph's own quad, shrunk towards its centre by a tenth of its advance and
+// of its height on each side, overlaps a quad's shape. So on rotated or
+// skewed text, redacting the quads of a word's characters removes that word
+// and keeps its neighbours. Stock MuPDF instead tests the glyph's axis-aligned
+// box against each quad's axis-aligned bounds, which also removes neighbours;
+// see ApplyRedactions. A quad that is not strictly convex with its corners in
+// order (UL, UR, LR, LL around the edge, either winding), for example a
+// zero-area quad or one with corners swapped, is not tested by shape but by
+// its bounds as stock MuPDF does, which never removes less. The black box is
+// drawn over each quad's shape. Images and line art are still matched
+// against, and image pixels blanked over, each quad's axis-aligned bounds, as
+// in stock MuPDF.
 //
 // An empty slice or a non-finite coordinate (after conversion to float32)
 // returns an error: MuPDF treats a NaN quad as empty and would silently redact
-// nothing. Zero-area quads are accepted; MuPDF still removes glyphs they touch.
+// nothing. Zero-area quads are accepted and remove the glyphs they touch.
 func (p *Page) AddRedactionQuads(quads []geometry.Quad, opts RedactOptions) error {
 	if len(quads) == 0 {
 		return errors.New("gomupdf: AddRedactionQuads: no quads")
@@ -135,6 +137,24 @@ func isFinite32(f float32) bool {
 // Changed from upstream: it takes ApplyOptions. Upstream passed zeroed MuPDF
 // options, so no box was drawn, and always removed overlapping images whole.
 // Out-of-range enum values return an error.
+//
+// Also changed: when some redaction on the page has quads (AddRedactionQuads)
+// and opts.Text is TextRemove, text is removed per glyph before MuPDF applies
+// the rest. A glyph goes when its shrunk quad overlaps a quad's shape (see
+// AddRedactionQuads), or when its shrunk axis-aligned box overlaps the rect of
+// a rect redaction, exactly as stock MuPDF tests rects. The removal reaches
+// what stock MuPDF's reaches: the page's content streams and the form
+// XObjects they draw, but not patterns, soft masks, Type3 glyph procedures or
+// annotation appearances. Removed glyphs leave a gap; the rest of the text
+// does not move. MuPDF then draws the boxes, handles images and line art,
+// removes overlapping links and FreeText annotations and deletes the
+// redaction annotations, without its own text removal. Pages whose
+// redactions are all rects, and TextNone, go through stock MuPDF unchanged.
+//
+// A glyph's extent is its font's own advance by the font's ascender and
+// descender, as in stock MuPDF, while RawDict quads follow the PDF's /Widths.
+// Where /Widths are under a tenth of the font's advance, a glyph's own
+// RawDict quad can miss it; stock MuPDF misses it too on horizontal text.
 func (p *Page) ApplyRedactions(opts ApplyOptions) (int, error) {
 	d := p.doc
 	d.mu.Lock()
