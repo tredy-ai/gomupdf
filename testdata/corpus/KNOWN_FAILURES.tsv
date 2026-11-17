@@ -75,7 +75,6 @@ testdata/corpus/misc/test_4699.pdf	render-changed	redaction changes rendering ou
 testdata/corpus/misc/tiling-pattern-tiny-steps-large.pdf	timeout	MuPDF does not finish (hang/DoS): after 10s in step "page 0 render"
 testdata/corpus/misc/tiling-pattern-tiny-steps.pdf	timeout	MuPDF does not finish (hang/DoS): after 10s in step "page 0 render"
 testdata/corpus/misc/xref-compressed-in-compressed.pdf	over-removal	redaction removes text outside every redaction area: quads page 4: 1 chars outside every redaction area are gone, e.g. '4'@(148.06,72.00) (words "Potato")
-testdata/corpus/misc/xref-compressed-in-compressed.pdf	control-hidden-error	HiddenContent of the unscrubbed save fails: gomupdf: hidden content: cycle in page tree
 testdata/corpus/scanned-ocr/issue9650.pdf	render-changed	redaction changes rendering outside the redaction areas: quads page 0: 675 of 124699 pixels outside the redaction areas changed, first near (543,25) (words "einem","Lilon-Akku","Außenstrahler"); unredacted save: 0 pixels change
 testdata/corpus/tagged/8.2.4-t03-fail-a.pdf	render-changed	redaction changes rendering outside the redaction areas: quads page 0: 705 of 121034 pixels outside the redaction areas changed, first near (189,261) (words "explicitly","mapped","other"); unredacted save: 0 pixels changed
 testdata/corpus/tagged/8.2.4-t03-fail-b.pdf	render-changed	redaction changes rendering outside the redaction areas: quads page 0: 635 of 121678 pixels outside the redaction areas changed, first near (531,257) (words "given","mapped","same"); unredacted save: 0 pixels changed

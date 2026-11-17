@@ -3743,6 +3743,99 @@ func TestScrubKeepAnnotationsMedia(t *testing.T) {
 	}
 }
 
+// A page tree in which MuPDF cannot look up some page does not make
+// HiddenContent or Scrub fail: the pages MuPDF serves are checked and
+// scrubbed, and a page dictionary it never serves is an orphan page. A null
+// /Kids entry (which MuPDF's page lookup reports as a cycle, although the
+// pages after it are served) hides nothing; a /Kids entry that is the tree's
+// own root (a real cycle) stops MuPDF serving the pages after it, which are
+// then reported and emptied. (Reduced from the Garbage 1 save of qpdf
+// xref-compressed-in-compressed.pdf, whose damaged /Kids entry the save
+// writes as null.)
+func TestScrubUnservedPageInTree(t *testing.T) {
+	const tok = "GomupdfServedPageTwo3f7a"
+	page := func(s string) string {
+		return `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> >> /Contents ` + s + ` >>`
+	}
+	for _, c := range []struct {
+		name, kids string
+		served     bool // page 2 is served
+	}{{"null kid", "[3 0 R null 6 0 R] /Count 3", true}, {"root as kid", "[3 0 R 2 0 R 6 0 R] /Count 3", false}} {
+		name, kids := c.name, c.kids
+		t.Run(name, func(t *testing.T) {
+			pdf := scrubBuildPDF([]string{
+				/* 1 */ `<< /Type /Catalog /Pages 2 0 R >>`,
+				/* 2 */ `<< /Type /Pages /Kids ` + kids + ` >>`,
+				/* 3 */ page("4 0 R"),
+				/* 4 */ "\nstream\nBT /F1 12 Tf 20 150 Td (" + scrubPageText + ") Tj ET",
+				/* 5 */ `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>`,
+				/* 6 */ page("7 0 R"),
+				/* 7 */ "\nstream\nBT /F1 12 Tf 20 150 Td (" + tok + ") Tj ET",
+			}, "/Info << /Title (x) >>")
+			d, err := OpenStream(pdf)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			want := HiddenContent{Info: true}
+			if !c.served {
+				want.OrphanPages = 1
+			}
+			if h, err := d.HiddenContent(); err != nil || h != want {
+				t.Errorf("before scrub: %+v, %v; want %+v", h, err, want)
+			}
+			re := scrubCheckKept(t, pdf, ScrubOptions{})
+			if h, err := re.HiddenContent(); err != nil || h != (HiddenContent{}) {
+				t.Errorf("after scrub: %+v, %v", h, err)
+			}
+			out, err := re.SaveBytesWithOptions(scrubSaveOpts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := bytes.Contains(out, []byte(tok)); got != c.served {
+				t.Errorf("page 2 text in save = %v, want %v", got, c.served)
+			}
+			if !c.served {
+				return
+			}
+			p, err := re.LoadPage(2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if s, err := p.GetText(); err != nil || !strings.Contains(s, tok) {
+				t.Errorf("page 2 after scrub: %q, %v", s, err)
+			}
+		})
+	}
+}
+
+// A page count larger than the file's number of objects is impossible, and
+// HiddenContent and Scrub refuse it at once rather than look up every
+// declared page. (Reduced from pdf.js poppler-67295-0.pdf, /Count
+// 1410065407.)
+func TestScrubImpossiblePageCount(t *testing.T) {
+	pdf := scrubBuildPDF([]string{
+		`<< /Type /Catalog /Pages 2 0 R >>`,
+		`<< /Type /Pages /Kids [3 0 R] /Count 1048576 >>`,
+		`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>`,
+	}, "")
+	d, err := OpenStream(pdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	start := time.Now()
+	if _, err := d.HiddenContent(); err == nil || !strings.Contains(err.Error(), "declares 1048576 pages") {
+		t.Errorf("HiddenContent: %v", err)
+	}
+	if err := d.Scrub(ScrubOptions{}); err == nil || !strings.Contains(err.Error(), "declares 1048576 pages") {
+		t.Errorf("Scrub: %v", err)
+	}
+	if el := time.Since(start); el > time.Second {
+		t.Errorf("took %v", el)
+	}
+}
+
 // A kept Link's /IRT does not keep the annotation it points at: the Square
 // the default options remove is destroyed and its /Contents leaves the file.
 func TestScrubKeptLinkIRT(t *testing.T) {

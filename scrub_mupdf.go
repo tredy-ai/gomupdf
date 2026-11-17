@@ -568,6 +568,37 @@ static void gomupdf_keep_walk(fz_context *ctx, gomupdf_marks *mk, int which) {
     }
 }
 
+// gomupdf_page_count returns the number of pages MuPDF reports (the root
+// /Count, read without walking the tree), and fails when it exceeds the
+// number of objects: a PDF cannot hold more pages than objects, and the page
+// loops, which go on past a page MuPDF cannot look up, would otherwise try
+// every declared page (pdf.js poppler-67295-0.pdf declares 1,410,065,407).
+static int gomupdf_page_count(fz_context *ctx, pdf_document *pdf) {
+    int n = pdf_count_pages(ctx, pdf), len = pdf_xref_len(ctx, pdf);
+    if (n > len)
+        fz_throw(ctx, FZ_ERROR_FORMAT, "page tree declares %d pages but the file has only %d objects", n, len);
+    return n;
+}
+
+// gomupdf_page_obj returns page p as MuPDF serves it (pdf_lookup_page_obj),
+// or NULL when MuPDF cannot look it up. Its page-tree walk fails on some
+// damaged trees, a real cycle, or a null /Kids entry that it reports as one
+// (the Garbage 1 save of qpdf xref-compressed-in-compressed.pdf), and
+// loading that page fails the same way, so the page is not one MuPDF serves:
+// the pages that are served are checked and scrubbed, and a page dictionary
+// never served is an orphan page, instead of the whole call failing.
+static pdf_obj *gomupdf_page_obj(fz_context *ctx, pdf_document *pdf, int p) {
+    pdf_obj *page = NULL;
+    fz_var(page);
+    fz_try(ctx) page = pdf_lookup_page_obj(ctx, pdf, p);
+    fz_catch(ctx) {
+        fz_rethrow_if(ctx, FZ_ERROR_SYSTEM);
+        fz_ignore_error(ctx);
+        page = NULL;
+    }
+    return page;
+}
+
 // gomupdf_push_node marks node as a kept page-tree node and queues it on the
 // DOWN or UP stack, once. A page dictionary that is not one of the pages
 // MuPDF serves (GM_PAGE, set first: a page past a /Count that is too small,
@@ -713,15 +744,15 @@ static void gomupdf_mark_tree(fz_context *ctx, pdf_document *pdf, gomupdf_marks 
     mk->root = m ? pdf_to_num(ctx, root) : 0;
     // The served pages first: gomupdf_push_node tells the other page
     // dictionaries (orphan pages) by them.
-    int npages = pdf_count_pages(ctx, pdf);
+    int npages = gomupdf_page_count(ctx, pdf);
     for (int p = 0; p < npages; p++)
-        if ((m = gomupdf_mark(ctx, mk, pdf_lookup_page_obj(ctx, pdf, p)))) *m |= GM_PAGE;
+        if ((m = gomupdf_mark(ctx, mk, gomupdf_page_obj(ctx, pdf, p)))) *m |= GM_PAGE;
     gomupdf_push_node(ctx, mk, GS_DOWN, pdf_dict_get(ctx, root, PDF_NAME(Pages)));
     gomupdf_keep_nodes(ctx, mk, GS_DOWN);
-    for (int p = 0; p < npages; p++) gomupdf_push_node(ctx, mk, GS_UP, pdf_lookup_page_obj(ctx, pdf, p));
+    for (int p = 0; p < npages; p++) gomupdf_push_node(ctx, mk, GS_UP, gomupdf_page_obj(ctx, pdf, p));
     // Every page is GM_PAGE before the nodes above them are marked.
     for (int p = 0; p < npages; p++)
-        gomupdf_page_nodes(ctx, mk, pdf_lookup_page_obj(ctx, pdf, p), GM_INODE, NULL, NULL);
+        gomupdf_page_nodes(ctx, mk, gomupdf_page_obj(ctx, pdf, p), GM_INODE, NULL, NULL);
     gomupdf_keep_nodes(ctx, mk, GS_UP);
     gomupdf_mark_form(ctx, pdf, mk);
 }
@@ -1328,9 +1359,10 @@ static int gomupdf_hidden_content(fz_context *ctx, fz_document *doc, int *out,
             out[HC_JS] = gomupdf_outline(ctx, NULL, outlines, 0, 0, NULL, &budget, &mk);
         }
 
-        int npages = pdf_count_pages(ctx, pdf);
+        int npages = gomupdf_page_count(ctx, pdf);
         for (int p = 0; p < npages; p++) {
-            pdf_obj *page = pdf_lookup_page_obj(ctx, pdf, p);
+            pdf_obj *page = gomupdf_page_obj(ctx, pdf, p);
+            if (!page) continue; // not a page MuPDF serves
             gomupdf_page_keys(ctx, NULL, page, out, &mk);
             gomupdf_page_nodes(ctx, &mk, page, GM_DONE, out, &mk);
 
@@ -1884,10 +1916,12 @@ static int gomupdf_scrub(fz_context *ctx, fz_document *doc, int keep_annots, int
                 pdf_dict_put_name(ctx, root, PDF_NAME(PageMode), "UseNone");
         }
 
-        int npages = pdf_count_pages(ctx, pdf);
+        int npages = gomupdf_page_count(ctx, pdf);
         for (int p = 0; p < npages; p++) {
+            pdf_obj *page = gomupdf_page_obj(ctx, pdf, p);
+            if (!page) continue; // not a page MuPDF serves
             if (!keep_annots) gomupdf_scrub_annots(ctx, pdf, p, &mk, keep_fields);
-            pdf_obj *page = pdf_lookup_page_obj(ctx, pdf, p);
+            page = pdf_lookup_page_obj(ctx, pdf, p);
             gomupdf_page_keys(ctx, &mk, page, NULL, &mk);
             gomupdf_page_nodes(ctx, &mk, page, GM_DONE, NULL, &mk);
             // Annotations that stay (see gomupdf_annot_kept) lose their /AA

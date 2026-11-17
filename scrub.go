@@ -478,6 +478,11 @@ func (d *Document) Scrub(opts ScrubOptions) error {
 // not delete, as an annotation on no page (NonLinkAnnotations). When the
 // name-tree or action walk hits a limit, the field it feeds fails closed
 // (EmbeddedFiles at least 1, JavaScript true); see the fields for the limits.
+// The pages it checks are those MuPDF serves: a page MuPDF cannot look up in a
+// damaged or cyclic page tree (and cannot load either) is skipped, not an
+// error, and a page dictionary it never serves counts as an orphan page. A
+// page count larger than the file's number of objects is impossible, and
+// HiddenContent and Scrub return an error for it.
 //
 // HiddenContent is new in this fork. It returns an error for non-PDF
 // documents.
