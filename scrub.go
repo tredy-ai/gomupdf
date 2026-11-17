@@ -32,7 +32,11 @@ type ScrubOptions struct {
 	// says. Form field values are not reliably part of page text extraction
 	// (only an appearance stream that shows a value is), so a caller that
 	// keeps form fields must inspect the values itself (Page.Widgets) to
-	// detect or clear sensitive ones. The form keeps its signatures too:
+	// detect or clear sensitive ones. Hidden template pages (/Type /Template,
+	// listed in /Names/Templates) are emptied like any page MuPDF does not
+	// serve, whatever the options, so a form that spawns pages from
+	// templates spawns blank ones; the scripts that would spawn them are
+	// removed anyway. The form keeps its signatures too:
 	// with KeepFormFields or KeepAnnotations the catalog /Perms and /DSS
 	// stay, and so does every signature field's /V signature dictionary,
 	// whose /Contents holds the signer's certificates (a name and often an
@@ -119,7 +123,9 @@ type HiddenContent struct {
 	// field is one with no /Type other than /Annot and an /FT name, or a /T
 	// string and a /Kids array. One that is also page content (a resource
 	// dictionary shaped like an annotation) is not counted: Scrub leaves it
-	// as it is.
+	// as it is. One that a kept annotation's appearance uses (a graphics
+	// state shaped like an annotation) is counted, and stays after a Scrub
+	// that keeps that annotation.
 	NonLinkAnnotations, Widgets int
 
 	// Thumbnails and PageMetadata count pages and intermediate page-tree
@@ -357,7 +363,8 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // /Kids and /CO), and with
 // opts.KeepOutlines the outline items, with everything they reference other
 // than through their own /Parent, /P, /Popup, /AA, /SE and /XFA and an /A or
-// /PA that Scrub removes. An object reached as kept content is walked through
+// /PA that Scrub removes; what a kept annotation's /AP reaches is kept
+// whatever it is. An object reached as kept content is walked through
 // every key, whatever other role it has (page-tree node, kept annotation,
 // field, outline item), except on a page or an intermediate page-tree node
 // that Scrub edits, where the walk skips the keys Scrub removes there and
@@ -370,11 +377,12 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // kept form keeps /Perms and /DSS with all they reference. A page dictionary
 // that is not a page MuPDF serves and is reached other than as page content (a
 // kept Link's or outline item's destination) is kept but not walked, so what
-// it holds is still destroyed. Outside page content, an annotation or form
-// field is kept only in its own right (a kept annotation, a node of a kept
-// form), not because something kept points at it: a kept Link's or
-// /OpenAction's Hide action whose /T names an annotation Scrub removes keeps
-// the action, and the annotation is destroyed. A removed entry that points at kept
+// it holds is still destroyed. Outside page content and kept appearances, an
+// annotation or form field is kept only in its own right (a kept annotation,
+// a node of a kept form), not because something kept points at it: a kept
+// Link's or /OpenAction's Hide action whose /T names an annotation Scrub
+// removes keeps the action, and the annotation is destroyed, as is one a
+// kept annotation's /IRT, /Dest or other key names. A removed entry that points at kept
 // content (a /Thumb that the page also draws, an /Info that is the page's
 // /Resources, a JavaScript action that is also a graphics state, an action
 // that a kept /A or a kept /OpenAction also uses) is only unlinked. A
@@ -453,7 +461,10 @@ func (d *Document) Scrub(opts ScrubOptions) error {
 // read as 0 pages can have 1 afterwards), and the counts describe the
 // repaired document. See HiddenContent's fields for exactly which locations are read;
 // it does not search other references (a structure tree, say) for removed
-// content, so a zero result relies on Scrub having destroyed it. When the
+// content, so a zero result relies on Scrub having destroyed it. Between
+// Page.ApplyRedactions and Scrub (or a save and reopen) it counts each
+// applied redaction annotation, which MuPDF unlinks from the page but does
+// not delete, as an annotation on no page (NonLinkAnnotations). When the
 // name-tree or action walk hits a limit, the field it feeds fails closed
 // (EmbeddedFiles at least 1, JavaScript true); see the fields for the limits.
 //

@@ -3614,3 +3614,67 @@ func TestScrubUnloadableEntriesCost(t *testing.T) {
 		})
 	}
 }
+
+// A non-standard trailer key whose value is null (qpdf bad14.pdf's
+// /Something null) is removed like any other, instead of failing Scrub.
+func TestScrubTrailerNullKey(t *testing.T) {
+	pdf := scrubMiniPDF("", "", "")
+	pdf = bytes.Replace(pdf, []byte("/Root 1 0 R"), []byte("/Root 1 0 R /Something null"), 1)
+	d, err := OpenStream(pdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if h := scrubHidden(t, d); h != (HiddenContent{TrailerKeys: 1}) {
+		t.Errorf("before scrub: %+v, want TrailerKeys 1", h)
+	}
+	if err := d.Scrub(ScrubOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if h := scrubHidden(t, d); h != (HiddenContent{}) {
+		t.Errorf("after scrub: %+v", h)
+	}
+}
+
+// Under KeepFormFields a kept widget's appearance keeps everything it uses,
+// even a graphics state shaped like an annotation: the widget renders as
+// before. HiddenContent still counts that object as an annotation on no page.
+func TestScrubKeptAppearanceResource(t *testing.T) {
+	pdf := scrubBuildPDF([]string{
+		/* 1 */ `<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R] >> >>`,
+		/* 2 */ `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+		/* 3 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << /Font << /F1 8 0 R >> >> /Contents 4 0 R /Annots [5 0 R] >>`,
+		/* 4 */ "\nstream\nBT /F1 12 Tf 20 150 Td (" + scrubPageText + ") Tj ET",
+		/* 5 */ `<< /Type /Annot /Subtype /Widget /FT /Btn /Ff 65536 /T (b) /Rect [20 20 120 80] /P 3 0 R /AP << /N 6 0 R >> >>`,
+		/* 6 */ "/Type /XObject /Subtype /Form /BBox [0 0 100 60] /Resources << /ExtGState << /G 7 0 R >> >>\nstream\n/G gs 1 0 0 rg 0 0 100 60 re f",
+		/* 7 */ `<< /Subtype /Square /Rect [0 0 1 1] /ca 0.3 >>`,
+		/* 8 */ `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>`,
+	}, "")
+	re := scrubCheckKept(t, pdf, ScrubOptions{KeepFormFields: true})
+	if h := scrubHidden(t, re); h != (HiddenContent{AcroForm: true, Widgets: 1, NonLinkAnnotations: 1}) {
+		t.Errorf("after scrub: %+v", h)
+	}
+}
+
+// A kept Link's /IRT does not keep the annotation it points at: the Square
+// the default options remove is destroyed and its /Contents leaves the file.
+func TestScrubKeptLinkIRT(t *testing.T) {
+	const tok = "GomupdfIRTSquare6c1e"
+	pdf := scrubBuildPDF([]string{
+		/* 1 */ `<< /Type /Catalog /Pages 2 0 R >>`,
+		/* 2 */ `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+		/* 3 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots [4 0 R 5 0 R] >>`,
+		/* 4 */ `<< /Type /Annot /Subtype /Link /Rect [0 0 50 50] /IRT 5 0 R /A << /S /URI /URI (https://example.com/) >> >>`,
+		/* 5 */ `<< /Type /Annot /Subtype /Square /Rect [60 60 120 120] /Contents (` + tok + `) >>`,
+	}, "")
+	scrubControl(t, pdf, tok)
+	out, re := scrubRoundTrip(t, pdf, ScrubOptions{})
+	scrubNoTokens(t, "default", out, tok)
+	if h := scrubHidden(t, re); h != (HiddenContent{}) {
+		t.Errorf("after scrub: %+v", h)
+	}
+	p, _ := re.LoadPage(0)
+	if l, err := p.Links(); err != nil || len(l) != 1 {
+		t.Errorf("links after scrub = %+v, %v; want the URI link", l, err)
+	}
+}

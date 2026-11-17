@@ -124,8 +124,9 @@ static int gomupdf_name_in(const char *name, const char **list) {
 #define GM_FORM 0x100000  // a node of the form (gomupdf_mark_form)
 #define GM_FKIDS 0x200000 // an indirect array gomupdf_mark_form has expanded as /Kids
 #define GM_OWALK 0x400000 // walked by gomupdf_orphan_page (gomupdf_orphan_closure)
+#define GM_APWALK 0x800000 // queued for the walk of a kept annotation's appearance (GS_AP)
 
-enum { GS_WALK, GS_TOP, GS_DOWN, GS_UP, GS_LINK, GS_FORM, GS_ORPHAN, GS_COUNT };
+enum { GS_WALK, GS_TOP, GS_DOWN, GS_UP, GS_LINK, GS_FORM, GS_ORPHAN, GS_AP, GS_COUNT };
 
 // Pending objects of the marking walk; every entry holds a reference.
 typedef struct { pdf_obj **v; size_t n, cap; } gomupdf_stack;
@@ -358,17 +359,20 @@ static int gomupdf_in_content(fz_context *ctx, gomupdf_marks *mk, pdf_obj *obj, 
 }
 
 // gomupdf_keep_on marks obj kept and queues it on the WALK stack (keep all it
-// references) or the TOP stack (a kept annotation or outline item). Each
+// references), the AP stack (the same, for what a kept annotation's /AP
+// reaches) or the TOP stack (a kept annotation or outline item). Each
 // indirect object is queued once per stack; an object number outside the xref
-// resolves to null and holds nothing. Outside the page-content walk, an
-// annotation or field (gomupdf_annot_shaped) is kept only in its own right,
-// as a kept annotation or form node (TOP), never because something kept
-// refers to it (a Hide action's /T, say), so one the options remove is still
-// destroyed and the reference resolves to null.
+// resolves to null and holds nothing. Outside the page-content walk and the
+// appearance walk, an annotation or field (gomupdf_annot_shaped) is kept only
+// in its own right, as a kept annotation or form node (TOP), never because
+// something kept refers to it (a Hide action's /T, say), so one the options
+// remove is still destroyed and the reference resolves to null. What a kept
+// appearance draws is kept whatever its shape (a graphics state can look like
+// an annotation).
 static void gomupdf_keep_on(fz_context *ctx, gomupdf_marks *mk, int which, pdf_obj *obj) {
     if (pdf_is_indirect(ctx, obj)) {
         unsigned int *m = gomupdf_mark(ctx, mk, obj);
-        unsigned int queued = which == GS_TOP ? GM_TOP : GM_WALK;
+        unsigned int queued = which == GS_TOP ? GM_TOP : which == GS_AP ? GM_APWALK : GM_WALK;
         if (!m || (*m & queued)) return;
         if (which == GS_WALK && !mk->content && !(*m & GM_TOP) && gomupdf_annot_shaped(ctx, obj)) return;
         *m |= GM_KEEP | queued | (which == GS_WALK && mk->content ? GM_CONTENT : 0);
@@ -402,15 +406,21 @@ static void gomupdf_keep_value(fz_context *ctx, gomupdf_marks *mk, int which, pd
 // removes or into the structure tree, and except an /A or /PA that is or
 // chains to a JavaScript or Launch action, which Scrub removes (one that is
 // also reached as content is walked in full as well). Outline siblings and
-// children, /Fields, /Kids and /CO entries and an /IRT annotation are
-// expanded the same way; an array among them has each entry expanded.
-// The object is held while expanding it, as the action check resolves others.
+// children and /Fields, /Kids and /CO entries are expanded the same way (an
+// array among them has each entry expanded), except from an annotation that
+// is not a node of the form: an annotation keeps no other annotation, so its
+// /IRT, its /Dest and any such key on it lead to one only if that one is kept
+// in its own right. What /AP reaches is walked on the AP stack, which keeps
+// everything (gomupdf_keep_on). The object is held while expanding it, as the
+// action check resolves others.
 static void gomupdf_keep_tops(fz_context *ctx, gomupdf_marks *mk) {
     static const char *skip[] = {"Parent", "P", "Popup", "AA", "SE", "XFA", NULL};
-    static const char *items[] = {"First", "Last", "Next", "Prev", "Kids", "Fields", "CO", "IRT", NULL};
+    static const char *items[] = {"First", "Last", "Next", "Prev", "Kids", "Fields", "CO", NULL};
     gomupdf_stack *s = &mk->s[GS_TOP];
     while (s->n) {
         mk->cur = s->v[--s->n];
+        unsigned int *cm = gomupdf_mark(ctx, mk, mk->cur);
+        int annot = !(cm && (*cm & GM_FORM)) && gomupdf_annot_shaped(ctx, mk->cur) == 1;
         pdf_obj *o = pdf_keep_obj(ctx, pdf_resolve_indirect(ctx, mk->cur));
         pdf_drop_obj(ctx, mk->cur);
         mk->cur = o;
@@ -423,7 +433,8 @@ static void gomupdf_keep_tops(fz_context *ctx, gomupdf_marks *mk) {
             if (gomupdf_name_in(k, skip)) continue;
             if ((!strcmp(k, "A") || !strcmp(k, "PA")) && gomupdf_action_unsafe(ctx, v, mk, NULL))
                 continue;
-            gomupdf_keep_value(ctx, mk, gomupdf_name_in(k, items) ? GS_TOP : GS_WALK, key, v);
+            int which = !strcmp(k, "AP") ? GS_AP : gomupdf_name_in(k, items) && !annot ? GS_TOP : GS_WALK;
+            gomupdf_keep_value(ctx, mk, which, key, v);
         }
         pdf_drop_obj(ctx, mk->cur);
         mk->cur = NULL;
@@ -511,8 +522,10 @@ static int gomupdf_private_key(fz_context *ctx, gomupdf_marks *mk, const char *n
     return !strcmp(name, "PieceInfo") && gomupdf_pieceinfo(ctx, mk, v);
 }
 
-// gomupdf_keep_walk keeps the transitive closure of the queued objects,
-// iteratively: the visited marks bound the work by the size of the file. It
+// gomupdf_keep_walk keeps the transitive closure of the objects queued on the
+// stack which (WALK, or AP for kept appearances, whose closure keeps
+// annotation-shaped objects too), iteratively: the visited marks bound the
+// work by the size of the file. It
 // follows every key, except those gomupdf_walk_skips names on pages, on
 // intermediate page-tree nodes not reached as page content (which Scrub
 // edits; one reached as content was queued with GM_CONTENT, before any other
@@ -525,8 +538,8 @@ static int gomupdf_private_key(fz_context *ctx, gomupdf_marks *mk, const char *n
 // private-data holder (gomupdf_private_holder) it skips the keys Scrub
 // removes there (gomupdf_private_key), which play no part in drawing. The
 // object is held while expanding it, as those checks resolve others.
-static void gomupdf_keep_walk(fz_context *ctx, gomupdf_marks *mk) {
-    gomupdf_stack *s = &mk->s[GS_WALK];
+static void gomupdf_keep_walk(fz_context *ctx, gomupdf_marks *mk, int which) {
+    gomupdf_stack *s = &mk->s[which];
     while (s->n) {
         mk->cur = s->v[--s->n];
         unsigned int *m = gomupdf_mark(ctx, mk, mk->cur);
@@ -539,7 +552,7 @@ static void gomupdf_keep_walk(fz_context *ctx, gomupdf_marks *mk) {
         mk->cur = o;
         if (!orphan && pdf_is_array(ctx, o)) {
             int n = pdf_array_len(ctx, o);
-            for (int i = 0; i < n; i++) gomupdf_keep(ctx, mk, pdf_array_get(ctx, o, i));
+            for (int i = 0; i < n; i++) gomupdf_keep_on(ctx, mk, which, pdf_array_get(ctx, o, i));
         } else if (!orphan && pdf_is_dict(ctx, o)) {
             int n = pdf_dict_len(ctx, o);
             for (int i = 0; i < n; i++) {
@@ -547,7 +560,7 @@ static void gomupdf_keep_walk(fz_context *ctx, gomupdf_marks *mk) {
                 if (gomupdf_walk_skips(ctx, is_page, is_root, k)
                     || (holder && gomupdf_private_key(ctx, mk, pdf_to_name(ctx, k), v)))
                     continue;
-                gomupdf_keep_value(ctx, mk, GS_WALK, k, v);
+                gomupdf_keep_value(ctx, mk, which, k, v);
             }
         }
         pdf_drop_obj(ctx, mk->cur);
@@ -724,7 +737,7 @@ static void gomupdf_mark_content(fz_context *ctx, pdf_document *pdf, gomupdf_mar
     gomupdf_mark_tree(ctx, pdf, mk);
     gomupdf_keep(ctx, mk, pdf_dict_get(ctx, trailer, PDF_NAME(Encrypt)));
     gomupdf_keep(ctx, mk, pdf_dict_getp(ctx, trailer, "Root/OCProperties"));
-    gomupdf_keep_walk(ctx, mk);
+    gomupdf_keep_walk(ctx, mk, GS_WALK);
     mk->content = 0;
 }
 
@@ -760,7 +773,8 @@ static void gomupdf_keep_pass(fz_context *ctx, pdf_document *pdf, gomupdf_marks 
     if (keep_outlines) gomupdf_keep_on(ctx, mk, GS_TOP, pdf_dict_get(ctx, root, PDF_NAME(Outlines)));
     if (keep_fields) gomupdf_keep_on(ctx, mk, GS_TOP, pdf_dict_get(ctx, root, PDF_NAME(AcroForm)));
     gomupdf_keep_tops(ctx, mk);
-    gomupdf_keep_walk(ctx, mk);
+    gomupdf_keep_walk(ctx, mk, GS_WALK);
+    gomupdf_keep_walk(ctx, mk, GS_AP);
 }
 
 // gomupdf_load_all loads every object in the xref. MuPDF repairs (rebuilds)
@@ -1613,16 +1627,25 @@ static void gomupdf_sweep(fz_context *ctx, pdf_document *pdf, gomupdf_marks *mk,
     if (floor && !out[HC_HIDDENLAYERS]) out[HC_HIDDENLAYERS] = 1;
 }
 
-// gomupdf_trailer_del deletes key from the trailer. The first edit to an
-// object makes MuPDF start an incremental xref section with a copy of the
-// trailer, and when the trailer is a cross-reference stream's dictionary,
-// editing the trailer is that first edit: the copy keeps the key, and a
-// trailer fetched before it is stale. So it deletes from the current trailer
-// until that holds no key, and fails if it cannot.
+// gomupdf_has_key reports whether the dictionary d has key, whatever its
+// value: pdf_dict_get returns NULL for a key whose value is null.
+static int gomupdf_has_key(fz_context *ctx, pdf_obj *d, pdf_obj *key) {
+    int n = pdf_dict_len(ctx, d);
+    for (int i = 0; i < n; i++)
+        if (pdf_name_eq(ctx, pdf_dict_get_key(ctx, d, i), key)) return 1;
+    return 0;
+}
+
+// gomupdf_trailer_del deletes key from the trailer, whatever its value. The
+// first edit to an object makes MuPDF start an incremental xref section with
+// a copy of the trailer, and when the trailer is a cross-reference stream's
+// dictionary, editing the trailer is that first edit: the copy keeps the key,
+// and a trailer fetched before it is stale. So it deletes from the current
+// trailer until that holds no key, and fails if it cannot.
 static void gomupdf_trailer_del(fz_context *ctx, pdf_document *pdf, pdf_obj *key) {
-    for (int i = 0; i < 3 && pdf_dict_get(ctx, pdf_trailer(ctx, pdf), key); i++)
+    for (int i = 0; i < 3 && gomupdf_has_key(ctx, pdf_trailer(ctx, pdf), key); i++)
         pdf_dict_del(ctx, pdf_trailer(ctx, pdf), key);
-    if (pdf_dict_get(ctx, pdf_trailer(ctx, pdf), key))
+    if (gomupdf_has_key(ctx, pdf_trailer(ctx, pdf), key))
         fz_throw(ctx, FZ_ERROR_FORMAT, "cannot remove /%s from the trailer", pdf_to_name(ctx, key));
 }
 
