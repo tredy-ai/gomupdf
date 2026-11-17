@@ -1624,3 +1624,398 @@ func TestScrubRemovesForm(t *testing.T) {
 		t.Errorf("widgets %+v, %v; want none", w, err)
 	}
 }
+
+// scrubControl saves pdf with scrubSaveOpts without scrubbing it and checks
+// that each token is in that save, so a token's absence from a scrubbed save
+// is due to Scrub.
+func scrubControl(t *testing.T, pdf []byte, tokens ...string) {
+	t.Helper()
+	d, err := OpenStream(pdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	out, err := d.SaveBytesWithOptions(scrubSaveOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tok := range tokens {
+		if !bytes.Contains(out, []byte(tok)) {
+			t.Fatalf("token %q missing from the unscrubbed save", tok)
+		}
+	}
+}
+
+// scrubNoTokens fails for every token found in out.
+func scrubNoTokens(t *testing.T, where string, out []byte, tokens ...string) {
+	t.Helper()
+	for _, tok := range tokens {
+		if bytes.Contains(out, []byte(tok)) {
+			t.Errorf("%s: scrubbed save still contains %q", where, tok)
+		}
+	}
+}
+
+var scrubLinkRe = regexp.MustCompile(`/Subtype\s*/Link\b`)
+
+// A Link whose /A is a JavaScript action, or chains through /Next to a
+// Launch action, stays after Scrub but loses that /A and becomes inert (MuPDF
+// lists only Links with a target); a plain URI Link is untouched.
+func TestScrubLinkActions(t *testing.T) {
+	const jsTok, launchTok = "GomupdfLinkJS5c9e", "GomupdfLinkLaunch2a7f.exe"
+	pdf := scrubBuildPDF([]string{
+		/* 1 */ `<< /Type /Catalog /Pages 2 0 R >>`,
+		/* 2 */ `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+		/* 3 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Annots [4 0 R 5 0 R 6 0 R] >>`,
+		/* 4 */ `<< /Type /Annot /Subtype /Link /Rect [0 0 50 50] /A << /S /JavaScript /JS (var ` + jsTok + ` = 1;) >> >>`,
+		/* 5 */ `<< /Type /Annot /Subtype /Link /Rect [60 0 110 50]
+   /A << /S /URI /URI (https://example.org/next) /Next << /S /Launch /F (` + launchTok + `) >> >> >>`,
+		/* 6 */ `<< /Type /Annot /Subtype /Link /Rect [120 0 170 50] /A << /S /URI /URI (https://example.com/) >> >>`,
+	}, "")
+	scrubControl(t, pdf, jsTok, launchTok)
+	d, err := OpenStream(pdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if !scrubHidden(t, d).JavaScript {
+		t.Error("Link JavaScript and Launch actions not reported before scrub")
+	}
+	out, re := scrubRoundTrip(t, pdf, ScrubOptions{})
+	scrubNoTokens(t, "default", out, jsTok, launchTok)
+	if h := scrubHidden(t, re); h != (HiddenContent{}) {
+		t.Errorf("after scrub: %+v", h)
+	}
+	if n := len(scrubLinkRe.FindAll(out, -1)); n != 3 {
+		t.Errorf("%d Link annotations after scrub, want 3", n)
+	}
+	scrubCheckAnnotsIndirect(t, "scrubbed", out)
+	p, _ := re.LoadPage(0)
+	if l, err := p.Links(); err != nil || len(l) != 1 || l[0].URI != "https://example.com/" {
+		t.Errorf("links after scrub = %+v, %v; want only the plain URI link", l, err)
+	}
+}
+
+// With KeepOutlines, an outline item's JavaScript or Launch /A goes; the
+// items, their titles and a /Dest stay.
+func TestScrubKeepOutlinesActions(t *testing.T) {
+	const jsTok, launchTok = "GomupdfOutlineJS7d3b", "GomupdfOutlineLaunch4e1c.exe"
+	pdf := scrubBuildPDF([]string{
+		/* 1 */ `<< /Type /Catalog /Pages 2 0 R /Outlines 4 0 R >>`,
+		/* 2 */ `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+		/* 3 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>`,
+		/* 4 */ `<< /Type /Outlines /First 5 0 R /Last 6 0 R /Count 3 >>`,
+		/* 5 */ `<< /Title (Script item) /Parent 4 0 R /Next 6 0 R /First 7 0 R /Last 7 0 R /Count 1
+   /A << /S /JavaScript /JS (var ` + jsTok + ` = 1;) >> >>`,
+		/* 6 */ `<< /Title (Dest item) /Parent 4 0 R /Prev 5 0 R /Dest [3 0 R /Fit] >>`,
+		/* 7 */ `<< /Title (Launch child) /Parent 5 0 R /A << /S /GoTo /D [3 0 R /Fit] /Next << /S /Launch /F (` + launchTok + `) >> >> >>`,
+	}, "")
+	scrubControl(t, pdf, jsTok, launchTok)
+	d, err := OpenStream(pdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if !scrubHidden(t, d).JavaScript {
+		t.Error("outline JavaScript not reported before scrub")
+	}
+	toc, err := d.TOC()
+	if err != nil || len(toc) != 3 {
+		t.Fatalf("control TOC = %+v, %v", toc, err)
+	}
+	out, re := scrubRoundTrip(t, pdf, ScrubOptions{KeepOutlines: true})
+	scrubNoTokens(t, "KeepOutlines", out, jsTok, launchTok)
+	if h := scrubHidden(t, re); h != (HiddenContent{Outlines: true}) {
+		t.Errorf("after scrub: %+v, want only Outlines", h)
+	}
+	got, err := re.TOC()
+	if err != nil || len(got) != len(toc) {
+		t.Fatalf("TOC after scrub = %+v, %v; control %+v", got, err, toc)
+	}
+	for i := range got {
+		if got[i].Level != toc[i].Level || got[i].Title != toc[i].Title {
+			t.Errorf("TOC[%d] = %+v, want %+v", i, got[i], toc[i])
+		}
+	}
+	if got[2].Page != 0 || toc[2].Page != 0 {
+		t.Errorf("the /Dest item's page: control %d, scrubbed %d; want 0", toc[2].Page, got[2].Page)
+	}
+}
+
+// scrubFieldActionsPDF is a form whose non-widget parent field 5 (in /Fields
+// and /CO, the array fields) has a calculate JavaScript /AA and whose kid
+// widget 6 has a JavaScript /A, both actions indirect and also referenced
+// from the structure tree; the page also has a Text annotation.
+func scrubFieldActionsPDF(calcTok, actTok, fields string) []byte {
+	return scrubBuildPDF([]string{
+		/* 1 */ `<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields ` + fields + ` /CO ` + fields + ` /DA (/Helv 0 Tf 0 g) >>
+   /MarkInfo << /Marked true >> /StructTreeRoot 10 0 R >>`,
+		/* 2 */ `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+		/* 3 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Annots [6 0 R 7 0 R] >>`,
+		/* 4 */ `<< /S /JavaScript /JS (var ` + actTok + ` = 1;) >>`,
+		/* 5 */ `<< /FT /Tx /T (parent) /V (` + formValue + `) /Kids [6 0 R] /AA << /C 8 0 R >> >>`,
+		/* 6 */ `<< /Type /Annot /Subtype /Widget /Parent 5 0 R /Rect [20 150 200 170] /P 3 0 R /A 4 0 R >>`,
+		/* 7 */ `<< /Type /Annot /Subtype /Text /Rect [20 20 40 40] /Contents (` + formParent + `) /P 3 0 R >>`,
+		/* 8 */ `<< /S /JavaScript /JS 9 0 R >>`,
+		/* 9 */ "\nstream\nvar " + calcTok + " = 1;",
+		/* 10 */ `<< /Type /StructTreeRoot /K [11 0 R] >>`,
+		/* 11 */ `<< /Type /StructElem /S /Form /P 10 0 R /Pg 3 0 R /K << /Type /OBJR /Obj 6 0 R >> /GomupdfRefs [4 0 R 8 0 R 9 0 R] >>`,
+	}, "")
+}
+
+// Under KeepAnnotations every field-tree node loses /AA and its JavaScript /A,
+// and those actions are destroyed although the structure tree references
+// them; the field, its widget and the annotation counts stay as they were.
+// A field left out of /AcroForm /Fields is reached up its widget's /Parent.
+func TestScrubKeepAnnotationsFieldActions(t *testing.T) {
+	for _, fields := range []string{"[5 0 R]", "[]"} {
+		t.Run("Fields "+fields, func(t *testing.T) { scrubFieldActionsCase(t, fields) })
+	}
+}
+
+func scrubFieldActionsCase(t *testing.T, fields string) {
+	const calcTok, actTok = "GomupdfFieldCalcJS6f2a", "GomupdfWidgetActJS3b8d"
+	pdf := scrubFieldActionsPDF(calcTok, actTok, fields)
+	scrubControl(t, pdf, calcTok, actTok)
+	// The calculate script alone, on a field only the widget's /Parent reaches,
+	// is reported too.
+	only := scrubFieldActionsPDF(calcTok, actTok, fields)
+	only = bytes.Replace(only, []byte("/A 4 0 R"), []byte("        "), 1)
+	if h, err := func() (HiddenContent, error) {
+		d, err := OpenStream(only)
+		if err != nil {
+			return HiddenContent{}, err
+		}
+		defer d.Close()
+		return d.HiddenContent()
+	}(); err != nil || !h.JavaScript {
+		t.Errorf("field /AA alone: %+v, %v; want JavaScript", h, err)
+	}
+	d, err := OpenStream(pdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	before := scrubHidden(t, d)
+	if !before.JavaScript || before.Widgets != 1 || before.NonLinkAnnotations != 1 {
+		t.Fatalf("before scrub: %+v", before)
+	}
+	out, re := scrubRoundTrip(t, pdf, ScrubOptions{KeepAnnotations: true})
+	scrubNoTokens(t, "KeepAnnotations", out, calcTok, actTok)
+	scrubCheckAnnotsIndirect(t, "KeepAnnotations", out)
+	if h, want := scrubHidden(t, re), (HiddenContent{AcroForm: true, NonLinkAnnotations: 1, Widgets: 1}); h != want {
+		t.Errorf("after scrub: %+v, want %+v", h, want)
+	}
+	p, err := re.LoadPage(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, err := p.Annotations(); err != nil || len(a) != 1 {
+		t.Errorf("annotations %+v, %v; want 1", a, err)
+	}
+	w, err := p.Widgets()
+	if err != nil || len(w) != 1 || w[0].Value != formValue {
+		t.Fatalf("widgets %+v, %v; want the one field", w, err)
+	}
+	const newValue = "GomupdfFieldNewValue8e5a"
+	if err := p.SetTextField(0, newValue); err != nil {
+		t.Fatal(err)
+	}
+	set, err := re.SaveBytesWithOptions(scrubSaveOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(set, []byte(formValue)) {
+		t.Error("old field value survives SetTextField")
+	}
+	if n := len(regexp.MustCompile(`/V\s*\(`+newValue+`\)`).FindAll(set, -1)); n != 1 {
+		t.Errorf("new field value set %d times, want 1", n)
+	}
+}
+
+// A Link /A or /PA JavaScript or Launch action that the structure tree also
+// references is destroyed, with its script stream and Launch filespec; the
+// Link's URI /A stays.
+func TestScrubLinkActionInStructTree(t *testing.T) {
+	const jsTok, launchTok = "GomupdfStructLinkJS1e4b", "GomupdfStructLaunch9c2d.exe"
+	pdf := scrubBuildPDF([]string{
+		/* 1 */ `<< /Type /Catalog /Pages 2 0 R /MarkInfo << /Marked true >> /StructTreeRoot 9 0 R >>`,
+		/* 2 */ `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+		/* 3 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots [4 0 R 5 0 R] >>`,
+		/* 4 */ `<< /Type /Annot /Subtype /Link /Rect [0 0 50 50] /A 6 0 R /StructParent 0 >>`,
+		/* 5 */ `<< /Type /Annot /Subtype /Link /Rect [60 0 110 50] /A << /S /URI /URI (https://example.com/) >> /PA 8 0 R >>`,
+		/* 6 */ `<< /Type /Action /S /JavaScript /JS 7 0 R >>`,
+		/* 7 */ "\nstream\nvar " + jsTok + " = 1;",
+		/* 8 */ `<< /S /Launch /F 11 0 R >>`,
+		/* 9 */ `<< /Type /StructTreeRoot /K [10 0 R] >>`,
+		/* 10 */ `<< /Type /StructElem /S /Link /P 9 0 R /Pg 3 0 R /K << /Type /OBJR /Obj 4 0 R >> /GomupdfRefs [6 0 R 7 0 R 8 0 R 11 0 R] >>`,
+		/* 11 */ `<< /Type /Filespec /F (` + launchTok + `) >>`,
+	}, "")
+	scrubControl(t, pdf, jsTok, launchTok)
+	out, re := scrubRoundTrip(t, pdf, ScrubOptions{})
+	scrubNoTokens(t, "default", out, jsTok, launchTok)
+	if h := scrubHidden(t, re); h != (HiddenContent{}) {
+		t.Errorf("after scrub: %+v", h)
+	}
+	p, _ := re.LoadPage(0)
+	if l, err := p.Links(); err != nil || len(l) != 1 || l[0].URI != "https://example.com/" {
+		t.Errorf("links after scrub = %+v, %v; want the URI link", l, err)
+	}
+}
+
+// A Link's JavaScript /A that is also page content (the /ExtGState
+// subdictionary, with a graphics state named /JS) is removed from the Link but
+// not destroyed: the page draws as before.
+func TestScrubLinkActionIsContent(t *testing.T) {
+	re := scrubCheckKept(t, scrubRolePDF(scrubRoles{gs: "JS", gsSub: "/S /JavaScript", page: "/Annots [12 0 R]",
+		extra: []string{`<< /Type /Annot /Subtype /Link /Rect [0 0 50 50] /A 7 0 R >>`}}), ScrubOptions{})
+	if h := scrubHidden(t, re); h != (HiddenContent{}) {
+		t.Errorf("after scrub: %+v", h)
+	}
+}
+
+// The keys Scrub removes from pages are removed from, and counted on,
+// intermediate page-tree nodes too, and their streams are destroyed although
+// the structure tree references them and a kept Link reaches the nodes
+// through its destination page.
+func TestScrubPageTreeNodes(t *testing.T) {
+	const metaTok, thumbTok = "GomupdfNodeMeta3d9a", "GomupdfNodeThumb6b1f"
+	pdf := scrubBuildPDF([]string{
+		/* 1 */ `<< /Type /Catalog /Pages 2 0 R /MarkInfo << /Marked true >> /StructTreeRoot 10 0 R >>`,
+		/* 2 */ `<< /Type /Pages /Kids [3 0 R] /Count 1 /AA << /O << /S /JavaScript /JS (1) >> >> >>`,
+		/* 3 */ `<< /Type /Pages /Parent 2 0 R /Kids [4 0 R] /Count 1 /Metadata 6 0 R /Thumb 7 0 R /AF [8 0 R]
+   /PieceInfo << /GoMuPDF << /Private (node piece) >> >> /Resources << /Font << /F1 9 0 R >> >> >>`,
+		/* 4 */ `<< /Type /Page /Parent 3 0 R /MediaBox [0 0 200 200] /Contents 5 0 R /Annots [12 0 R] >>`,
+		/* 5 */ "\nstream\nBT /F1 12 Tf 20 150 Td (" + scrubPageText + ") Tj ET",
+		/* 6 */ "/Type /Metadata /Subtype /XML\nstream\n<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">" + metaTok + "</x:xmpmeta>",
+		/* 7 */ fmt.Sprintf("/Width %d /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8\nstream\n%s", len(thumbTok), thumbTok),
+		/* 8 */ `<< /Type /Filespec /F (node-af.txt) >>`,
+		/* 9 */ `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>`,
+		/* 10 */ `<< /Type /StructTreeRoot /K [11 0 R] >>`,
+		/* 11 */ `<< /Type /StructElem /S /Figure /P 10 0 R /GomupdfRefs [6 0 R 7 0 R] >>`,
+		/* 12 */ `<< /Type /Annot /Subtype /Link /Rect [0 0 50 50] /Dest [4 0 R /Fit] >>`,
+	}, "")
+	scrubControl(t, pdf, metaTok, thumbTok)
+	d, err := OpenStream(pdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	want := HiddenContent{JavaScript: true, AssociatedFiles: 1, Thumbnails: 1, PageMetadata: 1, PieceInfo: 1}
+	if got := scrubHidden(t, d); got != want {
+		t.Errorf("before scrub:\n got %+v\nwant %+v", got, want)
+	}
+	re := scrubCheckKept(t, pdf, ScrubOptions{})
+	if h := scrubHidden(t, re); h != (HiddenContent{}) {
+		t.Errorf("after scrub: %+v", h)
+	}
+	out, err := re.SaveBytesWithOptions(scrubSaveOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scrubNoTokens(t, "default", out, metaTok, thumbTok)
+}
+
+// scrubManyLinksPDF is a one-page PDF with n Links, each with its own URI
+// action (one action node) to https://example.com/<i>.
+func scrubManyLinksPDF(n int) []byte {
+	refs := make([]int, n)
+	objs := []string{
+		`<< /Type /Catalog /Pages 2 0 R >>`,
+		`<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+		"",
+	}
+	for i := range n {
+		refs[i] = i + 4
+		objs = append(objs, fmt.Sprintf(`<< /Subtype /Link /Rect [0 0 1 1] /A << /S /URI /URI (https://example.com/%d) >> >>`, i))
+	}
+	objs[2] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots [` + scrubRefs(refs...) + `] >>`
+	return scrubBuildPDF(objs, "")
+}
+
+// Pins a documented limit: one Scrub or HiddenContent call walks at most
+// 65,536 action nodes. 65,536 Links with URI actions are within it; one more
+// reports JavaScript, and Scrub keeps the first 65,536 URIs and removes the
+// last Link's, failing closed, so the output reports none.
+func TestScrubActionBudgetCeiling(t *testing.T) {
+	const budget = 1 << 16
+	d, err := OpenStream(scrubManyLinksPDF(budget))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if scrubHidden(t, d).JavaScript {
+		t.Errorf("%d URI Links reported as JavaScript", budget)
+	}
+
+	pdf := scrubManyLinksPDF(budget + 1)
+	d, err = OpenStream(pdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if !scrubHidden(t, d).JavaScript {
+		t.Errorf("%d URI Links not reported as JavaScript", budget+1)
+	}
+	out, re := scrubRoundTrip(t, pdf, ScrubOptions{})
+	if h := scrubHidden(t, re); h != (HiddenContent{}) {
+		t.Errorf("after scrub: %+v", h)
+	}
+	p, err := re.LoadPage(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l, err := p.Links(); err != nil || len(l) != budget {
+		t.Errorf("%d links after scrub, %v; want %d", len(l), err, budget)
+	}
+	if !bytes.Contains(out, []byte(fmt.Sprintf("/%d)", budget-1))) || bytes.Contains(out, []byte(fmt.Sprintf("/%d)", budget))) {
+		t.Error("Scrub did not keep exactly the first 65,536 URIs")
+	}
+}
+
+// Cyclic and very long /Next chains on a Link /A or /PA neither crash nor
+// pass as safe: HiddenContent reports JavaScript and Scrub removes the action.
+func TestScrubLinkActionLimits(t *testing.T) {
+	var chain []string
+	for i := range 4999 {
+		chain = append(chain, `<< /S /GoTo /D [3 0 R /Fit] /Next `+scrubRefs(i+6)+`>>`)
+	}
+	chain = append(chain, `<< /S /GoTo /D [3 0 R /Fit] >>`)
+	cycle := []string{`<< /S /GoTo /D [3 0 R /Fit] /Next 5 0 R >>`}
+	// linkPDF: a page whose only Link has /key 5 0 R, the chain from 5.
+	linkPDF := func(key string, acts []string) []byte {
+		return scrubBuildPDF(append([]string{
+			`<< /Type /Catalog /Pages 2 0 R >>`,
+			`<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+			`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots [4 0 R] >>`,
+			`<< /Type /Annot /Subtype /Link /Rect [0 0 50 50] /` + key + ` 5 0 R >>`,
+		}, acts...), "")
+	}
+	cases := map[string][]byte{
+		"A cycle":  linkPDF("A", cycle),
+		"A long":   linkPDF("A", chain),
+		"PA cycle": linkPDF("PA", cycle),
+		"PA long":  linkPDF("PA", chain),
+	}
+	for name, pdf := range cases {
+		t.Run(name, func(t *testing.T) {
+			scrubConcurrently(func() {
+				d, err := OpenStream(pdf)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				defer d.Close()
+				if h, err := d.HiddenContent(); err != nil || !h.JavaScript {
+					t.Errorf("before scrub: %+v, %v; want JavaScript", h, err)
+				}
+				if err := d.Scrub(ScrubOptions{}); err != nil {
+					t.Error(err)
+				}
+				if h, err := d.HiddenContent(); err != nil || h != (HiddenContent{}) {
+					t.Errorf("after scrub: %+v, %v", h, err)
+				}
+			})
+		})
+	}
+}
