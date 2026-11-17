@@ -489,3 +489,56 @@ func TestRedactionFormObjectRefs(t *testing.T) {
 		})
 	}
 }
+
+// The private key that maps form copies to their originals never reaches a
+// saved file, at any garbage level, including the first pass's orphaned
+// copies; a value of that key already in the file is not trusted.
+func TestRedactionFormKeyNeverSaved(t *testing.T) {
+	stale := formStructDoc("q /Fm0 Do Q", "")
+	stale.formDict += " /GomupdfRedactSrc 7"
+	for name, c := range map[string]declaredDoc{
+		"once":       formStructDoc("q /Fm0 Do Q", ""),
+		"twice":      formStructDoc("q /Fm0 Do Q q 1 0 0 1 0 -50 cm /Fm0 Do Q", ""),
+		"objr":       formObjDoc(true, true, true),
+		"stale key":  stale,
+		"other page": formStructDoc("q /Fm0 Do Q", "q /Fm0 Do Q"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := applyAllHello(t, c.pdf())
+			defer d.Close()
+			for _, g := range []int{0, 1, 3} {
+				out, err := d.SaveBytesWithOptions(SaveOptions{Garbage: g})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if bytes.Contains(out, []byte("GomupdfRedactSrc")) {
+					t.Errorf("Garbage %d: the private form key is in the file", g)
+				}
+			}
+			if name != "other page" {
+				savesClean(t, name, d, "Hello")
+			}
+		})
+	}
+}
+
+// A /ParentTree whose /Kids are out of order, or whose /Limits are wrong,
+// still leads to the page's elements: their declared text goes.
+func TestRedactionParentTreeOutOfOrder(t *testing.T) {
+	elem := "<< /Type /StructElem /S /P /P 9 0 R /Pg 3 0 R /K 0 /ActualText (Hello World) >>"
+	for name, kids := range map[string][]string{
+		"kids out of order": {"<< /Kids [13 0 R 14 0 R] >>", "<< /Limits [5 9] /Nums [5 []] >>", "<< /Limits [0 3] /Nums [0 [11 0 R]] >>"},
+		"wrong limits":      {"<< /Kids [13 0 R] >>", "<< /Limits [10 20] /Nums [0 [11 0 R]] >>"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := declaredDoc{
+				page1:      "/P << /MCID 0 >> BDC " + line("", "") + " EMC",
+				structTree: "<< /Type /StructTreeRoot /K 11 0 R /ParentTree 12 0 R >>",
+				elems:      append([]string{elem}, kids...),
+			}
+			d := applyAllHello(t, c.pdf())
+			defer d.Close()
+			savesClean(t, name, d, "Hello")
+		})
+	}
+}

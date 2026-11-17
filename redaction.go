@@ -153,11 +153,13 @@ func isFinite32(f float32) bool {
 // The page is refused the same way, before anything changes, when its form
 // XObjects are nested more than 32 deep or reached by more than 65536 paths
 // (each path is a copy MuPDF's redaction makes), when its /ParentTree is
-// more than 64 levels deep, or when its structure tree is larger than 16
-// nodes per object in the file plus 65536. A second call returns the same
-// error. Any other error (one MuPDF raises while rewriting the page, or
-// running out of memory) can come after the page has started to change: an
-// error from ApplyRedactions means the page must not be treated as redacted.
+// more than 64 levels deep, or when its structure tree (or its /ParentTree,
+// which is read whole when its /Limits do not lead to the page's entries) is
+// larger than 16 nodes per object in the file plus 65536. A second call
+// returns the same error. Any other error (one MuPDF raises while rewriting
+// the page, or running out of memory) can come after the page has started to
+// change: an error from ApplyRedactions means the page must not be treated as
+// redacted.
 //
 // Changed from upstream: it takes ApplyOptions. Upstream passed zeroed MuPDF
 // options, so no box was drawn, and always removed overlapping images whole.

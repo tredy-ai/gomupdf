@@ -630,6 +630,11 @@ static pdf_obj *gomupdf_lookup_number(fz_context *ctx, pdf_obj *node, int key) {
 #define GOMUPDF_FORM_TAG "GomupdfRedactSrc"
 
 typedef struct {
+    int key;
+    pdf_obj *val;
+} gomupdf_ptentry;
+
+typedef struct {
     pdf_obj *item;   // the MCR or OBJR dictionary
     pdf_obj *owner;  // the element whose /K holds it
     pdf_obj *array;  // the /K array holding it, or NULL
@@ -649,6 +654,9 @@ typedef struct {
     int xlen;           // the xref length the plan was made at
     unsigned char *isform; // isform[num] = 1 + index, for num < xlen (0: none)
     int *formidx;
+    int tagged;         // the originals carry GOMUPDF_FORM_TAG
+    int ptbuilt, npt;   // every /ParentTree entry, by key, once a lookup by
+    gomupdf_ptentry *pt; // /Limits has failed (values borrowed)
 } gomupdf_plan;
 
 static void gomupdf_plan_drop(fz_context *ctx, gomupdf_plan *p) {
@@ -670,7 +678,107 @@ static void gomupdf_plan_drop(fz_context *ctx, gomupdf_plan *p) {
     fz_free(ctx, p->refs);
     fz_free(ctx, p->isform);
     fz_free(ctx, p->formidx);
+    fz_free(ctx, p->pt);
     memset(p, 0, sizeof *p);
+}
+
+static int gomupdf_cmp_ptentry(const void *a, const void *b) {
+    int x = ((const gomupdf_ptentry *)a)->key, y = ((const gomupdf_ptentry *)b)->key;
+    return x < y ? -1 : x > y;
+}
+
+typedef struct {
+    pdf_obj *node;
+    int depth;
+} gomupdf_ptnode;
+
+// gomupdf_plan_build_pt walks the whole number tree once (iteratively,
+// indirect nodes visited once, at most GOMUPDF_MD_MAX_TREE_DEPTH levels and
+// 16 nodes or entries per xref entry plus 65536, else it throws) and keeps
+// every /Nums entry, sorted by key. It is the fallback for a tree whose
+// /Kids are out of order or whose /Limits are wrong.
+static void gomupdf_plan_build_pt(fz_context *ctx, gomupdf_plan *p, pdf_obj *tree) {
+    size_t budget = 16 * (size_t)p->xlen + 65536, used = 0;
+    int n = 0, cap = 0, ptcap = 0;
+    unsigned char *seen = NULL;
+    gomupdf_ptnode *stack = NULL;
+    fz_var(seen);
+    fz_var(stack);
+    p->ptbuilt = 1;
+    fz_try(ctx) {
+        seen = fz_calloc(ctx, p->xlen > 0 ? p->xlen : 1, 1);
+        cap = 64;
+        stack = fz_malloc_array(ctx, cap, gomupdf_ptnode);
+        stack[n].node = tree;
+        stack[n].depth = 0;
+        n++;
+        while (n > 0) {
+            gomupdf_ptnode it = stack[--n];
+            int num = pdf_is_indirect(ctx, it.node) ? pdf_to_num(ctx, it.node) : 0;
+            pdf_obj *kids, *nums;
+            int i, len;
+            if (++used > budget)
+                fz_throw(ctx, FZ_ERROR_LIMIT, "structure parent tree too large");
+            if (it.depth > GOMUPDF_MD_MAX_TREE_DEPTH)
+                fz_throw(ctx, FZ_ERROR_LIMIT, "structure parent tree too deep");
+            if (num > 0 && num < p->xlen) {
+                if (seen[num])
+                    continue;
+                seen[num] = 1;
+            }
+            nums = pdf_dict_get(ctx, it.node, PDF_NAME(Nums));
+            len = pdf_array_len(ctx, nums) / 2;
+            for (i = 0; i < len; i++) {
+                if (++used > budget)
+                    fz_throw(ctx, FZ_ERROR_LIMIT, "structure parent tree too large");
+                if (p->npt == ptcap) {
+                    ptcap = ptcap ? ptcap * 2 : 64;
+                    p->pt = fz_realloc_array(ctx, p->pt, ptcap, gomupdf_ptentry);
+                }
+                p->pt[p->npt].key = pdf_array_get_int(ctx, nums, 2 * i);
+                p->pt[p->npt].val = pdf_array_get(ctx, nums, 2 * i + 1);
+                p->npt++;
+            }
+            kids = pdf_dict_get(ctx, it.node, PDF_NAME(Kids));
+            len = pdf_array_len(ctx, kids);
+            for (i = 0; i < len; i++) {
+                if (n == cap) {
+                    cap *= 2;
+                    stack = fz_realloc_array(ctx, stack, cap, gomupdf_ptnode);
+                }
+                stack[n].node = pdf_array_get(ctx, kids, i);
+                stack[n].depth = it.depth + 1;
+                n++;
+            }
+        }
+        if (p->npt > 1)
+            qsort(p->pt, p->npt, sizeof *p->pt, gomupdf_cmp_ptentry);
+    }
+    fz_always(ctx) {
+        fz_free(ctx, seen);
+        fz_free(ctx, stack);
+    }
+    fz_catch(ctx) {
+        fz_rethrow(ctx);
+    }
+}
+
+// gomupdf_plan_lookup finds key in the /ParentTree: by /Limits first, then,
+// if that finds nothing, in the whole tree.
+static pdf_obj *gomupdf_plan_lookup(fz_context *ctx, gomupdf_plan *p, pdf_obj *tree, int key) {
+    pdf_obj *v = gomupdf_lookup_number(ctx, tree, key);
+    int lo = 0, hi;
+    if (v || !tree)
+        return v;
+    if (!p->ptbuilt)
+        gomupdf_plan_build_pt(ctx, p, tree);
+    hi = p->npt;
+    while (lo < hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (p->pt[mid].key < key) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo < p->npt && p->pt[lo].key == key ? p->pt[lo].val : NULL;
 }
 
 // gomupdf_plan_form_index returns the index of the original obj is, or -1.
@@ -776,7 +884,7 @@ static void gomupdf_plan_ref(fz_context *ctx, gomupdf_plan *p, pdf_obj *item, pd
 // undeclare, the elements and their ancestors up to the root.
 static void gomupdf_plan_struct(fz_context *ctx, gomupdf_plan *p, pdf_obj *root, pdf_obj *pageobj,
                                 int key, int undeclare) {
-    pdf_obj *entry = gomupdf_lookup_number(ctx, pdf_dict_get(ctx, root, PDF_NAME(ParentTree)), key);
+    pdf_obj *entry = gomupdf_plan_lookup(ctx, p, pdf_dict_get(ctx, root, PDF_NAME(ParentTree)), key);
     int i, n = pdf_is_array(ctx, entry) ? pdf_array_len(ctx, entry) : 1;
     for (i = 0; i < n; i++) {
         pdf_obj *e = pdf_is_array(ctx, entry) ? pdf_array_get(ctx, entry, i) : entry;
@@ -905,21 +1013,44 @@ static void gomupdf_plan_page(fz_context *ctx, pdf_document *pdf, pdf_page *page
     gomupdf_plan_tree(ctx, p, root, page->obj);
 }
 
-// gomupdf_tag_forms tags each planned original with its index, after
-// removing whatever value the file had under that key.
+// gomupdf_tag_forms tags each planned original with its index, replacing
+// whatever value the file had under that key (never trusted). Every form a
+// copy can come from is planned, so every tag a copy carries is ours.
 static void gomupdf_tag_forms(fz_context *ctx, gomupdf_plan *p) {
     int i;
+    p->tagged = 1;
     for (i = 0; i < p->nforms; i++)
         pdf_dict_puts_drop(ctx, p->forms[i], GOMUPDF_FORM_TAG, pdf_new_int(ctx, i));
 }
 
-// gomupdf_untag_forms removes the tags from the originals. It must not throw
-// (it runs in fz_always).
-static void gomupdf_untag_forms(fz_context *ctx, gomupdf_plan *p) {
-    int i;
+// gomupdf_untag_forms removes the tag from the originals and from every
+// object made since the plan (the copies, including the first pass's copies
+// the second pass orphans), so no file keeps it. It must not throw (it runs
+// in fz_always).
+static void gomupdf_untag_forms(fz_context *ctx, pdf_document *pdf, gomupdf_plan *p) {
+    int i, xlen = 0;
+    if (!p->tagged)
+        return;
     for (i = 0; i < p->nforms; i++) {
         fz_try(ctx)
             pdf_dict_dels(ctx, p->forms[i], GOMUPDF_FORM_TAG);
+        fz_catch(ctx)
+            fz_ignore_error(ctx);
+    }
+    fz_try(ctx)
+        xlen = pdf_xref_len(ctx, pdf);
+    fz_catch(ctx)
+        fz_ignore_error(ctx);
+    for (i = p->xlen; i < xlen; i++) {
+        pdf_obj *obj = NULL;
+        fz_var(obj);
+        fz_try(ctx) {
+            obj = pdf_new_indirect(ctx, pdf, i, 0);
+            if (pdf_is_dict(ctx, obj) && pdf_dict_gets(ctx, obj, GOMUPDF_FORM_TAG))
+                pdf_dict_dels(ctx, obj, GOMUPDF_FORM_TAG);
+        }
+        fz_always(ctx)
+            pdf_drop_obj(ctx, obj);
         fz_catch(ctx)
             fz_ignore_error(ctx);
     }
@@ -1156,7 +1287,7 @@ static int gomupdf_apply_redactions(fz_context *ctx, fz_document *doc, int pagen
         }
     }
     fz_always(ctx) {
-        gomupdf_untag_forms(ctx, &plan);
+        gomupdf_untag_forms(ctx, pdf, &plan);
         gomupdf_plan_drop(ctx, &plan);
         fz_drop_page(ctx, (fz_page *)page);
     }
