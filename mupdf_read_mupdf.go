@@ -487,11 +487,12 @@ static void gomupdf_img_extract_fill(fz_context *ctx, fz_device *dev, fz_image *
 
 static unsigned char *gomupdf_image_bytes(fz_context *ctx, fz_document *doc, int pageno,
                                           int index, int *out_len, char *ext_out,
-                                          char *err, int errlen) {
+                                          int *failed, char *err, int errlen) {
     fz_page *page = NULL;
     gomupdf_img_extract_device *dev = NULL;
     unsigned char *result = NULL;
     fz_var(page);
+    *failed = 0;
     fz_var(dev);
     fz_try(ctx) {
         page = fz_load_page(ctx, doc, pageno);
@@ -516,6 +517,7 @@ static unsigned char *gomupdf_image_bytes(fz_context *ctx, fz_document *doc, int
     fz_catch(ctx) {
         if (result) { free(result); result = NULL; }
         snprintf(err, errlen, "%s", fz_caught_message(ctx));
+        *failed = 1;
         return NULL;
     }
     return result;
@@ -772,12 +774,12 @@ func (d *mupdfDoc) imageBytes(pageNo, index int) ([]byte, string, error) {
 	extBuf := (*C.char)(C.malloc(8))
 	defer C.free(unsafe.Pointer(extBuf))
 	*extBuf = 0
-	var outLen C.int
-	ptr := C.gomupdf_image_bytes(d.ctx, d.doc, C.int(pageNo), C.int(index), &outLen, extBuf, errBuf, errBufLen)
+	var outLen, failed C.int
+	ptr := C.gomupdf_image_bytes(d.ctx, d.doc, C.int(pageNo), C.int(index), &outLen, extBuf, &failed, errBuf, errBufLen)
+	if failed != 0 {
+		return nil, "", errors.New("gomupdf: image bytes: " + errText(errBuf))
+	}
 	if ptr == nil {
-		if msg := C.GoString(errBuf); msg != "" {
-			return nil, "", errors.New("gomupdf: image bytes: " + msg)
-		}
 		return nil, "", nil // no image at that index
 	}
 	defer C.free(unsafe.Pointer(ptr))

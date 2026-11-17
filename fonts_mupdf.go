@@ -102,17 +102,18 @@ static char *gomupdf_page_fonts(fz_context *ctx, fz_document *doc, int pageno,
 // gomupdf_extract_font extracts the embedded font program for the PDF object at xref.
 static unsigned char *gomupdf_extract_font(fz_context *ctx, fz_document *doc, int xref,
                                            int *out_len, char *ext_out, char *name_out,
-                                           char *err, int errlen) {
+                                           int *failed, char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
+    *failed = 0;
     if (!pdf) {
         snprintf(err, errlen, "not a PDF document");
+        *failed = 1;
         return NULL;
     }
 
     unsigned char *result = NULL;
     pdf_obj *fontobj = NULL;
     fz_buffer *streambuf = NULL;
-    int had_error = 0;
     fz_var(fontobj);
     fz_var(streambuf);
 
@@ -171,13 +172,8 @@ static unsigned char *gomupdf_extract_font(fz_context *ctx, fz_document *doc, in
                 if (sz > 0 && p) {
                     result = (unsigned char *)malloc(sz);
                     if (!result) fz_throw(ctx, FZ_ERROR_SYSTEM, "out of memory (%zu bytes)", (size_t)(sz));
-                    if (result) {
-                        memcpy(result, p, sz);
-                        *out_len = (int)sz;
-                    } else {
-                        snprintf(err, errlen, "out of memory");
-                        had_error = 1;
-                    }
+                    memcpy(result, p, sz);
+                    *out_len = (int)sz;
                 }
             }
         }
@@ -189,11 +185,9 @@ static unsigned char *gomupdf_extract_font(fz_context *ctx, fz_document *doc, in
     fz_catch(ctx) {
         if (result) { free(result); result = NULL; }
         snprintf(err, errlen, "%s", fz_caught_message(ctx));
-        had_error = 1;
-    }
-
-    if (had_error && result == NULL)
+        *failed = 1;
         return NULL;
+    }
     return result;
 }
 */
@@ -211,12 +205,8 @@ func (d *mupdfDoc) fontsRaw(pageNo int) (string, error) {
 	errBuf := newErrBuf()
 	defer C.free(unsafe.Pointer(errBuf))
 	cstr := C.gomupdf_page_fonts(d.ctx, d.doc, C.int(pageNo), errBuf, errBufLen)
-	if cstr == nil {
-		msg := C.GoString(errBuf)
-		if msg == "" {
-			return "", nil
-		}
-		return "", errors.New("gomupdf: get fonts: " + msg)
+	if cstr == nil { // always an error: an empty list is an empty string
+		return "", errors.New("gomupdf: get fonts: " + errText(errBuf))
 	}
 	defer C.free(unsafe.Pointer(cstr))
 	return C.GoString(cstr), nil
@@ -235,17 +225,17 @@ func (d *mupdfDoc) extractFont(xref int) (name, ext string, data []byte, err err
 	*extBuf = 0
 	*nameBuf = 0
 
-	var outLen C.int
-	ptr := C.gomupdf_extract_font(d.ctx, d.doc, C.int(xref), &outLen, extBuf, nameBuf, errBuf, errBufLen)
+	var outLen, failed C.int
+	ptr := C.gomupdf_extract_font(d.ctx, d.doc, C.int(xref), &outLen, extBuf, nameBuf, &failed, errBuf, errBufLen)
 
 	name = C.GoString(nameBuf)
 	ext = C.GoString(extBuf)
 
+	if failed != 0 {
+		return name, ext, nil, errors.New("gomupdf: extract font: " + errText(errBuf))
+	}
 	if ptr == nil {
-		if msg := C.GoString(errBuf); msg != "" {
-			return name, ext, nil, errors.New("gomupdf: extract font: " + msg)
-		}
-		return name, ext, nil, nil
+		return name, ext, nil, nil // no embedded font file
 	}
 	defer C.free(unsafe.Pointer(ptr))
 	return name, ext, C.GoBytes(unsafe.Pointer(ptr), outLen), nil
