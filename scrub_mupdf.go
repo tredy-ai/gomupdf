@@ -757,14 +757,44 @@ static void gomupdf_keep_pass(fz_context *ctx, pdf_document *pdf, gomupdf_marks 
 // anything, and none can happen later. An object that fails to load is left
 // to fail again where it is used. Loading caches the object in the xref, so
 // there is no reference to drop.
+//
+// An object in an object stream that fails to load marks that stream: its
+// other objects are not tried here, since each try parses the stream again
+// (a crafted stream with 100000 entries took 23s). They would fail the same
+// way, without a repair (MuPDF repairs for a missing member only after the
+// stream parsed, and that try already happened), and fail or load later
+// where used.
 static void gomupdf_load_all(fz_context *ctx, pdf_document *pdf) {
-    for (int i = 1; i < pdf_xref_len(ctx, pdf); i++) {
-        fz_try(ctx) pdf_cache_object(ctx, pdf, i);
-        fz_catch(ctx) {
-            fz_rethrow_if(ctx, FZ_ERROR_SYSTEM);
-            fz_ignore_error(ctx);
+    unsigned char *bad = NULL; // bad[n]: object stream n failed
+    int nbad = 0;
+    fz_var(bad);
+    fz_var(nbad);
+    fz_try(ctx) {
+        for (int i = 1; i < pdf_xref_len(ctx, pdf); i++) {
+            int stm = 0;
+            fz_var(stm);
+            fz_try(ctx) {
+                pdf_xref_entry *x = pdf_get_xref_entry_no_null(ctx, pdf, i);
+                // In an object stream, ofs is the stream's object number.
+                stm = x->type == 'o' && x->ofs > 0 && x->ofs < INT_MAX ? (int)x->ofs : 0;
+                if (!(stm > 0 && stm < nbad && bad[stm]))
+                    pdf_cache_object(ctx, pdf, i);
+            }
+            fz_catch(ctx) {
+                fz_rethrow_if(ctx, FZ_ERROR_SYSTEM);
+                fz_ignore_error(ctx);
+                if (stm > 0) {
+                    if (!bad) {
+                        nbad = pdf_xref_len(ctx, pdf);
+                        bad = fz_calloc(ctx, nbad, 1);
+                    }
+                    if (stm < nbad) bad[stm] = 1;
+                }
+            }
         }
     }
+    fz_always(ctx) fz_free(ctx, bad);
+    fz_catch(ctx) fz_rethrow(ctx);
 }
 
 // gomupdf_stabilise runs gomupdf_load_all on a PDF (anything else has no
