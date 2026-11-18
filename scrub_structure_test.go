@@ -856,3 +856,31 @@ func TestScrubStructureAndRedaction(t *testing.T) {
 		})
 	}
 }
+
+// A kept form whose /Fields, a field's /Kids or /CO is an indirect array
+// scrubs and keeps its widget: removing the structure tree's references from
+// kept objects (/SE, /SD) skips the arrays kept with them (it threw "not a
+// dict (array)" on them, so KeepFormFields and KeepAnnotations failed on
+// ordinary forms).
+func TestScrubKeptIndirectArrays(t *testing.T) {
+	page := `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots [4 0 R] >>`
+	pages := `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`
+	for name, objs := range map[string][]string{
+		"Fields": {`<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields 5 0 R >> >>`, pages, page,
+			`<< /Type /Annot /Subtype /Widget /FT /Tx /T (a) /Rect [0 0 50 50] /P 3 0 R >>`, `[4 0 R]`},
+		"field Kids": {`<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [6 0 R] >> >>`, pages, page,
+			`<< /Type /Annot /Subtype /Widget /Rect [0 0 50 50] /P 3 0 R /Parent 6 0 R >>`, `[4 0 R]`,
+			`<< /FT /Tx /T (a) /Kids 5 0 R >>`},
+		"CO": {`<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [4 0 R] /CO 5 0 R >> >>`, pages, page,
+			`<< /Type /Annot /Subtype /Widget /FT /Tx /T (a) /Rect [0 0 50 50] /P 3 0 R >>`, `[4 0 R]`},
+	} {
+		for _, opts := range []ScrubOptions{{KeepFormFields: true}, {KeepAnnotations: true, KeepOutlines: true}} {
+			t.Run(fmt.Sprintf("%s %+v", name, opts), func(t *testing.T) {
+				_, re := scrubRoundTrip(t, scrubBuildPDF(objs, ""), opts)
+				if h := scrubHidden(t, re); !h.AcroForm || h.Widgets != 1 {
+					t.Errorf("after scrub %+v", h)
+				}
+			})
+		}
+	}
+}

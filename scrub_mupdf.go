@@ -2144,9 +2144,11 @@ static void gomupdf_struct_parents(fz_context *ctx, pdf_obj *ref) {
 // as /A or /PA (a kept annotation, field or outline item) or /OpenAction
 // (the catalog, is_root). Within the walk budget what they name is
 // destroyed anyway; past it (Scrub then fails) they would keep it. The
-// caller leaves page content and what a kept appearance draws alone.
+// caller leaves page content and what a kept appearance draws alone. A kept
+// array (an indirect /Fields, /Kids or /CO) holds no such key.
 static void gomupdf_struct_refs(fz_context *ctx, pdf_obj *ref, unsigned int m, int is_root) {
     static const char *acts[] = {"A", "PA", "OpenAction"};
+    if (!pdf_is_dict(ctx, ref)) return;
     if ((m & GM_TOP) && !(m & GM_FORM) && !gomupdf_annot_shaped(ctx, ref)) pdf_dict_dels(ctx, ref, "SE");
     if ((m & GM_RWALK) && gomupdf_is_kind(ctx, ref, GK_ANYACTION)) pdf_dict_dels(ctx, ref, "SD");
     if (!(m & GM_TOP) && !is_root) return;
