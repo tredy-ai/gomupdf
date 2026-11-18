@@ -63,12 +63,24 @@ type ScrubOptions struct {
 	// tagging that accessibility tools read. The zero value removes it:
 	// Scrub deletes the catalog /StructTreeRoot and /MarkInfo (a file must
 	// not claim to be tagged when it is not) and destroys the tree's own
-	// objects, so that their text cannot survive through another reference:
-	// the root, every structure element, the /ParentTree and /IDTree nodes,
-	// /RoleMap and /ClassMap, attribute objects, indirect MCR and OBJR
-	// dictionaries, and indirect strings held by elements and attribute
-	// objects. What the tree points at is not part of it and stays unless
-	// Scrub removes it for another reason: pages (/Pg), annotations and
+	// objects, so that a stray reference elsewhere (a kept Link's unknown
+	// key, say) resolves to null instead of keeping their text: the root,
+	// every structure element, the /ParentTree and /IDTree nodes, /RoleMap
+	// and /ClassMap, attribute objects, indirect MCR and OBJR dictionaries,
+	// and indirect strings held by elements and attribute objects. Three
+	// exceptions are only unlinked, so another reference keeps them: indirect
+	// strings, /RoleMap, /ClassMap and an untyped root that a kept object or
+	// what the catalog uses also references (an action, a page label or a
+	// field's data can look like one of them); tree objects that are also
+	// page content or something a kept object uses in a defined role (PyMuPDF's
+	// test_2710.pdf uses its /StructTreeRoot and /RoleMap as page graphics
+	// states and its /ParentTree as a page font, though that tree holds only
+	// /S names; an action passing for an element); and, when the tree is
+	// larger than Scrub's walk budget, the part beyond it, in which case
+	// Scrub returns an error (see Scrub). Kept outline items lose /SE and
+	// kept GoTo actions /SD, which point into the tree. What the tree points
+	// at is not part of it and stays unless Scrub removes it for another
+	// reason: pages (/Pg), annotations and
 	// widgets (/Obj), form XObjects and content streams (/Stm), fonts and
 	// namespaces; files in /AF go as everywhere (see Scrub). Scrub also
 	// deletes the integer /StructParents and /StructParent from pages,
@@ -85,7 +97,7 @@ type ScrubOptions struct {
 	// values in attribute objects. Without it the output is no longer a
 	// tagged PDF: PDF/UA conformance and the structure screen readers use are
 	// lost, and reading order follows content order. The catalog /Lang
-	// stays. Marked-content operators in content streams are not rewritten:
+	// stays when it is a string. Marked-content operators in content streams are not rewritten:
 	// /MCID tags remain as inert markers, and property lists in page content
 	// (an inline /Span << /ActualText (...) >> BDC, or a named one in
 	// /Resources /Properties) are not removed by Scrub; ApplyRedactions

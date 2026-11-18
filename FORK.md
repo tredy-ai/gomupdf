@@ -55,7 +55,7 @@ f3b7339..main`), grouped by theme. The groups are thematic, not chronological:
 the order inside each group is the order in the history. "API impact" is
 `None`, `New API`, `Behavior change` (same signatures, different results or
 errors) or `BREAKING` (existing callers must change code or handle a new
-failure). Nothing has been pushed or tagged yet. 79 commits, this document's last update included.
+failure). Nothing has been pushed or tagged yet. 86 commits, this document's last update included.
 
 
 ### Fork and build
@@ -67,6 +67,7 @@ failure). Nothing has been pushed or tagged yet. 79 commits, this document's las
 | `5cb35d8` | `feat: add MuPDFVersion and require MuPDF 1.25+` | New API: MuPDFVersion |
 | `a3a3b33` | `build!: require Go 1.27 and test on Alpine 3.23 (MuPDF 1.26.11)` | BREAKING: module requires Go 1.27 |
 | `b1b009d` | `build!: require MuPDF 1.26` | BREAKING: MuPDF 1.25 no longer builds (compile guard) |
+| `b09c5a8` | `fix(scrub): build against MuPDF 1.27 and later` | None (compiles against MuPDF 1.27+ headers) |
 
 ### Text extraction
 
@@ -140,6 +141,10 @@ failure). Nothing has been pushed or tagged yet. 79 commits, this document's las
 | `54ca4ae` | `fix(scrub): destroy every content-bearing resource of an orphan page` | Behavior change: orphan pages' patterns, Type 3 glyph procedures and soft-mask groups are destroyed too |
 | `ecd4da9` | `fix(scrub): treat a page entry that is not a dictionary as not served` | Behavior change: Scrub and HiddenContent skip a page-tree entry that is not a dictionary |
 | `190caaf` | `feat(scrub)!: remove the structure tree by default and add ScrubOptions.KeepStructure` | BREAKING: Scrub removes the logical structure tree unless KeepStructure; new ScrubOptions.KeepStructure, HiddenContent.StructTree |
+| `99f4942` | `fix(scrub): do not keep what the catalog /Lang points at` | Behavior change: a catalog /Lang naming /Info, XMP, an embedded file or a script no longer keeps it |
+| `f096247` | `fix(scrub): keep what the catalog and kept objects use when removing the structure tree` | Behavior change: page labels, name trees, viewer preferences, the /OpenAction and kept objects' actions, /MK and /BS survive a crafted structure tree |
+| `69c4890` | `fix(scrub): leave no structure reference on kept outline items and budget the walk per object` | Behavior change: kept outline items lose /SE and kept GoTo actions /SD; the structure walk budget is per object; Scrub returns an error past it |
+| `69c77cb` | `fix(scrub): do not fail on kept indirect arrays when removing structure references` | None (KeepFormFields and KeepAnnotations no longer fail on a form with an indirect /Fields, /Kids or /CO array) |
 
 ### Layers
 
@@ -160,6 +165,7 @@ failure). Nothing has been pushed or tagged yet. 79 commits, this document's las
 | `9eafc6e` | `fix: do not retry a broken object stream for every object` | None (Open no longer quadratic on a broken object stream) |
 | `653d4c6` | `fix: report errors with an empty message from font and image helpers` | Behavior change: an error with an empty message is no longer read as "nothing found" by font and image helpers |
 | `8cc4c9e` | `fix(scrub): do not re-parse unloadable objects in the sweep` | None (sweeps skip unloadable objects; no more minutes-long HiddenContent, Scrub, ShowAllLayers on broken object streams) |
+| `71a998e` | `fix: run deeply recursive MuPDF calls on a large stack` | None (saves, Scrub, extraction and rendering run on a 256 MiB stack; deep files no longer crash) |
 
 ### Tests
 
@@ -180,7 +186,8 @@ failure). Nothing has been pushed or tagged yet. 79 commits, this document's las
 | `10306a9` | `docs: record the final corpus run` | None |
 | `d26050a` | `docs: correct two statements about scrub and open` | None |
 | `f6bd637` | `docs: list the final commits and corpus figures` | None |
-| (this commit) | `docs: record the owner's decisions on layers, structure and MuPDF` | None |
+| `0f38b4b` | `docs: record the owner's decisions on layers, structure and MuPDF` | None |
+| (this commit) | `docs: correct the structure and stack statements` | None |
 
 ## 4. Behavior differences from upstream and stock MuPDF
 
@@ -425,20 +432,42 @@ output is then no longer a tagged PDF: PDF/UA conformance and the structure
 screen readers use are gone, and reading order follows content order. Rules:
 
 - Kinds. Each object is destroyed only if it is of its kind: an element has an
-  `/S` name, no `/Subtype`, and `/Type /StructElem` or no `/Type` and a `/P`;
-  the root no `/Type` or `/Type /StructTreeRoot`; a tree node no `/Type` and
+  `/S` name, no `/Subtype`, and `/Type /StructElem` or no `/Type` and a `/P`
+  naming an indirect dictionary that is the root or itself of the element
+  shape (so an action, border style, page-label or rendition dictionary,
+  whose `/P` is a page, a string or a parameter dictionary, is not one); the
+  root no `/Type` or `/Type /StructTreeRoot`; a tree node no `/Type` and
   `/Kids`, `/Nums` or `/Names`; `/RoleMap` and `/ClassMap` no `/Type`; an
   attribute object no `/Type` and an `/O` name; MCR and OBJR their `/Type`.
   Arrays are never destroyed (nothing marks the arrays a page tree relies on);
   they leave with the objects holding them.
 - Kept content wins. Page content, served pages and page-tree nodes, kept
   annotations, kept form nodes and outline items, and what a kept appearance
-  draws are never destroyed, whatever the tree says. An element, attribute
-  object, tree node, MCR or OBJR dictionary or typed root is not kept merely
-  because a kept object references it (a kept Link's stray key, say), as for
-  annotations; `/RoleMap`, `/ClassMap`, an untyped root and indirect strings,
-  which an action or a field's own data could pass for, are only unlinked when
-  a kept object references them.
+  draws are never destroyed, whatever the tree says. Neither is what a kept
+  annotation, field or outline item uses in a defined role (its `/A`, `/PA`,
+  `/MK`, `/BS`, `/BE`, `/Border` and `/Dest`), the kept `/OpenAction` and a
+  kept action's `/Next`: such an object is not followed through `/P`, `/K`
+  or `/SE`. Otherwise an element, attribute object, tree node, MCR or OBJR
+  dictionary or typed root is not kept merely because a kept object
+  references it (a kept Link's stray key, say), as for annotations.
+  Exceptions, which are only unlinked and so stay if anything else references
+  them: indirect strings, `/RoleMap`, `/ClassMap` and an untyped root, which
+  an action or a field's own data could pass for, when a kept object also
+  references them; and tree objects that are also page content (PyMuPDF
+  `test_2710.pdf` uses its `/StructTreeRoot` and `/RoleMap` as page graphics
+  states and its `/ParentTree` as a page font; that tree holds no text, only
+  `/S` names).
+- What the catalog uses stays. Whatever the catalog's `/PageLabels`, `/Names`
+  (other than the trees `Scrub` removes), `/Dests`, `/ViewerPreferences`,
+  `/Threads`, `/URI`, `/OutputIntents`, `/Legal`, `/Requirements`,
+  `/Collection`, `/DPartRoot` and `/Extensions` reach is not destroyed as part
+  of the tree (a `/ParentTree` that is also `/PageLabels`, an `/IDTree` that
+  is also `/Names/Dests`), except a dictionary the tree recognises as its own
+  that they reach only deeper than their values, name-tree `/Kids` and arrays
+  (a typed element as a `/Dests` leaf). This protects only from the tree's
+  removal: the catalog `/Lang` (when it is a string) and these values never
+  keep `/Info`, XMP, an embedded file or a script `Scrub` removes otherwise.
+  Stray catalog keys keep nothing.
 - What the tree points at is not part of it: pages (`/Pg`), annotations and
   widgets (`/Obj`), forms and content streams (`/Stm`), fonts and namespaces
   stay unless something else removes them; `/AF` files go as everywhere. An
@@ -450,10 +479,17 @@ screen readers use are gone, and reading order follows content order. Rules:
 - In content streams nothing changes: `/MCID` tags stay as inert markers, and
   inline or named property lists (`/Span << /ActualText (...) >> BDC`) are not
   removed by `Scrub`; `ApplyRedactions` strips their declared text on redacted
-  pages only. The catalog `/Lang` stays.
+  pages only. The catalog `/Lang` stays when it is a string. Kept outline items lose `/SE` and
+  kept GoTo actions their `/SD` structure destination, which point into the
+  tree.
 - Limits. The walk is iterative, visits each object once per role and stops
-  after 65,536 + 16 x (object count) units of work; what it reached is
-  destroyed, the rest is only unlinked with the catalog key.
+  after 65,536 + 16 x (object count) units of work, one per array or
+  dictionary it visits (an MCID, a null or an object already visited costs
+  nothing): an ordinary tagged file uses a few percent (pdf.js
+  `wdsg_fitc.pdf` 2,558 of 111,168, PyMuPDF `test_3594.pdf` 9,183 of
+  221,392). Past it, what it reached is destroyed, the rest is only unlinked
+  with the catalog key, and `Scrub` returns an error, since a kept object's
+  stray reference can keep that rest: discard the document.
 - `ApplyRedactions` works before or after such a `Scrub` on the same
   `Document`.
 
@@ -678,7 +714,8 @@ err := doc.Scrub(gomupdf.ScrubOptions{KeepStructure: true})
 ```
 
 An annotation or page only the structure tree referenced now leaves the saved
-file even under `KeepAnnotations` or `KeepFormFields`.
+file even under `KeepAnnotations` or `KeepFormFields`. A tree larger than the
+walk budget (4.5) makes `Scrub` return an error: discard that document.
 
 ## 6. Using the package in a redaction service
 
@@ -780,27 +817,45 @@ and returns an error; it does not remove them.
 - Deleting an object created in the same session broke saves on 1.25.6, so
   Scrub and `ShowAllLayers` leave an empty dictionary in its place; 1.26 does
   not need that, and it is harmless there.
-- MuPDF recurses once per indirect reference hop when it saves and once per
-  nesting level when it interprets content. Cgo calls run on the calling
-  thread's stack, 128 KiB on musl for threads the Go runtime creates, so
-  before this was handled a Garbage 1 save crashed the process with SIGSEGV
-  at about 1,600 sibling outline items (a `/Next` chain) from an ordinary
-  goroutine (about 5,800 on the main thread), and at about 16,000 dictionaries
-  chained under a page's `/Resources`; 60 nested forms crashed extraction.
+- MuPDF recurses once per indirect reference hop when it saves, once per
+  nesting level when it loads an outline, and once per nesting level when it
+  interprets content. A cgo call runs on the calling thread's stack. On
+  Alpine 3.23 (musl) the threads the Go runtime creates have musl's default
+  128 KiB (`pthread_getattr_np` reads 133,872 bytes from a goroutine); only
+  the process's main thread can grow to `ulimit -s` (8 MiB). Before
+  `71a998e`, a Garbage 1 save called from ordinary goroutines killed the
+  process with SIGSEGV between 1,500 hops (saved) and 1,700 (crashed) for
+  each of three shapes: sibling outline items (a `/Next` chain), dictionaries
+  chained under a page's `/Resources`, and a Link's `/Next` action chain. The
+  same saves on the main thread survived 100,000.
   Saves, `Scrub`, `HiddenContent`, `ShowAllLayers`, the load at open,
   `ApplyRedactions` and `AddRedaction*`, `ConvertToPDF`, text extraction,
-  search, image and drawing listing and rendering now run on a thread with a
-  256 MiB stack (about 81 bytes per hop): a save handles chains of about 3.3
-  million objects (3,250,000 outline items saved, 3,500,000 crashed). A
-  hostile file can still exceed any stack, and if that thread cannot be
-  created (an address-space limit) the call runs on the caller's stack as
-  before: process isolation must contain the rest (section 6, step 1).
-  Merging (`InsertPDF`, `InsertPDFRange`) and the cheap calls are not moved. Forms nested more
-  than about 65 levels fail with "exception stack overflow" (MuPDF's own
-  limit), without crashing.
+  search, image and drawing listing and rendering now run on a new thread
+  with a 256 MiB stack, which is address space committed only as it is used
+  (peak RSS of a 20,000-item outline save: 43 MB before and after on the main
+  thread, 48 MB from a goroutine after). From a goroutine a save now handles
+  2,560,000 sibling outline items (3.8 GB peak RSS, more than the corpus
+  test's 3 GiB cap, so memory limits come first) and crashed at 5,120,000;
+  MuPDF needs about 81 bytes of stack per hop, so the limit is near 3.3
+  million. Each such call pays for creating and joining that thread, about
+  45 µs (`HiddenContent` on a small file 13 → 56 µs, `GetText` on a small
+  page 27 → 74 µs; invisible on a 4 ms text page or a 42 ms render). Forms
+  nested more than about 60 levels fail with "exception stack overflow"
+  (MuPDF's own exception-stack limit), without crashing.
+  Not moved, and still on the caller's 128 KiB: `TOC` (an outline nested
+  950 levels deep crashes the process from a goroutine, 900 works, before
+  and after this change), merging (`InsertPDF`, `InsertPDFRange`), links,
+  page labels, page edits and annotation edits.
+  If the large-stack thread cannot be created (an address-space limit) the
+  call runs on the caller's stack as before. A hostile file can still exceed
+  any stack, and a crash on that thread kills the process without a Go
+  traceback (it blocks every signal): the service must process each
+  document in a separate worker process (section 6, step 1).
 
-**Corpus results (run of 2026-11-17 at `190caaf`, whose code this document's
-commit does not change; MuPDF 1.26.11 on Alpine 3.23, Go 1.27).**
+**Corpus results (run of 2026-11-18 at `69c77cb`, whose code this document's
+commit does not change; MuPDF 1.26.11 on Alpine 3.23, Go 1.27).** Every
+outcome and failure category matches the previous run at `190caaf`; the
+only change is one file whose 429 MB render no longer fails to allocate.
 5,347 public test and real-world PDFs from the pdf.js, veraPDF, qpdf, PyMuPDF,
 Poppler, corkami and PDF Association suites (kept outside the repo), plus the
 163 committed regression files. Each file is opened, extracted, redacted by
@@ -914,32 +969,35 @@ half a minute after the package install.
 - **1.28.6** (Homebrew, macOS): last checked at commit `f0ed073`; it built and
   three tests failed (section 7). The tests have not been re-run since; the
   package compiles against the 1.28.6 headers (check below).
+- **`mupdf_bundled`**: built and tested once against MuPDF 1.25.6 from source
+  and passed, before the minimum became 1.26; not run against 1.26 (section 7).
 
 **Compile check against newer MuPDF headers (manual, before a MuPDF
 upgrade).** The package reads a few MuPDF struct fields directly
 (`pdf_document` `repair_attempted` and `fwd_page_map`, xref entry `type`,
 `ofs` and `gen`, `fz_device` callbacks, structured-text structs), and a field
 renamed upstream breaks the build. `go vet` compiles every cgo preamble, so it
-catches that without linking or installing anything. In the gate image, with
-the new version's source headers in a Docker volume (the version is an
-example):
+catches that without linking or installing anything. In the gate's
+environment, with the new version's headers fetched inside the container
+(the version is an example):
 
 ```sh
-docker run --rm -v sf-mupdf128:/m gomupdf-check sh -c 'cd /m &&
+docker run --rm -v "$PWD":/src:ro -w /src -e GOFLAGS=-buildvcs=false golang:1.27-alpine3.23 sh -c '
+  apk add --no-cache build-base pkgconf mupdf-dev &&
+  mkdir /tmp/m && cd /tmp/m &&
   wget -q https://mupdf.com/downloads/archive/mupdf-1.28.6-source.tar.gz &&
-  tar xzf mupdf-1.28.6-source.tar.gz mupdf-1.28.6-source/include'
-docker run --rm -v "$PWD":/src:ro -w /src -v sf-mupdf128:/m:ro -e GOFLAGS=-buildvcs=false \
-  -e CGO_CFLAGS=-I/m/mupdf-1.28.6-source/include gomupdf-check go vet ./...
+  tar xzf mupdf-1.28.6-source.tar.gz mupdf-1.28.6-source/include &&
+  cd /src && CGO_CFLAGS=-I/tmp/m/mupdf-1.28.6-source/include go vet ./...'
 ```
 
-The `-I` directory comes before the image's 1.26.11 headers, so the
-preambles compile against the new ones (a missing field fails with
-`'pdf_document' has no member named ...`). It proves the code compiles, not
-that it behaves the same: run the tests and `TestCorpus` against a build of
-that version before adopting it. Last run: 1.28.6 at the commit that added
-this note, clean.
-- **`mupdf_bundled`**: built and tested once against MuPDF 1.25.6 from source
-  and passed, before the minimum became 1.26; not run against 1.26 (section 7).
+`CGO_CFLAGS` comes before the `-I` that pkg-config adds for the installed
+1.26.11 headers, so the preambles compile against the new ones. That it
+really compiles them: with `pdf->page_tree_broken` (a 1.26 field 1.27
+removed) put back into `gomupdf_page_count`, the same command fails with
+`'pdf_document' has no member named 'page_tree_broken'`, while plain
+`go vet` against 1.26.11 passes. It proves the code compiles, not that it
+behaves the same: run the tests and `TestCorpus` against a build of that
+version before adopting it. Last run: 1.28.6 at `69c77cb`, clean.
 
 **Corpus test (`TestCorpus`, `corpus_test.go`).** Walks `testdata/corpus` (163
 PDFs, 17 MB; sources in `testdata/corpus/SOURCES.md`) and `testdata/fuzz/crashers`

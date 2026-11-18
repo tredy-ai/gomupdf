@@ -477,8 +477,11 @@ err = doc.SaveWithOptions("out.pdf", gomupdf.SaveOptions{Garbage: 3, Deflate: tr
 `KeepStructure`. The zero value also removes the logical structure tree
 (accessibility tagging, whose `/Alt`, `/ActualText`, `/T`, `/ID` and table
 `/Summary` text extraction never returns), so the output is no longer a tagged
-PDF; `KeepStructure` keeps it, text and all. Reopen the output and call
-`HiddenContent` to verify it.
+PDF; `KeepStructure` keeps it, text and all. What the catalog, kept links,
+fields and outline items use (page labels, named destinations, viewer
+preferences, actions) stays even if a crafted tree names it. A tree too large
+for `Scrub`'s walk budget (none of the 5,347 files of the fork's corpus run) makes `Scrub` return an
+error. Reopen the output and call `HiddenContent` to verify it.
 
 ### Optional content (layers)
 
@@ -625,8 +628,14 @@ process documents in parallel, **open one `Document` per goroutine**.
 
 - Always `Close()` a document when done — the finalizer is only a backstop.
 - MuPDF runs in your process. On untrusted files it can hang for minutes on a
-  few crafted inputs, crash (with `UseActualText`), or allocate hundreds of
-  megabytes (pixel-redacted images are stored uncompressed). A service should
+  few crafted inputs, crash (with `UseActualText`, in `TOC` on an outline
+  nested about a thousand levels deep, or on reference chains of millions of
+  objects), or allocate hundreds of megabytes (pixel-redacted images are
+  stored uncompressed). Saves, `Scrub`, extraction and rendering run on a
+  helper thread with a 256 MiB stack (address space, committed as used),
+  because MuPDF recurses per reference and musl gives Go's threads 128 KiB;
+  a dozen concurrent calls need about 3 GiB of address space, and past an
+  address-space limit a call runs on the calling thread as before. A service should
   process each document in a separate worker process with time and memory
   limits; see [FORK.md](FORK.md#6-using-the-package-in-a-redaction-service).
 - Bytes backing an `OpenStream` document are held in memory for its lifetime;
