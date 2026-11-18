@@ -5,6 +5,7 @@ package gomupdf
 /*
 
 #include <mupdf/fitz.h>
+#include "gomupdf_bigstack.h"
 #include <mupdf/pdf.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -21,7 +22,7 @@ static void apply_annot_style(fz_context *ctx, pdf_annot *annot,
     pdf_set_annot_opacity(ctx, annot, opacity);
 }
 
-static int gomupdf_add_line(fz_context *ctx, fz_document *doc, int pageno,
+static int gomupdf_add_line_run(fz_context *ctx, fz_document *doc, int pageno,
                              float ax, float ay, float bx, float by,
                              float *stroke_rgb, float width, float opacity,
                              char *err, int errlen) {
@@ -51,7 +52,7 @@ static int gomupdf_add_line(fz_context *ctx, fz_document *doc, int pageno,
     return 0;
 }
 
-static int gomupdf_add_circle(fz_context *ctx, fz_document *doc, int pageno,
+static int gomupdf_add_circle_run(fz_context *ctx, fz_document *doc, int pageno,
                                float x0, float y0, float x1, float y1,
                                float *stroke_rgb, float *fill_rgb,
                                float width, float opacity,
@@ -81,7 +82,7 @@ static int gomupdf_add_circle(fz_context *ctx, fz_document *doc, int pageno,
     return 0;
 }
 
-static int gomupdf_add_polygon(fz_context *ctx, fz_document *doc, int pageno,
+static int gomupdf_add_polygon_run(fz_context *ctx, fz_document *doc, int pageno,
                                 float *pts, int npts,
                                 float *stroke_rgb, float *fill_rgb,
                                 float width, float opacity,
@@ -113,7 +114,7 @@ static int gomupdf_add_polygon(fz_context *ctx, fz_document *doc, int pageno,
     return 0;
 }
 
-static int gomupdf_add_polyline(fz_context *ctx, fz_document *doc, int pageno,
+static int gomupdf_add_polyline_run(fz_context *ctx, fz_document *doc, int pageno,
                                  float *pts, int npts,
                                  float *stroke_rgb, float width, float opacity,
                                  char *err, int errlen) {
@@ -144,7 +145,7 @@ static int gomupdf_add_polyline(fz_context *ctx, fz_document *doc, int pageno,
     return 0;
 }
 
-static int gomupdf_add_ink(fz_context *ctx, fz_document *doc, int pageno,
+static int gomupdf_add_ink_run(fz_context *ctx, fz_document *doc, int pageno,
                             float *flat_pts, int *counts, int nstrokes,
                             float *stroke_rgb, float width, float opacity,
                             char *err, int errlen) {
@@ -182,7 +183,7 @@ static int gomupdf_add_ink(fz_context *ctx, fz_document *doc, int pageno,
     return 0;
 }
 
-static int gomupdf_add_freetext(fz_context *ctx, fz_document *doc, int pageno,
+static int gomupdf_add_freetext_run(fz_context *ctx, fz_document *doc, int pageno,
                                  float x0, float y0, float x1, float y1,
                                  const char *text, float size,
                                  float *stroke_rgb,
@@ -213,7 +214,7 @@ static int gomupdf_add_freetext(fz_context *ctx, fz_document *doc, int pageno,
     return 0;
 }
 
-static int gomupdf_add_textnote(fz_context *ctx, fz_document *doc, int pageno,
+static int gomupdf_add_textnote_run(fz_context *ctx, fz_document *doc, int pageno,
                                  float x, float y, const char *text,
                                  char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
@@ -239,6 +240,195 @@ static int gomupdf_add_textnote(fz_context *ctx, fz_document *doc, int pageno,
         return -1;
     }
     return 0;
+}
+
+// gomupdf_add_circle runs gomupdf_add_circle_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    float x0;
+    float y0;
+    float x1;
+    float y1;
+    float *stroke_rgb;
+    float *fill_rgb;
+    float width;
+    float opacity;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_add_circle_args;
+
+static void gomupdf_add_circle_thunk(void *p) {
+    gomupdf_add_circle_args *a = p;
+    a->ret = gomupdf_add_circle_run(a->ctx, a->doc, a->pageno, a->x0, a->y0, a->x1, a->y1, a->stroke_rgb, a->fill_rgb, a->width, a->opacity, a->err, a->errlen);
+}
+
+static int gomupdf_add_circle(fz_context *ctx, fz_document *doc, int pageno, float x0, float y0, float x1, float y1, float *stroke_rgb, float *fill_rgb, float width, float opacity, char *err, int errlen) {
+    gomupdf_add_circle_args a = {ctx, doc, pageno, x0, y0, x1, y1, stroke_rgb, fill_rgb, width, opacity, err, errlen};
+    gomupdf_call_bigstack(gomupdf_add_circle_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_add_freetext runs gomupdf_add_freetext_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    float x0;
+    float y0;
+    float x1;
+    float y1;
+    const char *text;
+    float size;
+    float *stroke_rgb;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_add_freetext_args;
+
+static void gomupdf_add_freetext_thunk(void *p) {
+    gomupdf_add_freetext_args *a = p;
+    a->ret = gomupdf_add_freetext_run(a->ctx, a->doc, a->pageno, a->x0, a->y0, a->x1, a->y1, a->text, a->size, a->stroke_rgb, a->err, a->errlen);
+}
+
+static int gomupdf_add_freetext(fz_context *ctx, fz_document *doc, int pageno, float x0, float y0, float x1, float y1, const char *text, float size, float *stroke_rgb, char *err, int errlen) {
+    gomupdf_add_freetext_args a = {ctx, doc, pageno, x0, y0, x1, y1, text, size, stroke_rgb, err, errlen};
+    gomupdf_call_bigstack(gomupdf_add_freetext_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_add_ink runs gomupdf_add_ink_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    float *flat_pts;
+    int *counts;
+    int nstrokes;
+    float *stroke_rgb;
+    float width;
+    float opacity;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_add_ink_args;
+
+static void gomupdf_add_ink_thunk(void *p) {
+    gomupdf_add_ink_args *a = p;
+    a->ret = gomupdf_add_ink_run(a->ctx, a->doc, a->pageno, a->flat_pts, a->counts, a->nstrokes, a->stroke_rgb, a->width, a->opacity, a->err, a->errlen);
+}
+
+static int gomupdf_add_ink(fz_context *ctx, fz_document *doc, int pageno, float *flat_pts, int *counts, int nstrokes, float *stroke_rgb, float width, float opacity, char *err, int errlen) {
+    gomupdf_add_ink_args a = {ctx, doc, pageno, flat_pts, counts, nstrokes, stroke_rgb, width, opacity, err, errlen};
+    gomupdf_call_bigstack(gomupdf_add_ink_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_add_line runs gomupdf_add_line_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    float ax;
+    float ay;
+    float bx;
+    float by;
+    float *stroke_rgb;
+    float width;
+    float opacity;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_add_line_args;
+
+static void gomupdf_add_line_thunk(void *p) {
+    gomupdf_add_line_args *a = p;
+    a->ret = gomupdf_add_line_run(a->ctx, a->doc, a->pageno, a->ax, a->ay, a->bx, a->by, a->stroke_rgb, a->width, a->opacity, a->err, a->errlen);
+}
+
+static int gomupdf_add_line(fz_context *ctx, fz_document *doc, int pageno, float ax, float ay, float bx, float by, float *stroke_rgb, float width, float opacity, char *err, int errlen) {
+    gomupdf_add_line_args a = {ctx, doc, pageno, ax, ay, bx, by, stroke_rgb, width, opacity, err, errlen};
+    gomupdf_call_bigstack(gomupdf_add_line_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_add_polygon runs gomupdf_add_polygon_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    float *pts;
+    int npts;
+    float *stroke_rgb;
+    float *fill_rgb;
+    float width;
+    float opacity;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_add_polygon_args;
+
+static void gomupdf_add_polygon_thunk(void *p) {
+    gomupdf_add_polygon_args *a = p;
+    a->ret = gomupdf_add_polygon_run(a->ctx, a->doc, a->pageno, a->pts, a->npts, a->stroke_rgb, a->fill_rgb, a->width, a->opacity, a->err, a->errlen);
+}
+
+static int gomupdf_add_polygon(fz_context *ctx, fz_document *doc, int pageno, float *pts, int npts, float *stroke_rgb, float *fill_rgb, float width, float opacity, char *err, int errlen) {
+    gomupdf_add_polygon_args a = {ctx, doc, pageno, pts, npts, stroke_rgb, fill_rgb, width, opacity, err, errlen};
+    gomupdf_call_bigstack(gomupdf_add_polygon_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_add_polyline runs gomupdf_add_polyline_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    float *pts;
+    int npts;
+    float *stroke_rgb;
+    float width;
+    float opacity;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_add_polyline_args;
+
+static void gomupdf_add_polyline_thunk(void *p) {
+    gomupdf_add_polyline_args *a = p;
+    a->ret = gomupdf_add_polyline_run(a->ctx, a->doc, a->pageno, a->pts, a->npts, a->stroke_rgb, a->width, a->opacity, a->err, a->errlen);
+}
+
+static int gomupdf_add_polyline(fz_context *ctx, fz_document *doc, int pageno, float *pts, int npts, float *stroke_rgb, float width, float opacity, char *err, int errlen) {
+    gomupdf_add_polyline_args a = {ctx, doc, pageno, pts, npts, stroke_rgb, width, opacity, err, errlen};
+    gomupdf_call_bigstack(gomupdf_add_polyline_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_add_textnote runs gomupdf_add_textnote_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    float x;
+    float y;
+    const char *text;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_add_textnote_args;
+
+static void gomupdf_add_textnote_thunk(void *p) {
+    gomupdf_add_textnote_args *a = p;
+    a->ret = gomupdf_add_textnote_run(a->ctx, a->doc, a->pageno, a->x, a->y, a->text, a->err, a->errlen);
+}
+
+static int gomupdf_add_textnote(fz_context *ctx, fz_document *doc, int pageno, float x, float y, const char *text, char *err, int errlen) {
+    gomupdf_add_textnote_args a = {ctx, doc, pageno, x, y, text, err, errlen};
+    gomupdf_call_bigstack(gomupdf_add_textnote_thunk, &a);
+    return a.ret;
 }
 */
 import "C"

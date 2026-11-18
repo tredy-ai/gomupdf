@@ -5,11 +5,12 @@ package gomupdf
 /*
 
 #include <mupdf/fitz.h>
+#include "gomupdf_bigstack.h"
 #include <mupdf/pdf.h>
 #include <stdlib.h>
 #include <stdio.h>
 
-static int gomupdf_insert_link(fz_context *ctx, fz_document *doc, int pageno,
+static int gomupdf_insert_link_run(fz_context *ctx, fz_document *doc, int pageno,
                                float x0, float y0, float x1, float y1,
                                const char *uri, char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
@@ -31,7 +32,7 @@ static int gomupdf_insert_link(fz_context *ctx, fz_document *doc, int pageno,
     return 0;
 }
 
-static int gomupdf_insert_goto_link(fz_context *ctx, fz_document *doc, int pageno,
+static int gomupdf_insert_goto_link_run(fz_context *ctx, fz_document *doc, int pageno,
                                     float x0, float y0, float x1, float y1,
                                     int destPage, char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
@@ -61,7 +62,7 @@ static int gomupdf_insert_goto_link(fz_context *ctx, fz_document *doc, int pagen
     return 0;
 }
 
-static int gomupdf_delete_link(fz_context *ctx, fz_document *doc, int pageno,
+static int gomupdf_delete_link_run(fz_context *ctx, fz_document *doc, int pageno,
                                int index, char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) { snprintf(err, errlen, "not a PDF document"); return -1; }
@@ -90,6 +91,80 @@ static int gomupdf_delete_link(fz_context *ctx, fz_document *doc, int pageno,
         return -1;
     }
     return 0;
+}
+
+// gomupdf_delete_link runs gomupdf_delete_link_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    int index;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_delete_link_args;
+
+static void gomupdf_delete_link_thunk(void *p) {
+    gomupdf_delete_link_args *a = p;
+    a->ret = gomupdf_delete_link_run(a->ctx, a->doc, a->pageno, a->index, a->err, a->errlen);
+}
+
+static int gomupdf_delete_link(fz_context *ctx, fz_document *doc, int pageno, int index, char *err, int errlen) {
+    gomupdf_delete_link_args a = {ctx, doc, pageno, index, err, errlen};
+    gomupdf_call_bigstack(gomupdf_delete_link_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_insert_goto_link runs gomupdf_insert_goto_link_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    float x0;
+    float y0;
+    float x1;
+    float y1;
+    int destPage;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_insert_goto_link_args;
+
+static void gomupdf_insert_goto_link_thunk(void *p) {
+    gomupdf_insert_goto_link_args *a = p;
+    a->ret = gomupdf_insert_goto_link_run(a->ctx, a->doc, a->pageno, a->x0, a->y0, a->x1, a->y1, a->destPage, a->err, a->errlen);
+}
+
+static int gomupdf_insert_goto_link(fz_context *ctx, fz_document *doc, int pageno, float x0, float y0, float x1, float y1, int destPage, char *err, int errlen) {
+    gomupdf_insert_goto_link_args a = {ctx, doc, pageno, x0, y0, x1, y1, destPage, err, errlen};
+    gomupdf_call_bigstack(gomupdf_insert_goto_link_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_insert_link runs gomupdf_insert_link_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    float x0;
+    float y0;
+    float x1;
+    float y1;
+    const char *uri;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_insert_link_args;
+
+static void gomupdf_insert_link_thunk(void *p) {
+    gomupdf_insert_link_args *a = p;
+    a->ret = gomupdf_insert_link_run(a->ctx, a->doc, a->pageno, a->x0, a->y0, a->x1, a->y1, a->uri, a->err, a->errlen);
+}
+
+static int gomupdf_insert_link(fz_context *ctx, fz_document *doc, int pageno, float x0, float y0, float x1, float y1, const char *uri, char *err, int errlen) {
+    gomupdf_insert_link_args a = {ctx, doc, pageno, x0, y0, x1, y1, uri, err, errlen};
+    gomupdf_call_bigstack(gomupdf_insert_link_thunk, &a);
+    return a.ret;
 }
 */
 import "C"

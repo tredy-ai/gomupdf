@@ -55,7 +55,7 @@ f3b7339..main`), grouped by theme. The groups are thematic, not chronological:
 the order inside each group is the order in the history. "API impact" is
 `None`, `New API`, `Behavior change` (same signatures, different results or
 errors) or `BREAKING` (existing callers must change code or handle a new
-failure). Nothing has been pushed or tagged yet. 86 commits, this document's last update included.
+failure). Nothing has been pushed or tagged yet. 89 commits, the commit that last updated this list included.
 
 
 ### Fork and build
@@ -166,6 +166,8 @@ failure). Nothing has been pushed or tagged yet. 86 commits, this document's las
 | `653d4c6` | `fix: report errors with an empty message from font and image helpers` | Behavior change: an error with an empty message is no longer read as "nothing found" by font and image helpers |
 | `8cc4c9e` | `fix(scrub): do not re-parse unloadable objects in the sweep` | None (sweeps skip unloadable objects; no more minutes-long HiddenContent, Scrub, ShowAllLayers on broken object streams) |
 | `71a998e` | `fix: run deeply recursive MuPDF calls on a large stack` | None (saves, Scrub, extraction and rendering run on a 256 MiB stack; deep files no longer crash) |
+| `a54c345` | `fix: parse SetTOC, SetPageLabels and SetMetadata input reentrantly` | None (concurrent edits of different documents no longer lose entries or crash) |
+| (this commit) | `fix: run the remaining document-reading MuPDF calls on a large stack` | Behavior change: InsertPDF, InsertPDFRange, Scrub, HiddenContent and saves fail where MuPDF silently read past an exception-stack overflow; every document call runs on the large stack |
 
 ### Tests
 
@@ -176,6 +178,7 @@ failure). Nothing has been pushed or tagged yet. 86 commits, this document's las
 | `8deacf5` | `test: report redacted words left after scrub in the corpus test` | None (corpus test reports words left after Scrub) |
 | `2fe60dc` | `test: align the corpus test with the final library behaviour` | None (corpus test expectations) |
 | `e383895` | `test: compare the scrubbed render with the unscrubbed control` | None (corpus test compares renders with the control) |
+| `29f613d` | `test: fail the corpus test when Scrub refuses a file the control accepts` | None (corpus test: scrub-error and redact-error failures) |
 
 ### Documentation
 
@@ -187,7 +190,7 @@ failure). Nothing has been pushed or tagged yet. 86 commits, this document's las
 | `d26050a` | `docs: correct two statements about scrub and open` | None |
 | `f6bd637` | `docs: list the final commits and corpus figures` | None |
 | `0f38b4b` | `docs: record the owner's decisions on layers, structure and MuPDF` | None |
-| (this commit) | `docs: correct the structure and stack statements` | None |
+| `d87d563` | `docs: correct the structure and stack statements` | None |
 
 ## 4. Behavior differences from upstream and stock MuPDF
 
@@ -839,18 +842,28 @@ and returns an error; it does not remove them.
   MuPDF needs about 81 bytes of stack per hop, so the limit is near 3.3
   million. Each such call pays for creating and joining that thread, about
   45 µs (`HiddenContent` on a small file 13 → 56 µs, `GetText` on a small
-  page 27 → 74 µs; invisible on a 4 ms text page or a 42 ms render). Forms
-  nested more than about 60 levels fail with "exception stack overflow"
-  (MuPDF's own exception-stack limit), without crashing.
-  Not moved, and still on the caller's 128 KiB: `TOC` (an outline nested
-  950 levels deep crashes the process from a goroutine, 900 works, before
-  and after this change), merging (`InsertPDF`, `InsertPDFRange`), links,
-  page labels, page edits and annotation edits.
+  page 27 → 74 µs; invisible on a 4 ms text page or a 42 ms render). Since
+  the commit after `a54c345` every other call that reads or edits the
+  document runs there too, so `TOC` reads an outline nested 800,000 levels
+  deep (950 crashed the process before); only the page count, the password
+  check and font metrics stay on the caller's stack.
+  Form XObjects nested more than about 60 levels are refused by MuPDF:
+  `GetText`, `RawDict`, `Pixmap` and the other page calls return an error
+  saying "exception stack overflow" (MuPDF's fixed exception stack, about
+  250 nested `fz_try`), and nothing of that page is returned. The same limit
+  hits a copy: MuPDF reads an object it could not load past it as null and
+  carries on, so `InsertPDF` of a 20,000-long reference chain copied 124
+  links and succeeded; it now fails with that error, and so do `Scrub`,
+  `HiddenContent` and saves if one happens during them.
   If the large-stack thread cannot be created (an address-space limit) the
   call runs on the caller's stack as before. A hostile file can still exceed
   any stack, and a crash on that thread kills the process without a Go
   traceback (it blocks every signal): the service must process each
-  document in a separate worker process (section 6, step 1).
+  document in a separate worker process (section 6, step 1). Under the race
+  detector the committed `large-linky/bug1978317.pdf` takes about 29 s, at
+  `TestCorpus`'s 30 s per-file cap for committed files: run `-race` without
+  `TestCorpus`, or set `GOMUPDF_CORPUS_TIMEOUT` (which, when set, replaces
+  that cap).
 
 **Corpus results (run of 2026-11-18 at `69c77cb`, whose code this document's
 commit does not change; MuPDF 1.26.11 on Alpine 3.23, Go 1.27).** Every

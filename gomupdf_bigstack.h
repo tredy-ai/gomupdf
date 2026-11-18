@@ -6,6 +6,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
+#include <string.h>
 
 /*
  * Running deeply recursive MuPDF calls on a large stack.
@@ -33,6 +34,32 @@
  */
 extern size_t gomupdf_bigstack_size;
 extern __thread int gomupdf_on_bigstack;
+
+/*
+ * Exception-stack overflows MuPDF swallowed. MuPDF's fz_try nests at most
+ * about 250 deep (the exception stack in fz_context); a recursion that goes
+ * deeper fails with "exception stack overflow!", and pdf_resolve_indirect
+ * (pdf-xref.c) catches that like any load error, reports it and returns
+ * NULL, so the caller sees a null object and carries on: a graft of a
+ * 20,000-long reference chain copied 124 links and succeeded.
+ * gomupdf_error_print, every document context's error callback, counts each
+ * report of it on the thread MuPDF runs on; a helper whose success must mean
+ * a complete result zeroes gomupdf_overflows before its work and fails if it
+ * is not zero after (gomupdf_check_overflows). The callback then prints the
+ * message as MuPDF's default does.
+ */
+extern __thread int gomupdf_overflows;
+
+static inline void gomupdf_error_print(void *user, const char *message) {
+    if (strstr(message, "exception stack overflow")) gomupdf_overflows++;
+    fz_default_error_callback(user, message);
+}
+
+static inline void gomupdf_check_overflows(fz_context *ctx) {
+    if (gomupdf_overflows)
+        fz_throw(ctx, FZ_ERROR_LIMIT, "exception stack overflow: the file nests deeper than MuPDF can follow, "
+                                      "so the result would be incomplete");
+}
 
 typedef struct {
     void (*fn)(void *);

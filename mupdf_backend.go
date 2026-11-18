@@ -13,6 +13,7 @@ package gomupdf
 /*
 
 #include <mupdf/fitz.h>
+#include "gomupdf_bigstack.h"
 #include <mupdf/pdf.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,6 +27,7 @@ package gomupdf
 static fz_context *gomupdf_new_context(void) {
     fz_context *ctx = fz_new_context(NULL, NULL, FZ_STORE_DEFAULT);
     if (!ctx) return NULL;
+    fz_set_error_callback(ctx, gomupdf_error_print, NULL); // counts swallowed overflows (gomupdf_bigstack.h)
     fz_try(ctx) {
         fz_register_document_handlers(ctx);
     }
@@ -39,7 +41,7 @@ static fz_context *gomupdf_new_context(void) {
 // Open a document from a memory buffer using an explicit magic/filetype hint
 // (e.g. "png", ".pdf", "application/epub+zip"). The buffer must outlive the
 // returned doc. On error returns NULL and writes the MuPDF message into err.
-static fz_document *gomupdf_open_magic(fz_context *ctx, const unsigned char *data,
+static fz_document *gomupdf_open_magic_run(fz_context *ctx, const unsigned char *data,
                                        size_t len, const char *magic,
                                        char *err, int errlen) {
     fz_document *doc = NULL;
@@ -61,7 +63,7 @@ static fz_document *gomupdf_open_magic(fz_context *ctx, const unsigned char *dat
 }
 
 // Open a document from a file path; MuPDF reads the file lazily.
-static fz_document *gomupdf_open_path(fz_context *ctx, const char *path,
+static fz_document *gomupdf_open_path_run(fz_context *ctx, const char *path,
                                       char *err, int errlen) {
     fz_document *doc = NULL;
     fz_var(doc);
@@ -87,7 +89,7 @@ static int gomupdf_needs_password(fz_context *ctx, fz_document *doc) {
 }
 
 // Returns 1 on success (or if no password needed), 0 on wrong password.
-static int gomupdf_authenticate(fz_context *ctx, fz_document *doc, const char *pw) {
+static int gomupdf_authenticate_run(fz_context *ctx, fz_document *doc, const char *pw) {
     int r = 0;
     fz_try(ctx) { r = fz_authenticate_password(ctx, doc, pw); }
     fz_catch(ctx) { return 0; }
@@ -160,6 +162,67 @@ static void gomupdf_font_vmetrics(fz_context *ctx, fz_font *font,
 // Return the font name (points into font internals; no need to free).
 static const char *gomupdf_font_name_str(fz_context *ctx, fz_font *font) {
     return fz_font_name(ctx, font);
+}
+
+// gomupdf_authenticate runs gomupdf_authenticate_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    const char *pw;
+    int ret;
+} gomupdf_authenticate_args;
+
+static void gomupdf_authenticate_thunk(void *p) {
+    gomupdf_authenticate_args *a = p;
+    a->ret = gomupdf_authenticate_run(a->ctx, a->doc, a->pw);
+}
+
+static int gomupdf_authenticate(fz_context *ctx, fz_document *doc, const char *pw) {
+    gomupdf_authenticate_args a = {ctx, doc, pw};
+    gomupdf_call_bigstack(gomupdf_authenticate_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_open_magic runs gomupdf_open_magic_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    const unsigned char *data;
+    size_t len;
+    const char *magic;
+    char *err;
+    int errlen;
+    fz_document *ret;
+} gomupdf_open_magic_args;
+
+static void gomupdf_open_magic_thunk(void *p) {
+    gomupdf_open_magic_args *a = p;
+    a->ret = gomupdf_open_magic_run(a->ctx, a->data, a->len, a->magic, a->err, a->errlen);
+}
+
+static fz_document *gomupdf_open_magic(fz_context *ctx, const unsigned char *data, size_t len, const char *magic, char *err, int errlen) {
+    gomupdf_open_magic_args a = {ctx, data, len, magic, err, errlen};
+    gomupdf_call_bigstack(gomupdf_open_magic_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_open_path runs gomupdf_open_path_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    const char *path;
+    char *err;
+    int errlen;
+    fz_document *ret;
+} gomupdf_open_path_args;
+
+static void gomupdf_open_path_thunk(void *p) {
+    gomupdf_open_path_args *a = p;
+    a->ret = gomupdf_open_path_run(a->ctx, a->path, a->err, a->errlen);
+}
+
+static fz_document *gomupdf_open_path(fz_context *ctx, const char *path, char *err, int errlen) {
+    gomupdf_open_path_args a = {ctx, path, err, errlen};
+    gomupdf_call_bigstack(gomupdf_open_path_thunk, &a);
+    return a.ret;
 }
 */
 import "C"

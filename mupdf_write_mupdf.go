@@ -8,12 +8,13 @@ package gomupdf
 /*
 
 #include <mupdf/fitz.h>
+#include "gomupdf_bigstack.h"
 #include <mupdf/pdf.h>
 #include <stdlib.h>
 #include <string.h>
 
 // Insert a line of Helvetica text at (x,y) on a page (origin = baseline).
-static int gomupdf_insert_text(fz_context *ctx, fz_document *doc, int pageno,
+static int gomupdf_insert_text_run(fz_context *ctx, fz_document *doc, int pageno,
                                float x, float y, float size, const char *text,
                                char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
@@ -73,7 +74,7 @@ static int gomupdf_insert_text(fz_context *ctx, fz_document *doc, int pageno,
 }
 
 // Insert an image (given as encoded bytes) into the rect (x,y,w,h) on a page.
-static int gomupdf_insert_image(fz_context *ctx, fz_document *doc, int pageno,
+static int gomupdf_insert_image_run(fz_context *ctx, fz_document *doc, int pageno,
                                 float x, float y, float w, float h,
                                 const unsigned char *imgdata, size_t imglen,
                                 char *err, int errlen) {
@@ -135,7 +136,7 @@ static int gomupdf_insert_image(fz_context *ctx, fz_document *doc, int pageno,
 }
 
 // Add a rectangle annotation on a page.
-static int gomupdf_add_rect_annot(fz_context *ctx, fz_document *doc, int pageno,
+static int gomupdf_add_rect_annot_run(fz_context *ctx, fz_document *doc, int pageno,
                                   float x0, float y0, float x1, float y1,
                                   char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
@@ -161,7 +162,7 @@ static int gomupdf_add_rect_annot(fz_context *ctx, fz_document *doc, int pageno,
 }
 
 // Append a generic PDF content-stream fragment (wrapped in q…Q) to the page.
-static int gomupdf_draw_content(fz_context *ctx, fz_document *doc, int pageno,
+static int gomupdf_draw_content_run(fz_context *ctx, fz_document *doc, int pageno,
                                 const char *fragment, char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) { snprintf(err, errlen, "not a PDF document"); return -1; }
@@ -201,7 +202,7 @@ static int gomupdf_draw_content(fz_context *ctx, fz_document *doc, int pageno,
 
 // Ensure /Resources/Font/F0 = Helvetica on the page, then append a BT...ET
 // text content stream.
-static int gomupdf_draw_text(fz_context *ctx, fz_document *doc, int pageno,
+static int gomupdf_draw_text_run(fz_context *ctx, fz_document *doc, int pageno,
                              const char *fragment, char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) { snprintf(err, errlen, "not a PDF document"); return -1; }
@@ -251,6 +252,127 @@ static int gomupdf_draw_text(fz_context *ctx, fz_document *doc, int pageno,
         return -1;
     }
     return 0;
+}
+
+// gomupdf_add_rect_annot runs gomupdf_add_rect_annot_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    float x0;
+    float y0;
+    float x1;
+    float y1;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_add_rect_annot_args;
+
+static void gomupdf_add_rect_annot_thunk(void *p) {
+    gomupdf_add_rect_annot_args *a = p;
+    a->ret = gomupdf_add_rect_annot_run(a->ctx, a->doc, a->pageno, a->x0, a->y0, a->x1, a->y1, a->err, a->errlen);
+}
+
+static int gomupdf_add_rect_annot(fz_context *ctx, fz_document *doc, int pageno, float x0, float y0, float x1, float y1, char *err, int errlen) {
+    gomupdf_add_rect_annot_args a = {ctx, doc, pageno, x0, y0, x1, y1, err, errlen};
+    gomupdf_call_bigstack(gomupdf_add_rect_annot_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_draw_content runs gomupdf_draw_content_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    const char *fragment;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_draw_content_args;
+
+static void gomupdf_draw_content_thunk(void *p) {
+    gomupdf_draw_content_args *a = p;
+    a->ret = gomupdf_draw_content_run(a->ctx, a->doc, a->pageno, a->fragment, a->err, a->errlen);
+}
+
+static int gomupdf_draw_content(fz_context *ctx, fz_document *doc, int pageno, const char *fragment, char *err, int errlen) {
+    gomupdf_draw_content_args a = {ctx, doc, pageno, fragment, err, errlen};
+    gomupdf_call_bigstack(gomupdf_draw_content_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_draw_text runs gomupdf_draw_text_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    const char *fragment;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_draw_text_args;
+
+static void gomupdf_draw_text_thunk(void *p) {
+    gomupdf_draw_text_args *a = p;
+    a->ret = gomupdf_draw_text_run(a->ctx, a->doc, a->pageno, a->fragment, a->err, a->errlen);
+}
+
+static int gomupdf_draw_text(fz_context *ctx, fz_document *doc, int pageno, const char *fragment, char *err, int errlen) {
+    gomupdf_draw_text_args a = {ctx, doc, pageno, fragment, err, errlen};
+    gomupdf_call_bigstack(gomupdf_draw_text_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_insert_image runs gomupdf_insert_image_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    float x;
+    float y;
+    float w;
+    float h;
+    const unsigned char *imgdata;
+    size_t imglen;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_insert_image_args;
+
+static void gomupdf_insert_image_thunk(void *p) {
+    gomupdf_insert_image_args *a = p;
+    a->ret = gomupdf_insert_image_run(a->ctx, a->doc, a->pageno, a->x, a->y, a->w, a->h, a->imgdata, a->imglen, a->err, a->errlen);
+}
+
+static int gomupdf_insert_image(fz_context *ctx, fz_document *doc, int pageno, float x, float y, float w, float h, const unsigned char *imgdata, size_t imglen, char *err, int errlen) {
+    gomupdf_insert_image_args a = {ctx, doc, pageno, x, y, w, h, imgdata, imglen, err, errlen};
+    gomupdf_call_bigstack(gomupdf_insert_image_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_insert_text runs gomupdf_insert_text_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    float x;
+    float y;
+    float size;
+    const char *text;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_insert_text_args;
+
+static void gomupdf_insert_text_thunk(void *p) {
+    gomupdf_insert_text_args *a = p;
+    a->ret = gomupdf_insert_text_run(a->ctx, a->doc, a->pageno, a->x, a->y, a->size, a->text, a->err, a->errlen);
+}
+
+static int gomupdf_insert_text(fz_context *ctx, fz_document *doc, int pageno, float x, float y, float size, const char *text, char *err, int errlen) {
+    gomupdf_insert_text_args a = {ctx, doc, pageno, x, y, size, text, err, errlen};
+    gomupdf_call_bigstack(gomupdf_insert_text_thunk, &a);
+    return a.ret;
 }
 */
 import "C"

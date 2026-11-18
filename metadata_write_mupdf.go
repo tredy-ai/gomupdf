@@ -5,12 +5,13 @@ package gomupdf
 /*
 
 #include <mupdf/fitz.h>
+#include "gomupdf_bigstack.h"
 #include <mupdf/pdf.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 
-static int gomupdf_set_metadata(fz_context *ctx, fz_document *doc, char *spec,
+static int gomupdf_set_metadata_run(fz_context *ctx, fz_document *doc, char *spec,
                                 char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) { snprintf(err, errlen, "not a PDF document"); return -1; }
@@ -40,7 +41,7 @@ static int gomupdf_set_metadata(fz_context *ctx, fz_document *doc, char *spec,
     return 0;
 }
 
-static unsigned char *gomupdf_get_xmp(fz_context *ctx, fz_document *doc,
+static unsigned char *gomupdf_get_xmp_run(fz_context *ctx, fz_document *doc,
                                       int *out_len, char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) { snprintf(err, errlen, "not a PDF document"); return NULL; }
@@ -70,7 +71,7 @@ static unsigned char *gomupdf_get_xmp(fz_context *ctx, fz_document *doc,
     return result;
 }
 
-static int gomupdf_set_xmp(fz_context *ctx, fz_document *doc,
+static int gomupdf_set_xmp_run(fz_context *ctx, fz_document *doc,
                            const unsigned char *data, size_t len,
                            char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
@@ -103,7 +104,7 @@ static int gomupdf_set_xmp(fz_context *ctx, fz_document *doc,
     return 0;
 }
 
-static int gomupdf_del_xmp(fz_context *ctx, fz_document *doc, char *err, int errlen) {
+static int gomupdf_del_xmp_run(fz_context *ctx, fz_document *doc, char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) { snprintf(err, errlen, "not a PDF document"); return -1; }
     fz_try(ctx) {
@@ -115,6 +116,90 @@ static int gomupdf_del_xmp(fz_context *ctx, fz_document *doc, char *err, int err
         return -1;
     }
     return 0;
+}
+
+// gomupdf_del_xmp runs gomupdf_del_xmp_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_del_xmp_args;
+
+static void gomupdf_del_xmp_thunk(void *p) {
+    gomupdf_del_xmp_args *a = p;
+    a->ret = gomupdf_del_xmp_run(a->ctx, a->doc, a->err, a->errlen);
+}
+
+static int gomupdf_del_xmp(fz_context *ctx, fz_document *doc, char *err, int errlen) {
+    gomupdf_del_xmp_args a = {ctx, doc, err, errlen};
+    gomupdf_call_bigstack(gomupdf_del_xmp_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_get_xmp runs gomupdf_get_xmp_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int *out_len;
+    char *err;
+    int errlen;
+    unsigned char *ret;
+} gomupdf_get_xmp_args;
+
+static void gomupdf_get_xmp_thunk(void *p) {
+    gomupdf_get_xmp_args *a = p;
+    a->ret = gomupdf_get_xmp_run(a->ctx, a->doc, a->out_len, a->err, a->errlen);
+}
+
+static unsigned char *gomupdf_get_xmp(fz_context *ctx, fz_document *doc, int *out_len, char *err, int errlen) {
+    gomupdf_get_xmp_args a = {ctx, doc, out_len, err, errlen};
+    gomupdf_call_bigstack(gomupdf_get_xmp_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_set_metadata runs gomupdf_set_metadata_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    char *spec;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_set_metadata_args;
+
+static void gomupdf_set_metadata_thunk(void *p) {
+    gomupdf_set_metadata_args *a = p;
+    a->ret = gomupdf_set_metadata_run(a->ctx, a->doc, a->spec, a->err, a->errlen);
+}
+
+static int gomupdf_set_metadata(fz_context *ctx, fz_document *doc, char *spec, char *err, int errlen) {
+    gomupdf_set_metadata_args a = {ctx, doc, spec, err, errlen};
+    gomupdf_call_bigstack(gomupdf_set_metadata_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_set_xmp runs gomupdf_set_xmp_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    const unsigned char *data;
+    size_t len;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_set_xmp_args;
+
+static void gomupdf_set_xmp_thunk(void *p) {
+    gomupdf_set_xmp_args *a = p;
+    a->ret = gomupdf_set_xmp_run(a->ctx, a->doc, a->data, a->len, a->err, a->errlen);
+}
+
+static int gomupdf_set_xmp(fz_context *ctx, fz_document *doc, const unsigned char *data, size_t len, char *err, int errlen) {
+    gomupdf_set_xmp_args a = {ctx, doc, data, len, err, errlen};
+    gomupdf_call_bigstack(gomupdf_set_xmp_thunk, &a);
+    return a.ret;
 }
 */
 import "C"

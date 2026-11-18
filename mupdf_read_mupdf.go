@@ -9,6 +9,7 @@ package gomupdf
 /*
 
 #include <mupdf/fitz.h>
+#include "gomupdf_bigstack.h"
 #include "gomupdf_stext.h"
 #include <mupdf/pdf.h>
 #include <stdlib.h>
@@ -16,7 +17,7 @@ package gomupdf
 #include <stdint.h>
 
 // Extract reading-order plain text for one page (lines separated by '\n').
-static char *gomupdf_page_text(fz_context *ctx, fz_document *doc, int pageno,
+static char *gomupdf_page_text_run(fz_context *ctx, fz_document *doc, int pageno,
                                char *err, int errlen) {
     fz_page *page = NULL;
     fz_stext_page *stext = NULL;
@@ -61,7 +62,7 @@ static char *gomupdf_page_text(fz_context *ctx, fz_document *doc, int pageno,
 
 // Char-level word extraction. Emits one word per line as
 // "x0 y0 x1 y1 blockno lineno\t<text>".
-static char *gomupdf_page_words(fz_context *ctx, fz_document *doc, int pageno,
+static char *gomupdf_page_words_run(fz_context *ctx, fz_document *doc, int pageno,
                                 char *err, int errlen) {
     fz_page *page = NULL;
     fz_stext_page *stext = NULL;
@@ -153,7 +154,7 @@ static char *gomupdf_page_words(fz_context *ctx, fz_document *doc, int pageno,
 }
 
 // Page bounding box. Emits "x0 y0 x1 y1".
-static char *gomupdf_page_bound(fz_context *ctx, fz_document *doc, int pageno,
+static char *gomupdf_page_bound_run(fz_context *ctx, fz_document *doc, int pageno,
                                 char *err, int errlen) {
     fz_page *page = NULL;
     char *result = NULL;
@@ -192,7 +193,7 @@ static void gomupdf_emit_outline(fz_context *ctx, fz_document *doc, fz_output *o
     }
 }
 
-static char *gomupdf_toc(fz_context *ctx, fz_document *doc, char *err, int errlen) {
+static char *gomupdf_toc_run(fz_context *ctx, fz_document *doc, char *err, int errlen) {
     fz_outline *ol = NULL;
     fz_buffer *buf = NULL;
     fz_output *out = NULL;
@@ -226,7 +227,7 @@ static char *gomupdf_toc(fz_context *ctx, fz_document *doc, char *err, int errle
     return result;
 }
 
-static char *gomupdf_links(fz_context *ctx, fz_document *doc, int pageno,
+static char *gomupdf_links_run(fz_context *ctx, fz_document *doc, int pageno,
                            char *err, int errlen) {
     fz_page *page = NULL;
     fz_link *links = NULL;
@@ -271,7 +272,7 @@ static char *gomupdf_links(fz_context *ctx, fz_document *doc, int pageno,
     return result;
 }
 
-static char *gomupdf_search(fz_context *ctx, fz_document *doc, int pageno,
+static char *gomupdf_search_run(fz_context *ctx, fz_document *doc, int pageno,
                             const char *needle, char *err, int errlen) {
     fz_page *page = NULL;
     fz_stext_page *stext = NULL;
@@ -318,7 +319,7 @@ static char *gomupdf_search(fz_context *ctx, fz_document *doc, int pageno,
     return result;
 }
 
-static int gomupdf_lookup_meta(fz_context *ctx, fz_document *doc, const char *key,
+static int gomupdf_lookup_meta_run(fz_context *ctx, fz_document *doc, const char *key,
                                char *buf, int size) {
     int n = -1;
     fz_try(ctx) { n = fz_lookup_metadata(ctx, doc, key, buf, size); }
@@ -326,7 +327,7 @@ static int gomupdf_lookup_meta(fz_context *ctx, fz_document *doc, const char *ke
     return n;
 }
 
-static char *gomupdf_page_stext_json(fz_context *ctx, fz_document *doc, int pageno,
+static char *gomupdf_page_stext_json_run(fz_context *ctx, fz_document *doc, int pageno,
                                      char *err, int errlen) {
     fz_page *page = NULL;
     fz_stext_page *stext = NULL;
@@ -399,7 +400,7 @@ static void gomupdf_img_meta_fill(fz_context *ctx, fz_device *dev, fz_image *img
                      gomupdf_image_ext(ctx, img));
 }
 
-static char *gomupdf_images(fz_context *ctx, fz_document *doc, int pageno,
+static char *gomupdf_images_run(fz_context *ctx, fz_document *doc, int pageno,
                             char *err, int errlen) {
     fz_page *page = NULL;
     fz_device *dev = NULL;
@@ -485,7 +486,7 @@ static void gomupdf_img_extract_fill(fz_context *ctx, fz_device *dev, fz_image *
     d->count++;
 }
 
-static unsigned char *gomupdf_image_bytes(fz_context *ctx, fz_document *doc, int pageno,
+static unsigned char *gomupdf_image_bytes_run(fz_context *ctx, fz_document *doc, int pageno,
                                           int index, int *out_len, char *ext_out,
                                           int *failed, char *err, int errlen) {
     fz_page *page = NULL;
@@ -606,7 +607,7 @@ static void gomupdf_stroke_path(fz_context *ctx, fz_device *dev, const fz_path *
     gomupdf_walk(ctx, buf, path, ctm);
 }
 
-static char *gomupdf_drawings(fz_context *ctx, fz_document *doc, int pageno,
+static char *gomupdf_drawings_run(fz_context *ctx, fz_document *doc, int pageno,
                               char *err, int errlen) {
     fz_page *page = NULL;
     fz_device *dev = NULL;
@@ -641,6 +642,241 @@ static char *gomupdf_drawings(fz_context *ctx, fz_document *doc, int pageno,
         return NULL;
     }
     return result;
+}
+
+// gomupdf_drawings runs gomupdf_drawings_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    char *err;
+    int errlen;
+    char *ret;
+} gomupdf_drawings_args;
+
+static void gomupdf_drawings_thunk(void *p) {
+    gomupdf_drawings_args *a = p;
+    a->ret = gomupdf_drawings_run(a->ctx, a->doc, a->pageno, a->err, a->errlen);
+}
+
+static char *gomupdf_drawings(fz_context *ctx, fz_document *doc, int pageno, char *err, int errlen) {
+    gomupdf_drawings_args a = {ctx, doc, pageno, err, errlen};
+    gomupdf_call_bigstack(gomupdf_drawings_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_image_bytes runs gomupdf_image_bytes_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    int index;
+    int *out_len;
+    char *ext_out;
+    int *failed;
+    char *err;
+    int errlen;
+    unsigned char *ret;
+} gomupdf_image_bytes_args;
+
+static void gomupdf_image_bytes_thunk(void *p) {
+    gomupdf_image_bytes_args *a = p;
+    a->ret = gomupdf_image_bytes_run(a->ctx, a->doc, a->pageno, a->index, a->out_len, a->ext_out, a->failed, a->err, a->errlen);
+}
+
+static unsigned char *gomupdf_image_bytes(fz_context *ctx, fz_document *doc, int pageno, int index, int *out_len, char *ext_out, int *failed, char *err, int errlen) {
+    gomupdf_image_bytes_args a = {ctx, doc, pageno, index, out_len, ext_out, failed, err, errlen};
+    gomupdf_call_bigstack(gomupdf_image_bytes_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_images runs gomupdf_images_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    char *err;
+    int errlen;
+    char *ret;
+} gomupdf_images_args;
+
+static void gomupdf_images_thunk(void *p) {
+    gomupdf_images_args *a = p;
+    a->ret = gomupdf_images_run(a->ctx, a->doc, a->pageno, a->err, a->errlen);
+}
+
+static char *gomupdf_images(fz_context *ctx, fz_document *doc, int pageno, char *err, int errlen) {
+    gomupdf_images_args a = {ctx, doc, pageno, err, errlen};
+    gomupdf_call_bigstack(gomupdf_images_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_links runs gomupdf_links_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    char *err;
+    int errlen;
+    char *ret;
+} gomupdf_links_args;
+
+static void gomupdf_links_thunk(void *p) {
+    gomupdf_links_args *a = p;
+    a->ret = gomupdf_links_run(a->ctx, a->doc, a->pageno, a->err, a->errlen);
+}
+
+static char *gomupdf_links(fz_context *ctx, fz_document *doc, int pageno, char *err, int errlen) {
+    gomupdf_links_args a = {ctx, doc, pageno, err, errlen};
+    gomupdf_call_bigstack(gomupdf_links_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_lookup_meta runs gomupdf_lookup_meta_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    const char *key;
+    char *buf;
+    int size;
+    int ret;
+} gomupdf_lookup_meta_args;
+
+static void gomupdf_lookup_meta_thunk(void *p) {
+    gomupdf_lookup_meta_args *a = p;
+    a->ret = gomupdf_lookup_meta_run(a->ctx, a->doc, a->key, a->buf, a->size);
+}
+
+static int gomupdf_lookup_meta(fz_context *ctx, fz_document *doc, const char *key, char *buf, int size) {
+    gomupdf_lookup_meta_args a = {ctx, doc, key, buf, size};
+    gomupdf_call_bigstack(gomupdf_lookup_meta_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_page_bound runs gomupdf_page_bound_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    char *err;
+    int errlen;
+    char *ret;
+} gomupdf_page_bound_args;
+
+static void gomupdf_page_bound_thunk(void *p) {
+    gomupdf_page_bound_args *a = p;
+    a->ret = gomupdf_page_bound_run(a->ctx, a->doc, a->pageno, a->err, a->errlen);
+}
+
+static char *gomupdf_page_bound(fz_context *ctx, fz_document *doc, int pageno, char *err, int errlen) {
+    gomupdf_page_bound_args a = {ctx, doc, pageno, err, errlen};
+    gomupdf_call_bigstack(gomupdf_page_bound_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_page_stext_json runs gomupdf_page_stext_json_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    char *err;
+    int errlen;
+    char *ret;
+} gomupdf_page_stext_json_args;
+
+static void gomupdf_page_stext_json_thunk(void *p) {
+    gomupdf_page_stext_json_args *a = p;
+    a->ret = gomupdf_page_stext_json_run(a->ctx, a->doc, a->pageno, a->err, a->errlen);
+}
+
+static char *gomupdf_page_stext_json(fz_context *ctx, fz_document *doc, int pageno, char *err, int errlen) {
+    gomupdf_page_stext_json_args a = {ctx, doc, pageno, err, errlen};
+    gomupdf_call_bigstack(gomupdf_page_stext_json_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_page_text runs gomupdf_page_text_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    char *err;
+    int errlen;
+    char *ret;
+} gomupdf_page_text_args;
+
+static void gomupdf_page_text_thunk(void *p) {
+    gomupdf_page_text_args *a = p;
+    a->ret = gomupdf_page_text_run(a->ctx, a->doc, a->pageno, a->err, a->errlen);
+}
+
+static char *gomupdf_page_text(fz_context *ctx, fz_document *doc, int pageno, char *err, int errlen) {
+    gomupdf_page_text_args a = {ctx, doc, pageno, err, errlen};
+    gomupdf_call_bigstack(gomupdf_page_text_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_page_words runs gomupdf_page_words_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    char *err;
+    int errlen;
+    char *ret;
+} gomupdf_page_words_args;
+
+static void gomupdf_page_words_thunk(void *p) {
+    gomupdf_page_words_args *a = p;
+    a->ret = gomupdf_page_words_run(a->ctx, a->doc, a->pageno, a->err, a->errlen);
+}
+
+static char *gomupdf_page_words(fz_context *ctx, fz_document *doc, int pageno, char *err, int errlen) {
+    gomupdf_page_words_args a = {ctx, doc, pageno, err, errlen};
+    gomupdf_call_bigstack(gomupdf_page_words_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_search runs gomupdf_search_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    const char *needle;
+    char *err;
+    int errlen;
+    char *ret;
+} gomupdf_search_args;
+
+static void gomupdf_search_thunk(void *p) {
+    gomupdf_search_args *a = p;
+    a->ret = gomupdf_search_run(a->ctx, a->doc, a->pageno, a->needle, a->err, a->errlen);
+}
+
+static char *gomupdf_search(fz_context *ctx, fz_document *doc, int pageno, const char *needle, char *err, int errlen) {
+    gomupdf_search_args a = {ctx, doc, pageno, needle, err, errlen};
+    gomupdf_call_bigstack(gomupdf_search_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_toc runs gomupdf_toc_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    char *err;
+    int errlen;
+    char *ret;
+} gomupdf_toc_args;
+
+static void gomupdf_toc_thunk(void *p) {
+    gomupdf_toc_args *a = p;
+    a->ret = gomupdf_toc_run(a->ctx, a->doc, a->err, a->errlen);
+}
+
+static char *gomupdf_toc(fz_context *ctx, fz_document *doc, char *err, int errlen) {
+    gomupdf_toc_args a = {ctx, doc, err, errlen};
+    gomupdf_call_bigstack(gomupdf_toc_thunk, &a);
+    return a.ret;
 }
 */
 import "C"

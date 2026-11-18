@@ -5,11 +5,12 @@ package gomupdf
 /*
 
 #include <mupdf/fitz.h>
+#include "gomupdf_bigstack.h"
 #include "gomupdf_stext.h"
 #include <stdlib.h>
 #include <string.h>
 
-static char *gomupdf_page_stext_html(fz_context *ctx, fz_document *doc, int pageno,
+static char *gomupdf_page_stext_html_run(fz_context *ctx, fz_document *doc, int pageno,
                                      char *err, int errlen) {
     fz_page *page = NULL;
     fz_stext_page *stext = NULL;
@@ -49,7 +50,7 @@ static char *gomupdf_page_stext_html(fz_context *ctx, fz_document *doc, int page
     return result;
 }
 
-static char *gomupdf_page_stext_xhtml(fz_context *ctx, fz_document *doc, int pageno,
+static char *gomupdf_page_stext_xhtml_run(fz_context *ctx, fz_document *doc, int pageno,
                                       char *err, int errlen) {
     fz_page *page = NULL;
     fz_stext_page *stext = NULL;
@@ -89,7 +90,7 @@ static char *gomupdf_page_stext_xhtml(fz_context *ctx, fz_document *doc, int pag
     return result;
 }
 
-static char *gomupdf_page_stext_xml(fz_context *ctx, fz_document *doc, int pageno,
+static char *gomupdf_page_stext_xml_run(fz_context *ctx, fz_document *doc, int pageno,
                                     char *err, int errlen) {
     fz_page *page = NULL;
     fz_stext_page *stext = NULL;
@@ -127,6 +128,69 @@ static char *gomupdf_page_stext_xml(fz_context *ctx, fz_document *doc, int pagen
         return NULL;
     }
     return result;
+}
+
+// gomupdf_page_stext_html runs gomupdf_page_stext_html_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    char *err;
+    int errlen;
+    char *ret;
+} gomupdf_page_stext_html_args;
+
+static void gomupdf_page_stext_html_thunk(void *p) {
+    gomupdf_page_stext_html_args *a = p;
+    a->ret = gomupdf_page_stext_html_run(a->ctx, a->doc, a->pageno, a->err, a->errlen);
+}
+
+static char *gomupdf_page_stext_html(fz_context *ctx, fz_document *doc, int pageno, char *err, int errlen) {
+    gomupdf_page_stext_html_args a = {ctx, doc, pageno, err, errlen};
+    gomupdf_call_bigstack(gomupdf_page_stext_html_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_page_stext_xhtml runs gomupdf_page_stext_xhtml_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    char *err;
+    int errlen;
+    char *ret;
+} gomupdf_page_stext_xhtml_args;
+
+static void gomupdf_page_stext_xhtml_thunk(void *p) {
+    gomupdf_page_stext_xhtml_args *a = p;
+    a->ret = gomupdf_page_stext_xhtml_run(a->ctx, a->doc, a->pageno, a->err, a->errlen);
+}
+
+static char *gomupdf_page_stext_xhtml(fz_context *ctx, fz_document *doc, int pageno, char *err, int errlen) {
+    gomupdf_page_stext_xhtml_args a = {ctx, doc, pageno, err, errlen};
+    gomupdf_call_bigstack(gomupdf_page_stext_xhtml_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_page_stext_xml runs gomupdf_page_stext_xml_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    char *err;
+    int errlen;
+    char *ret;
+} gomupdf_page_stext_xml_args;
+
+static void gomupdf_page_stext_xml_thunk(void *p) {
+    gomupdf_page_stext_xml_args *a = p;
+    a->ret = gomupdf_page_stext_xml_run(a->ctx, a->doc, a->pageno, a->err, a->errlen);
+}
+
+static char *gomupdf_page_stext_xml(fz_context *ctx, fz_document *doc, int pageno, char *err, int errlen) {
+    gomupdf_page_stext_xml_args a = {ctx, doc, pageno, err, errlen};
+    gomupdf_call_bigstack(gomupdf_page_stext_xml_thunk, &a);
+    return a.ret;
 }
 */
 import "C"

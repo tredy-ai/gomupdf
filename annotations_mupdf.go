@@ -5,12 +5,13 @@ package gomupdf
 /*
 
 #include <mupdf/fitz.h>
+#include "gomupdf_bigstack.h"
 #include <mupdf/pdf.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
-static char *gomupdf_list_annots(fz_context *ctx, fz_document *doc, int pageno,
+static char *gomupdf_list_annots_run(fz_context *ctx, fz_document *doc, int pageno,
                                  char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) { snprintf(err, errlen, "not a PDF document"); return NULL; }
@@ -64,7 +65,7 @@ static char *gomupdf_list_annots(fz_context *ctx, fz_document *doc, int pageno,
     return result;
 }
 
-static int gomupdf_delete_annot(fz_context *ctx, fz_document *doc, int pageno,
+static int gomupdf_delete_annot_run(fz_context *ctx, fz_document *doc, int pageno,
                                 int index, char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) { snprintf(err, errlen, "not a PDF document"); return -1; }
@@ -92,7 +93,7 @@ static int gomupdf_delete_annot(fz_context *ctx, fz_document *doc, int pageno,
 }
 
 // annot_type: 0=highlight, 1=underline, 2=strikeout, 3=squiggly.
-static int gomupdf_add_markup_annot(fz_context *ctx, fz_document *doc, int pageno,
+static int gomupdf_add_markup_annot_run(fz_context *ctx, fz_document *doc, int pageno,
                                     int annot_type, float *quads, int nquads,
                                     char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
@@ -138,6 +139,73 @@ static int gomupdf_add_markup_annot(fz_context *ctx, fz_document *doc, int pagen
         return -1;
     }
     return 0;
+}
+
+// gomupdf_add_markup_annot runs gomupdf_add_markup_annot_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    int annot_type;
+    float *quads;
+    int nquads;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_add_markup_annot_args;
+
+static void gomupdf_add_markup_annot_thunk(void *p) {
+    gomupdf_add_markup_annot_args *a = p;
+    a->ret = gomupdf_add_markup_annot_run(a->ctx, a->doc, a->pageno, a->annot_type, a->quads, a->nquads, a->err, a->errlen);
+}
+
+static int gomupdf_add_markup_annot(fz_context *ctx, fz_document *doc, int pageno, int annot_type, float *quads, int nquads, char *err, int errlen) {
+    gomupdf_add_markup_annot_args a = {ctx, doc, pageno, annot_type, quads, nquads, err, errlen};
+    gomupdf_call_bigstack(gomupdf_add_markup_annot_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_delete_annot runs gomupdf_delete_annot_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    int index;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_delete_annot_args;
+
+static void gomupdf_delete_annot_thunk(void *p) {
+    gomupdf_delete_annot_args *a = p;
+    a->ret = gomupdf_delete_annot_run(a->ctx, a->doc, a->pageno, a->index, a->err, a->errlen);
+}
+
+static int gomupdf_delete_annot(fz_context *ctx, fz_document *doc, int pageno, int index, char *err, int errlen) {
+    gomupdf_delete_annot_args a = {ctx, doc, pageno, index, err, errlen};
+    gomupdf_call_bigstack(gomupdf_delete_annot_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_list_annots runs gomupdf_list_annots_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    char *err;
+    int errlen;
+    char *ret;
+} gomupdf_list_annots_args;
+
+static void gomupdf_list_annots_thunk(void *p) {
+    gomupdf_list_annots_args *a = p;
+    a->ret = gomupdf_list_annots_run(a->ctx, a->doc, a->pageno, a->err, a->errlen);
+}
+
+static char *gomupdf_list_annots(fz_context *ctx, fz_document *doc, int pageno, char *err, int errlen) {
+    gomupdf_list_annots_args a = {ctx, doc, pageno, err, errlen};
+    gomupdf_call_bigstack(gomupdf_list_annots_thunk, &a);
+    return a.ret;
 }
 */
 import "C"

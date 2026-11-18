@@ -5,12 +5,13 @@ package gomupdf
 /*
 
 #include <mupdf/fitz.h>
+#include "gomupdf_bigstack.h"
 #include <mupdf/pdf.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
-static char *gomupdf_list_widgets(fz_context *ctx, fz_document *doc, int pageno,
+static char *gomupdf_list_widgets_run(fz_context *ctx, fz_document *doc, int pageno,
                                   char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) { snprintf(err, errlen, "not a PDF document"); return NULL; }
@@ -96,7 +97,7 @@ static char *gomupdf_list_widgets(fz_context *ctx, fz_document *doc, int pageno,
     return result;
 }
 
-static int gomupdf_set_text_field(fz_context *ctx, fz_document *doc, int pageno,
+static int gomupdf_set_text_field_run(fz_context *ctx, fz_document *doc, int pageno,
                                   int index, const char *value, char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) { snprintf(err, errlen, "not a PDF document"); return -1; }
@@ -125,7 +126,7 @@ static int gomupdf_set_text_field(fz_context *ctx, fz_document *doc, int pageno,
     return 0;
 }
 
-static int gomupdf_set_checkbox(fz_context *ctx, fz_document *doc, int pageno,
+static int gomupdf_set_checkbox_run(fz_context *ctx, fz_document *doc, int pageno,
                                 int index, int checked, char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) { snprintf(err, errlen, "not a PDF document"); return -1; }
@@ -160,7 +161,7 @@ static int gomupdf_set_checkbox(fz_context *ctx, fz_document *doc, int pageno,
     return 0;
 }
 
-static int gomupdf_add_text_field(fz_context *ctx, fz_document *doc, int pageno,
+static int gomupdf_add_text_field_run(fz_context *ctx, fz_document *doc, int pageno,
                                   const char *name, float x0, float y0, float x1, float y1,
                                   const char *value, char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
@@ -212,6 +213,100 @@ static int gomupdf_add_text_field(fz_context *ctx, fz_document *doc, int pageno,
         return -1;
     }
     return 0;
+}
+
+// gomupdf_add_text_field runs gomupdf_add_text_field_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    const char *name;
+    float x0;
+    float y0;
+    float x1;
+    float y1;
+    const char *value;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_add_text_field_args;
+
+static void gomupdf_add_text_field_thunk(void *p) {
+    gomupdf_add_text_field_args *a = p;
+    a->ret = gomupdf_add_text_field_run(a->ctx, a->doc, a->pageno, a->name, a->x0, a->y0, a->x1, a->y1, a->value, a->err, a->errlen);
+}
+
+static int gomupdf_add_text_field(fz_context *ctx, fz_document *doc, int pageno, const char *name, float x0, float y0, float x1, float y1, const char *value, char *err, int errlen) {
+    gomupdf_add_text_field_args a = {ctx, doc, pageno, name, x0, y0, x1, y1, value, err, errlen};
+    gomupdf_call_bigstack(gomupdf_add_text_field_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_list_widgets runs gomupdf_list_widgets_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    char *err;
+    int errlen;
+    char *ret;
+} gomupdf_list_widgets_args;
+
+static void gomupdf_list_widgets_thunk(void *p) {
+    gomupdf_list_widgets_args *a = p;
+    a->ret = gomupdf_list_widgets_run(a->ctx, a->doc, a->pageno, a->err, a->errlen);
+}
+
+static char *gomupdf_list_widgets(fz_context *ctx, fz_document *doc, int pageno, char *err, int errlen) {
+    gomupdf_list_widgets_args a = {ctx, doc, pageno, err, errlen};
+    gomupdf_call_bigstack(gomupdf_list_widgets_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_set_checkbox runs gomupdf_set_checkbox_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    int index;
+    int checked;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_set_checkbox_args;
+
+static void gomupdf_set_checkbox_thunk(void *p) {
+    gomupdf_set_checkbox_args *a = p;
+    a->ret = gomupdf_set_checkbox_run(a->ctx, a->doc, a->pageno, a->index, a->checked, a->err, a->errlen);
+}
+
+static int gomupdf_set_checkbox(fz_context *ctx, fz_document *doc, int pageno, int index, int checked, char *err, int errlen) {
+    gomupdf_set_checkbox_args a = {ctx, doc, pageno, index, checked, err, errlen};
+    gomupdf_call_bigstack(gomupdf_set_checkbox_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_set_text_field runs gomupdf_set_text_field_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    int index;
+    const char *value;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_set_text_field_args;
+
+static void gomupdf_set_text_field_thunk(void *p) {
+    gomupdf_set_text_field_args *a = p;
+    a->ret = gomupdf_set_text_field_run(a->ctx, a->doc, a->pageno, a->index, a->value, a->err, a->errlen);
+}
+
+static int gomupdf_set_text_field(fz_context *ctx, fz_document *doc, int pageno, int index, const char *value, char *err, int errlen) {
+    gomupdf_set_text_field_args a = {ctx, doc, pageno, index, value, err, errlen};
+    gomupdf_call_bigstack(gomupdf_set_text_field_thunk, &a);
+    return a.ret;
 }
 */
 import "C"

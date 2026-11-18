@@ -1759,6 +1759,7 @@ static int gomupdf_hidden_content_run(fz_context *ctx, fz_document *doc, int *ou
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) { snprintf(err, errlen, "not a PDF document"); return -1; }
     for (int i = 0; i < HC_COUNT; i++) out[i] = 0;
+    gomupdf_overflows = 0;
     // Marks for the walks up /Parent and the action and field walks: no
     // kept-content marking.
     gomupdf_marks mk;
@@ -1843,6 +1844,7 @@ static int gomupdf_hidden_content_run(fz_context *ctx, fz_document *doc, int *ou
             }
         }
         gomupdf_sweep(ctx, pdf, &mk, out, 0, 0);
+        gomupdf_check_overflows(ctx); // what MuPDF read as null was not counted
     }
     fz_always(ctx) gomupdf_marks_free(ctx, &mk);
     fz_catch(ctx) {
@@ -2406,6 +2408,7 @@ static int gomupdf_scrub_run(fz_context *ctx, fz_document *doc, int keep_annots,
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) { snprintf(err, errlen, "not a PDF document"); return -1; }
     keep_fields |= keep_annots;
+    gomupdf_overflows = 0;
     gomupdf_marks mk;
     memset(&mk, 0, sizeof mk);
     mk.nostruct = !keep_structure;
@@ -2559,6 +2562,12 @@ static int gomupdf_scrub_run(fz_context *ctx, fz_document *doc, int keep_annots,
             if (!failed) snprintf(err, errlen, "%s", fz_caught_message(ctx));
             failed = 1;
         }
+    }
+    // An object MuPDF read as null after an exception-stack overflow
+    // (gomupdf_bigstack.h) was not checked: fail closed.
+    if (gomupdf_overflows && !failed) {
+        snprintf(err, errlen, "exception stack overflow: the file nests deeper than MuPDF can follow");
+        failed = 1;
     }
     gomupdf_marks_free(ctx, &mk);
     return failed ? -1 : 0;

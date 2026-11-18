@@ -14,7 +14,7 @@ package gomupdf
 // have_clip: 0=no clip, 1=use clipx0/y0/x1/y1
 // no_annots: 0=render everything, 1=skip annotations
 // Returns malloc'd blob: 5x int32 header [w,h,n,stride,alpha] + raw samples.
-static unsigned char *gomupdf_render(
+static unsigned char *gomupdf_render_run(
         fz_context *ctx, fz_document *doc, int pageno,
         float zoom, int cs_kind, int alpha,
         float clipx0, float clipy0, float clipx1, float clipy1,
@@ -88,6 +88,37 @@ static unsigned char *gomupdf_render(
         return NULL;
     }
     return result;
+}
+
+// gomupdf_render runs gomupdf_render_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    float zoom;
+    int cs_kind;
+    int alpha;
+    float clipx0;
+    float clipy0;
+    float clipx1;
+    float clipy1;
+    int have_clip;
+    int no_annots;
+    int *out_len;
+    char *err;
+    int errlen;
+    unsigned char *ret;
+} gomupdf_render_args;
+
+static void gomupdf_render_thunk(void *p) {
+    gomupdf_render_args *a = p;
+    a->ret = gomupdf_render_run(a->ctx, a->doc, a->pageno, a->zoom, a->cs_kind, a->alpha, a->clipx0, a->clipy0, a->clipx1, a->clipy1, a->have_clip, a->no_annots, a->out_len, a->err, a->errlen);
+}
+
+static unsigned char *gomupdf_render(fz_context *ctx, fz_document *doc, int pageno, float zoom, int cs_kind, int alpha, float clipx0, float clipy0, float clipx1, float clipy1, int have_clip, int no_annots, int *out_len, char *err, int errlen) {
+    gomupdf_render_args a = {ctx, doc, pageno, zoom, cs_kind, alpha, clipx0, clipy0, clipx1, clipy1, have_clip, no_annots, out_len, err, errlen};
+    gomupdf_call_bigstack(gomupdf_render_thunk, &a);
+    return a.ret;
 }
 */
 import "C"

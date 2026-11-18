@@ -5,12 +5,13 @@ package gomupdf
 /*
 
 #include <mupdf/fitz.h>
+#include "gomupdf_bigstack.h"
 #include <mupdf/pdf.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 
-static int gomupdf_set_page_labels(fz_context *ctx, fz_document *doc,
+static int gomupdf_set_page_labels_run(fz_context *ctx, fz_document *doc,
                                    char *spec, char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) { snprintf(err, errlen, "not a PDF document"); return -1; }
@@ -49,7 +50,7 @@ static int gomupdf_set_page_labels(fz_context *ctx, fz_document *doc,
     return 0;
 }
 
-static char *gomupdf_get_page_labels(fz_context *ctx, fz_document *doc,
+static char *gomupdf_get_page_labels_run(fz_context *ctx, fz_document *doc,
                                      char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) { snprintf(err, errlen, "not a PDF document"); return NULL; }
@@ -97,7 +98,7 @@ static char *gomupdf_get_page_labels(fz_context *ctx, fz_document *doc,
     return result;
 }
 
-static char *gomupdf_page_label(fz_context *ctx, fz_document *doc, int pageno,
+static char *gomupdf_page_label_run(fz_context *ctx, fz_document *doc, int pageno,
                                 char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     fz_page *page = NULL;
@@ -124,6 +125,68 @@ static char *gomupdf_page_label(fz_context *ctx, fz_document *doc, int pageno,
         return NULL;
     }
     return result;
+}
+
+// gomupdf_get_page_labels runs gomupdf_get_page_labels_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    char *err;
+    int errlen;
+    char *ret;
+} gomupdf_get_page_labels_args;
+
+static void gomupdf_get_page_labels_thunk(void *p) {
+    gomupdf_get_page_labels_args *a = p;
+    a->ret = gomupdf_get_page_labels_run(a->ctx, a->doc, a->err, a->errlen);
+}
+
+static char *gomupdf_get_page_labels(fz_context *ctx, fz_document *doc, char *err, int errlen) {
+    gomupdf_get_page_labels_args a = {ctx, doc, err, errlen};
+    gomupdf_call_bigstack(gomupdf_get_page_labels_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_page_label runs gomupdf_page_label_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    char *err;
+    int errlen;
+    char *ret;
+} gomupdf_page_label_args;
+
+static void gomupdf_page_label_thunk(void *p) {
+    gomupdf_page_label_args *a = p;
+    a->ret = gomupdf_page_label_run(a->ctx, a->doc, a->pageno, a->err, a->errlen);
+}
+
+static char *gomupdf_page_label(fz_context *ctx, fz_document *doc, int pageno, char *err, int errlen) {
+    gomupdf_page_label_args a = {ctx, doc, pageno, err, errlen};
+    gomupdf_call_bigstack(gomupdf_page_label_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_set_page_labels runs gomupdf_set_page_labels_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    char *spec;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_set_page_labels_args;
+
+static void gomupdf_set_page_labels_thunk(void *p) {
+    gomupdf_set_page_labels_args *a = p;
+    a->ret = gomupdf_set_page_labels_run(a->ctx, a->doc, a->spec, a->err, a->errlen);
+}
+
+static int gomupdf_set_page_labels(fz_context *ctx, fz_document *doc, char *spec, char *err, int errlen) {
+    gomupdf_set_page_labels_args a = {ctx, doc, spec, err, errlen};
+    gomupdf_call_bigstack(gomupdf_set_page_labels_thunk, &a);
+    return a.ret;
 }
 */
 import "C"

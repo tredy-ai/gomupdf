@@ -5,6 +5,7 @@ package gomupdf
 /*
 
 #include <mupdf/fitz.h>
+#include "gomupdf_bigstack.h"
 #include <mupdf/pdf.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -12,7 +13,7 @@ package gomupdf
 
 // gomupdf_page_fonts enumerates fonts in the page Resources/Font dict.
 // Each font is one tab-separated line: xref TAB embedded TAB Subtype TAB Encoding TAB BaseFont
-static char *gomupdf_page_fonts(fz_context *ctx, fz_document *doc, int pageno,
+static char *gomupdf_page_fonts_run(fz_context *ctx, fz_document *doc, int pageno,
                                 char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) {
@@ -100,7 +101,7 @@ static char *gomupdf_page_fonts(fz_context *ctx, fz_document *doc, int pageno,
 }
 
 // gomupdf_extract_font extracts the embedded font program for the PDF object at xref.
-static unsigned char *gomupdf_extract_font(fz_context *ctx, fz_document *doc, int xref,
+static unsigned char *gomupdf_extract_font_run(fz_context *ctx, fz_document *doc, int xref,
                                            int *out_len, char *ext_out, char *name_out,
                                            int *failed, char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
@@ -189,6 +190,52 @@ static unsigned char *gomupdf_extract_font(fz_context *ctx, fz_document *doc, in
         return NULL;
     }
     return result;
+}
+
+// gomupdf_extract_font runs gomupdf_extract_font_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int xref;
+    int *out_len;
+    char *ext_out;
+    char *name_out;
+    int *failed;
+    char *err;
+    int errlen;
+    unsigned char *ret;
+} gomupdf_extract_font_args;
+
+static void gomupdf_extract_font_thunk(void *p) {
+    gomupdf_extract_font_args *a = p;
+    a->ret = gomupdf_extract_font_run(a->ctx, a->doc, a->xref, a->out_len, a->ext_out, a->name_out, a->failed, a->err, a->errlen);
+}
+
+static unsigned char *gomupdf_extract_font(fz_context *ctx, fz_document *doc, int xref, int *out_len, char *ext_out, char *name_out, int *failed, char *err, int errlen) {
+    gomupdf_extract_font_args a = {ctx, doc, xref, out_len, ext_out, name_out, failed, err, errlen};
+    gomupdf_call_bigstack(gomupdf_extract_font_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_page_fonts runs gomupdf_page_fonts_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    char *err;
+    int errlen;
+    char *ret;
+} gomupdf_page_fonts_args;
+
+static void gomupdf_page_fonts_thunk(void *p) {
+    gomupdf_page_fonts_args *a = p;
+    a->ret = gomupdf_page_fonts_run(a->ctx, a->doc, a->pageno, a->err, a->errlen);
+}
+
+static char *gomupdf_page_fonts(fz_context *ctx, fz_document *doc, int pageno, char *err, int errlen) {
+    gomupdf_page_fonts_args a = {ctx, doc, pageno, err, errlen};
+    gomupdf_call_bigstack(gomupdf_page_fonts_thunk, &a);
+    return a.ret;
 }
 */
 import "C"

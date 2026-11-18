@@ -14,7 +14,7 @@ package gomupdf
 // Render every page of any source document into a new PDF and return the
 // serialized PDF bytes (malloc'd + *out_len). Done entirely in the source
 // context to avoid cross-context object access.
-static unsigned char *gomupdf_convert_to_pdf(fz_context *ctx, fz_document *src,
+static unsigned char *gomupdf_convert_to_pdf_run(fz_context *ctx, fz_document *src,
                                              int *out_len, char *err, int errlen) {
     pdf_document *pdf = NULL;
     fz_buffer *outbuf = NULL;
@@ -80,6 +80,27 @@ static unsigned char *gomupdf_convert_to_pdf(fz_context *ctx, fz_document *src,
         return NULL;
     }
     return result;
+}
+
+// gomupdf_convert_to_pdf runs gomupdf_convert_to_pdf_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *src;
+    int *out_len;
+    char *err;
+    int errlen;
+    unsigned char *ret;
+} gomupdf_convert_to_pdf_args;
+
+static void gomupdf_convert_to_pdf_thunk(void *p) {
+    gomupdf_convert_to_pdf_args *a = p;
+    a->ret = gomupdf_convert_to_pdf_run(a->ctx, a->src, a->out_len, a->err, a->errlen);
+}
+
+static unsigned char *gomupdf_convert_to_pdf(fz_context *ctx, fz_document *src, int *out_len, char *err, int errlen) {
+    gomupdf_convert_to_pdf_args a = {ctx, src, out_len, err, errlen};
+    gomupdf_call_bigstack(gomupdf_convert_to_pdf_thunk, &a);
+    return a.ret;
 }
 */
 import "C"

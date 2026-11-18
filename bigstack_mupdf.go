@@ -19,6 +19,7 @@ package gomupdf
 #include <stddef.h>
 size_t gomupdf_bigstack_size = (size_t)256 << 20;
 __thread int gomupdf_on_bigstack;
+__thread int gomupdf_overflows;
 */
 import "C"
 

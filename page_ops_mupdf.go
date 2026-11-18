@@ -5,12 +5,13 @@ package gomupdf
 /*
 
 #include <mupdf/fitz.h>
+#include "gomupdf_bigstack.h"
 #include <mupdf/pdf.h>
 #include <stdlib.h>
 #include <string.h>
 
 // Append a blank page of the given size at the end.
-static int gomupdf_add_blank_page(fz_context *ctx, fz_document *doc, float w, float h,
+static int gomupdf_add_blank_page_run(fz_context *ctx, fz_document *doc, float w, float h,
                                   char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) { snprintf(err, errlen, "not a PDF document"); return -1; }
@@ -39,7 +40,7 @@ static int gomupdf_add_blank_page(fz_context *ctx, fz_document *doc, float w, fl
     return 0;
 }
 
-static int gomupdf_delete_page(fz_context *ctx, fz_document *doc, int n, char *err, int errlen) {
+static int gomupdf_delete_page_run(fz_context *ctx, fz_document *doc, int n, char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) { snprintf(err, errlen, "not a PDF document"); return -1; }
     fz_try(ctx) { pdf_delete_page(ctx, pdf, n); }
@@ -51,7 +52,7 @@ static int gomupdf_delete_page(fz_context *ctx, fz_document *doc, int n, char *e
 }
 
 // Append all pages of a source PDF (given as bytes) to the end of dst.
-static int gomupdf_graft_bytes(fz_context *ctx, fz_document *dst_doc,
+static int gomupdf_graft_bytes_run(fz_context *ctx, fz_document *dst_doc,
                                const unsigned char *srcdata, size_t srclen,
                                const char *password, char *err, int errlen) {
     pdf_document *dst = pdf_specifics(ctx, dst_doc);
@@ -63,6 +64,7 @@ static int gomupdf_graft_bytes(fz_context *ctx, fz_document *dst_doc,
     fz_var(srcfz);
     fz_var(map);
     fz_try(ctx) {
+        gomupdf_overflows = 0; // a swallowed overflow leaves the copy incomplete
         stream = fz_open_memory(ctx, srcdata, srclen);
         srcfz = fz_open_document_with_stream(ctx, ".pdf", stream);
         if (password && password[0] && fz_needs_password(ctx, srcfz))
@@ -73,6 +75,7 @@ static int gomupdf_graft_bytes(fz_context *ctx, fz_document *dst_doc,
         map = pdf_new_graft_map(ctx, dst);
         for (int i = 0; i < n; i++)
             pdf_graft_mapped_page(ctx, map, -1, src, i);
+        gomupdf_check_overflows(ctx); // MuPDF reads past the overflow as null
     }
     fz_always(ctx) {
         pdf_drop_graft_map(ctx, map);
@@ -86,7 +89,7 @@ static int gomupdf_graft_bytes(fz_context *ctx, fz_document *dst_doc,
     return 0;
 }
 
-static int gomupdf_copy_page(fz_context *ctx, fz_document *doc,
+static int gomupdf_copy_page_run(fz_context *ctx, fz_document *doc,
                              int from, int to, char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) { snprintf(err, errlen, "not a PDF document"); return -1; }
@@ -101,7 +104,7 @@ static int gomupdf_copy_page(fz_context *ctx, fz_document *doc,
     return 0;
 }
 
-static int gomupdf_move_page(fz_context *ctx, fz_document *doc,
+static int gomupdf_move_page_run(fz_context *ctx, fz_document *doc,
                              int from, int to, char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) { snprintf(err, errlen, "not a PDF document"); return -1; }
@@ -127,7 +130,7 @@ static int gomupdf_move_page(fz_context *ctx, fz_document *doc,
     return 0;
 }
 
-static int gomupdf_select_pages(fz_context *ctx, fz_document *doc,
+static int gomupdf_select_pages_run(fz_context *ctx, fz_document *doc,
                                 const int *pages, int nPages,
                                 char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
@@ -175,7 +178,7 @@ static int gomupdf_pagecount_pdf(fz_context *ctx, fz_document *doc,
     return n;
 }
 
-static int gomupdf_insert_pdf_range(fz_context *ctx, fz_document *dst_doc,
+static int gomupdf_insert_pdf_range_run(fz_context *ctx, fz_document *dst_doc,
                                     const unsigned char *srcdata, size_t srclen,
                                     int fromPage, int toPage,
                                     const char *password,
@@ -190,6 +193,7 @@ static int gomupdf_insert_pdf_range(fz_context *ctx, fz_document *dst_doc,
     fz_var(srcfz);
     fz_var(map);
     fz_try(ctx) {
+        gomupdf_overflows = 0; // a swallowed overflow leaves the copy incomplete
         stream = fz_open_memory(ctx, srcdata, srclen);
         srcfz = fz_open_document_with_stream(ctx, ".pdf", stream);
         if (password && password[0] && fz_needs_password(ctx, srcfz))
@@ -205,6 +209,7 @@ static int gomupdf_insert_pdf_range(fz_context *ctx, fz_document *dst_doc,
         map = pdf_new_graft_map(ctx, dst);
         for (int i = fromPage; i <= toPage; i++)
             pdf_graft_mapped_page(ctx, map, -1, src, i);
+        gomupdf_check_overflows(ctx); // MuPDF reads past the overflow as null
     }
     fz_always(ctx) {
         pdf_drop_graft_map(ctx, map);
@@ -216,6 +221,163 @@ static int gomupdf_insert_pdf_range(fz_context *ctx, fz_document *dst_doc,
         return -1;
     }
     return 0;
+}
+
+// gomupdf_add_blank_page runs gomupdf_add_blank_page_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    float w;
+    float h;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_add_blank_page_args;
+
+static void gomupdf_add_blank_page_thunk(void *p) {
+    gomupdf_add_blank_page_args *a = p;
+    a->ret = gomupdf_add_blank_page_run(a->ctx, a->doc, a->w, a->h, a->err, a->errlen);
+}
+
+static int gomupdf_add_blank_page(fz_context *ctx, fz_document *doc, float w, float h, char *err, int errlen) {
+    gomupdf_add_blank_page_args a = {ctx, doc, w, h, err, errlen};
+    gomupdf_call_bigstack(gomupdf_add_blank_page_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_copy_page runs gomupdf_copy_page_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int from;
+    int to;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_copy_page_args;
+
+static void gomupdf_copy_page_thunk(void *p) {
+    gomupdf_copy_page_args *a = p;
+    a->ret = gomupdf_copy_page_run(a->ctx, a->doc, a->from, a->to, a->err, a->errlen);
+}
+
+static int gomupdf_copy_page(fz_context *ctx, fz_document *doc, int from, int to, char *err, int errlen) {
+    gomupdf_copy_page_args a = {ctx, doc, from, to, err, errlen};
+    gomupdf_call_bigstack(gomupdf_copy_page_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_delete_page runs gomupdf_delete_page_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int n;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_delete_page_args;
+
+static void gomupdf_delete_page_thunk(void *p) {
+    gomupdf_delete_page_args *a = p;
+    a->ret = gomupdf_delete_page_run(a->ctx, a->doc, a->n, a->err, a->errlen);
+}
+
+static int gomupdf_delete_page(fz_context *ctx, fz_document *doc, int n, char *err, int errlen) {
+    gomupdf_delete_page_args a = {ctx, doc, n, err, errlen};
+    gomupdf_call_bigstack(gomupdf_delete_page_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_graft_bytes runs gomupdf_graft_bytes_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *dst_doc;
+    const unsigned char *srcdata;
+    size_t srclen;
+    const char *password;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_graft_bytes_args;
+
+static void gomupdf_graft_bytes_thunk(void *p) {
+    gomupdf_graft_bytes_args *a = p;
+    a->ret = gomupdf_graft_bytes_run(a->ctx, a->dst_doc, a->srcdata, a->srclen, a->password, a->err, a->errlen);
+}
+
+static int gomupdf_graft_bytes(fz_context *ctx, fz_document *dst_doc, const unsigned char *srcdata, size_t srclen, const char *password, char *err, int errlen) {
+    gomupdf_graft_bytes_args a = {ctx, dst_doc, srcdata, srclen, password, err, errlen};
+    gomupdf_call_bigstack(gomupdf_graft_bytes_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_insert_pdf_range runs gomupdf_insert_pdf_range_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *dst_doc;
+    const unsigned char *srcdata;
+    size_t srclen;
+    int fromPage;
+    int toPage;
+    const char *password;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_insert_pdf_range_args;
+
+static void gomupdf_insert_pdf_range_thunk(void *p) {
+    gomupdf_insert_pdf_range_args *a = p;
+    a->ret = gomupdf_insert_pdf_range_run(a->ctx, a->dst_doc, a->srcdata, a->srclen, a->fromPage, a->toPage, a->password, a->err, a->errlen);
+}
+
+static int gomupdf_insert_pdf_range(fz_context *ctx, fz_document *dst_doc, const unsigned char *srcdata, size_t srclen, int fromPage, int toPage, const char *password, char *err, int errlen) {
+    gomupdf_insert_pdf_range_args a = {ctx, dst_doc, srcdata, srclen, fromPage, toPage, password, err, errlen};
+    gomupdf_call_bigstack(gomupdf_insert_pdf_range_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_move_page runs gomupdf_move_page_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int from;
+    int to;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_move_page_args;
+
+static void gomupdf_move_page_thunk(void *p) {
+    gomupdf_move_page_args *a = p;
+    a->ret = gomupdf_move_page_run(a->ctx, a->doc, a->from, a->to, a->err, a->errlen);
+}
+
+static int gomupdf_move_page(fz_context *ctx, fz_document *doc, int from, int to, char *err, int errlen) {
+    gomupdf_move_page_args a = {ctx, doc, from, to, err, errlen};
+    gomupdf_call_bigstack(gomupdf_move_page_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_select_pages runs gomupdf_select_pages_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    const int *pages;
+    int nPages;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_select_pages_args;
+
+static void gomupdf_select_pages_thunk(void *p) {
+    gomupdf_select_pages_args *a = p;
+    a->ret = gomupdf_select_pages_run(a->ctx, a->doc, a->pages, a->nPages, a->err, a->errlen);
+}
+
+static int gomupdf_select_pages(fz_context *ctx, fz_document *doc, const int *pages, int nPages, char *err, int errlen) {
+    gomupdf_select_pages_args a = {ctx, doc, pages, nPages, err, errlen};
+    gomupdf_call_bigstack(gomupdf_select_pages_thunk, &a);
+    return a.ret;
 }
 */
 import "C"

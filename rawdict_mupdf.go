@@ -5,6 +5,7 @@ package gomupdf
 /*
 
 #include <mupdf/fitz.h>
+#include "gomupdf_bigstack.h"
 #include "gomupdf_stext.h"
 #include <stdlib.h>
 #include <string.h>
@@ -37,7 +38,7 @@ static void gomupdf_rawdict_line(fz_context *ctx, fz_output *out, fz_stext_line 
 // flags are fz_stext_options flags. With clip_enabled, only characters whose
 // bbox intersects the clip rect are written (as gomupdf_page_text_opts does),
 // and a block or line is written only if one of its characters is.
-static char *gomupdf_rawdict(fz_context *ctx, fz_document *doc, int pageno,
+static char *gomupdf_rawdict_run(fz_context *ctx, fz_document *doc, int pageno,
                              int flags, int clip_enabled,
                              float cx0, float cy0, float cx1, float cy1,
                              char *err, int errlen) {
@@ -116,6 +117,33 @@ static char *gomupdf_rawdict(fz_context *ctx, fz_document *doc, int pageno,
         return NULL;
     }
     return result;
+}
+
+// gomupdf_rawdict runs gomupdf_rawdict_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    int flags;
+    int clip_enabled;
+    float cx0;
+    float cy0;
+    float cx1;
+    float cy1;
+    char *err;
+    int errlen;
+    char *ret;
+} gomupdf_rawdict_args;
+
+static void gomupdf_rawdict_thunk(void *p) {
+    gomupdf_rawdict_args *a = p;
+    a->ret = gomupdf_rawdict_run(a->ctx, a->doc, a->pageno, a->flags, a->clip_enabled, a->cx0, a->cy0, a->cx1, a->cy1, a->err, a->errlen);
+}
+
+static char *gomupdf_rawdict(fz_context *ctx, fz_document *doc, int pageno, int flags, int clip_enabled, float cx0, float cy0, float cx1, float cy1, char *err, int errlen) {
+    gomupdf_rawdict_args a = {ctx, doc, pageno, flags, clip_enabled, cx0, cy0, cx1, cy1, err, errlen};
+    gomupdf_call_bigstack(gomupdf_rawdict_thunk, &a);
+    return a.ret;
 }
 */
 import "C"

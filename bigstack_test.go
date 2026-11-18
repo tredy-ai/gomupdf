@@ -163,6 +163,146 @@ func bigForms(t *testing.T, levels int) {
 	})
 }
 
+// bigNestedOutlinePDF is a one-page PDF whose outline nests n items, each
+// the only child of the one before.
+func bigNestedOutlinePDF(n int) []byte {
+	objs := []string{`<< /Type /Catalog /Pages 2 0 R /Outlines 4 0 R >>`, `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+		`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>`, `<< /Type /Outlines /First 5 0 R /Last 5 0 R >>`}
+	for i := range n {
+		s := fmt.Sprintf(`<< /Title (i%d) /Parent %d 0 R /Dest [3 0 R /Fit]`, i, 4+i)
+		if i < n-1 {
+			s += fmt.Sprintf(` /First %d 0 R /Last %d 0 R`, 6+i, 6+i)
+		}
+		objs = append(objs, s+" >>")
+	}
+	return scrubBuildPDF(objs, "")
+}
+
+// bigAnnotsPDF is a one-page PDF whose /Annots lists n Link annotations
+// (one shared object) and a widget.
+func bigAnnotsPDF(n int) []byte {
+	return scrubBuildPDF([]string{
+		`<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R] >> >>`,
+		`<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+		`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots [5 0 R` + strings.Repeat(" 4 0 R", n) + `] >>`,
+		`<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] /A << /S /URI /URI (https://example.com/) >> >>`,
+		`<< /Type /Annot /Subtype /Widget /FT /Tx /T (f) /Rect [20 20 80 40] /P 3 0 R >>`,
+	}, "")
+}
+
+// The remaining document-reading calls run on the large stack too, from
+// goroutines: TOC of an outline nested 5,000 levels deep (which crashed at
+// about 950 on the caller's stack) and of 100,000 siblings, SetTOC of a deep
+// and a long outline with its save, InsertPDF and InsertPDFRange of a source
+// whose page holds a 20,000-long reference chain, and Links, Annotations and
+// Widgets of a page whose /Annots has 200,000 entries. Each returns a result
+// or an error, never a crash.
+func TestDeepDocumentCalls(t *testing.T) {
+	t.Run("TOC", func(t *testing.T) {
+		for _, c := range []struct {
+			pdf  []byte
+			want int
+		}{{bigNestedOutlinePDF(5000), 5000}, {bigOutlinePDF(100000), 100000}} {
+			scrubConcurrently(func() {
+				d, err := OpenStream(c.pdf)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				defer d.Close()
+				if toc, err := d.TOC(); err == nil && len(toc) != c.want {
+					t.Errorf("TOC has %d entries, want %d", len(toc), c.want)
+				}
+			})
+		}
+	})
+	t.Run("SetTOC", func(t *testing.T) {
+		deep, long := make([]TOCEntry, 5000), make([]TOCEntry, 100000)
+		for i := range deep {
+			deep[i] = TOCEntry{Level: i + 1, Title: "d", Page: 0}
+		}
+		for i := range long {
+			long[i] = TOCEntry{Level: 1, Title: "l", Page: 0}
+		}
+		for _, entries := range [][]TOCEntry{deep, long} {
+			scrubConcurrently(func() {
+				d, err := OpenStream(bigOutlinePDF(1))
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				defer d.Close()
+				if err := d.SetTOC(entries); err != nil {
+					return
+				}
+				out, err := d.SaveBytesWithOptions(scrubSaveOpts)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				re, err := OpenStream(out)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				defer re.Close()
+				if toc, err := re.TOC(); err == nil && len(toc) != len(entries) {
+					t.Errorf("TOC after SetTOC has %d entries, want %d", len(toc), len(entries))
+				}
+			})
+		}
+	})
+	t.Run("InsertPDF", func(t *testing.T) {
+		src := bigChainPDF("Resources", 20000)
+		for _, rng := range []bool{false, true} {
+			scrubConcurrently(func() {
+				d, err := OpenStream(bigOutlinePDF(1))
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				defer d.Close()
+				if rng {
+					err = d.InsertPDFRange(src, 0, 0, "")
+				} else {
+					err = d.InsertPDF(src, "")
+				}
+				if err != nil {
+					return // a clean refusal
+				}
+				// Success must mean the whole chain was copied.
+				out, err := d.SaveBytesWithOptions(scrubSaveOpts)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				if n := strings.Count(string(out), "/N "); n < 20000-1 {
+					t.Errorf("InsertPDF succeeded but copied %d of the chain's 19,999 links", n)
+				}
+			})
+		}
+	})
+	t.Run("annotations", func(t *testing.T) {
+		pdf := bigAnnotsPDF(200000)
+		scrubConcurrently(func() {
+			d, err := OpenStream(pdf)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			defer d.Close()
+			p, err := d.LoadPage(0)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			_, _ = p.Links()
+			_, _ = p.Annotations()
+			_, _ = p.Widgets()
+		})
+	})
+}
+
 // When the large-stack thread cannot be created (here: a stack size no
 // system accepts), the call runs on the calling thread as before.
 func TestLargeStackFallback(t *testing.T) {

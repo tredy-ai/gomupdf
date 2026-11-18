@@ -38,7 +38,7 @@ static void gomupdf_fill_write_opts(pdf_write_options *opts,
 }
 
 // Save a non-incremental document straight to a file. Returns 0 on success.
-static int gomupdf_save_path(
+static int gomupdf_save_path_run(
         fz_context *ctx, fz_document *doc, const char *path,
         int garbage, int deflate, int deflate_images, int deflate_fonts,
         int clean, int linear, int ascii, int pretty,
@@ -51,7 +51,9 @@ static int gomupdf_save_path(
         gomupdf_fill_write_opts(&opts, garbage, deflate, deflate_images, deflate_fonts,
                                 clean, linear, ascii, pretty,
                                 encrypt, upwd, opwd, permissions);
+        gomupdf_overflows = 0;
         gomupdf_write_big(ctx, pdf, NULL, path, &opts);
+        gomupdf_check_overflows(ctx); // an object read as null after an overflow was dropped
     }
     fz_catch(ctx) {
         snprintf(err, errlen, "%s", fz_caught_message(ctx));
@@ -63,7 +65,7 @@ static int gomupdf_save_path(
 // Serialize a document with explicit pdf_write_options. For an incremental
 // save (incremental != 0), origdata/origlen must hold the original file bytes;
 // they are written first and the update section is appended after them.
-static unsigned char *gomupdf_save_opts(
+static unsigned char *gomupdf_save_opts_run(
         fz_context *ctx, fz_document *doc,
         int garbage, int deflate, int deflate_images, int deflate_fonts,
         int clean, int linear, int ascii, int pretty,
@@ -90,7 +92,9 @@ static unsigned char *gomupdf_save_opts(
             fz_append_data(ctx, buf, origdata, origlen);
         }
         out = fz_new_output_with_buffer(ctx, buf);
+        gomupdf_overflows = 0;
         gomupdf_write_big(ctx, pdf, out, NULL, &opts);
+        gomupdf_check_overflows(ctx); // an object read as null after an overflow was dropped
         fz_close_output(ctx, out);
         unsigned char *data = NULL;
         size_t n = fz_buffer_storage(ctx, buf, &data);
@@ -111,7 +115,7 @@ static unsigned char *gomupdf_save_opts(
 }
 
 // Serialize with AES-256 encryption using the given user/owner passwords.
-static unsigned char *gomupdf_save_encrypted(fz_context *ctx, fz_document *doc,
+static unsigned char *gomupdf_save_encrypted_run(fz_context *ctx, fz_document *doc,
                                              const char *user_pw, const char *owner_pw,
                                              int *out_len, char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
@@ -131,7 +135,9 @@ static unsigned char *gomupdf_save_encrypted(fz_context *ctx, fz_document *doc,
         opts.permissions = -1;
         snprintf(opts.upwd_utf8, sizeof(opts.upwd_utf8), "%s", user_pw ? user_pw : "");
         snprintf(opts.opwd_utf8, sizeof(opts.opwd_utf8), "%s", owner_pw ? owner_pw : "");
+        gomupdf_overflows = 0;
         gomupdf_write_big(ctx, pdf, out, NULL, &opts);
+        gomupdf_check_overflows(ctx); // an object read as null after an overflow was dropped
         fz_close_output(ctx, out);
         unsigned char *data = NULL;
         size_t n = fz_buffer_storage(ctx, buf, &data);
@@ -149,6 +155,98 @@ static unsigned char *gomupdf_save_encrypted(fz_context *ctx, fz_document *doc,
         return NULL;
     }
     return result;
+}
+
+// gomupdf_save_encrypted runs gomupdf_save_encrypted_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    const char *user_pw;
+    const char *owner_pw;
+    int *out_len;
+    char *err;
+    int errlen;
+    unsigned char *ret;
+} gomupdf_save_encrypted_args;
+
+static void gomupdf_save_encrypted_thunk(void *p) {
+    gomupdf_save_encrypted_args *a = p;
+    a->ret = gomupdf_save_encrypted_run(a->ctx, a->doc, a->user_pw, a->owner_pw, a->out_len, a->err, a->errlen);
+}
+
+static unsigned char *gomupdf_save_encrypted(fz_context *ctx, fz_document *doc, const char *user_pw, const char *owner_pw, int *out_len, char *err, int errlen) {
+    gomupdf_save_encrypted_args a = {ctx, doc, user_pw, owner_pw, out_len, err, errlen};
+    gomupdf_call_bigstack(gomupdf_save_encrypted_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_save_opts runs gomupdf_save_opts_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int garbage;
+    int deflate;
+    int deflate_images;
+    int deflate_fonts;
+    int clean;
+    int linear;
+    int ascii;
+    int pretty;
+    int encrypt;
+    const char *upwd;
+    const char *opwd;
+    int permissions;
+    int incremental;
+    const unsigned char *origdata;
+    size_t origlen;
+    int *out_len;
+    char *err;
+    int errlen;
+    unsigned char *ret;
+} gomupdf_save_opts_args;
+
+static void gomupdf_save_opts_thunk(void *p) {
+    gomupdf_save_opts_args *a = p;
+    a->ret = gomupdf_save_opts_run(a->ctx, a->doc, a->garbage, a->deflate, a->deflate_images, a->deflate_fonts, a->clean, a->linear, a->ascii, a->pretty, a->encrypt, a->upwd, a->opwd, a->permissions, a->incremental, a->origdata, a->origlen, a->out_len, a->err, a->errlen);
+}
+
+static unsigned char *gomupdf_save_opts(fz_context *ctx, fz_document *doc, int garbage, int deflate, int deflate_images, int deflate_fonts, int clean, int linear, int ascii, int pretty, int encrypt, const char *upwd, const char *opwd, int permissions, int incremental, const unsigned char *origdata, size_t origlen, int *out_len, char *err, int errlen) {
+    gomupdf_save_opts_args a = {ctx, doc, garbage, deflate, deflate_images, deflate_fonts, clean, linear, ascii, pretty, encrypt, upwd, opwd, permissions, incremental, origdata, origlen, out_len, err, errlen};
+    gomupdf_call_bigstack(gomupdf_save_opts_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_save_path runs gomupdf_save_path_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    const char *path;
+    int garbage;
+    int deflate;
+    int deflate_images;
+    int deflate_fonts;
+    int clean;
+    int linear;
+    int ascii;
+    int pretty;
+    int encrypt;
+    const char *upwd;
+    const char *opwd;
+    int permissions;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_save_path_args;
+
+static void gomupdf_save_path_thunk(void *p) {
+    gomupdf_save_path_args *a = p;
+    a->ret = gomupdf_save_path_run(a->ctx, a->doc, a->path, a->garbage, a->deflate, a->deflate_images, a->deflate_fonts, a->clean, a->linear, a->ascii, a->pretty, a->encrypt, a->upwd, a->opwd, a->permissions, a->err, a->errlen);
+}
+
+static int gomupdf_save_path(fz_context *ctx, fz_document *doc, const char *path, int garbage, int deflate, int deflate_images, int deflate_fonts, int clean, int linear, int ascii, int pretty, int encrypt, const char *upwd, const char *opwd, int permissions, char *err, int errlen) {
+    gomupdf_save_path_args a = {ctx, doc, path, garbage, deflate, deflate_images, deflate_fonts, clean, linear, ascii, pretty, encrypt, upwd, opwd, permissions, err, errlen};
+    gomupdf_call_bigstack(gomupdf_save_path_thunk, &a);
+    return a.ret;
 }
 */
 import "C"

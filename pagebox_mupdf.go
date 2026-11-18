@@ -5,6 +5,7 @@ package gomupdf
 /*
 
 #include <mupdf/fitz.h>
+#include "gomupdf_bigstack.h"
 #include <mupdf/pdf.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -12,7 +13,7 @@ package gomupdf
 // Emit a page's geometry as "rot mx0 my0 mx1 my1 cx0 cy0 cx1 cy1 hascrop".
 // Boxes are the raw, inheritable dictionary values in unrotated PDF points; the
 // CropBox falls back to the MediaBox when absent (hascrop reports which).
-static char *gomupdf_page_geometry(fz_context *ctx, fz_document *doc, int pageno,
+static char *gomupdf_page_geometry_run(fz_context *ctx, fz_document *doc, int pageno,
                                    char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) { snprintf(err, errlen, "not a PDF document"); return NULL; }
@@ -44,7 +45,7 @@ static char *gomupdf_page_geometry(fz_context *ctx, fz_document *doc, int pageno
     return result;
 }
 
-static int gomupdf_set_rotation(fz_context *ctx, fz_document *doc, int pageno,
+static int gomupdf_set_rotation_run(fz_context *ctx, fz_document *doc, int pageno,
                                 int deg, char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) { snprintf(err, errlen, "not a PDF document"); return -1; }
@@ -63,7 +64,7 @@ static int gomupdf_set_rotation(fz_context *ctx, fz_document *doc, int pageno,
 }
 
 // which: 0 = MediaBox, 1 = CropBox.
-static int gomupdf_set_box(fz_context *ctx, fz_document *doc, int pageno, int which,
+static int gomupdf_set_box_run(fz_context *ctx, fz_document *doc, int pageno, int which,
                            float x0, float y0, float x1, float y1,
                            char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
@@ -82,6 +83,75 @@ static int gomupdf_set_box(fz_context *ctx, fz_document *doc, int pageno, int wh
         return -1;
     }
     return 0;
+}
+
+// gomupdf_page_geometry runs gomupdf_page_geometry_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    char *err;
+    int errlen;
+    char *ret;
+} gomupdf_page_geometry_args;
+
+static void gomupdf_page_geometry_thunk(void *p) {
+    gomupdf_page_geometry_args *a = p;
+    a->ret = gomupdf_page_geometry_run(a->ctx, a->doc, a->pageno, a->err, a->errlen);
+}
+
+static char *gomupdf_page_geometry(fz_context *ctx, fz_document *doc, int pageno, char *err, int errlen) {
+    gomupdf_page_geometry_args a = {ctx, doc, pageno, err, errlen};
+    gomupdf_call_bigstack(gomupdf_page_geometry_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_set_box runs gomupdf_set_box_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    int which;
+    float x0;
+    float y0;
+    float x1;
+    float y1;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_set_box_args;
+
+static void gomupdf_set_box_thunk(void *p) {
+    gomupdf_set_box_args *a = p;
+    a->ret = gomupdf_set_box_run(a->ctx, a->doc, a->pageno, a->which, a->x0, a->y0, a->x1, a->y1, a->err, a->errlen);
+}
+
+static int gomupdf_set_box(fz_context *ctx, fz_document *doc, int pageno, int which, float x0, float y0, float x1, float y1, char *err, int errlen) {
+    gomupdf_set_box_args a = {ctx, doc, pageno, which, x0, y0, x1, y1, err, errlen};
+    gomupdf_call_bigstack(gomupdf_set_box_thunk, &a);
+    return a.ret;
+}
+
+// gomupdf_set_rotation runs gomupdf_set_rotation_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    int deg;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_set_rotation_args;
+
+static void gomupdf_set_rotation_thunk(void *p) {
+    gomupdf_set_rotation_args *a = p;
+    a->ret = gomupdf_set_rotation_run(a->ctx, a->doc, a->pageno, a->deg, a->err, a->errlen);
+}
+
+static int gomupdf_set_rotation(fz_context *ctx, fz_document *doc, int pageno, int deg, char *err, int errlen) {
+    gomupdf_set_rotation_args a = {ctx, doc, pageno, deg, err, errlen};
+    gomupdf_call_bigstack(gomupdf_set_rotation_thunk, &a);
+    return a.ret;
 }
 */
 import "C"

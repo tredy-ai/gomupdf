@@ -5,13 +5,14 @@ package gomupdf
 /*
 
 #include <mupdf/fitz.h>
+#include "gomupdf_bigstack.h"
 #include "gomupdf_stext.h"
 #include <mupdf/pdf.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
-static char *gomupdf_page_text_opts(fz_context *ctx, fz_document *doc, int pageno,
+static char *gomupdf_page_text_opts_run(fz_context *ctx, fz_document *doc, int pageno,
                                     int flags, int clip_enabled,
                                     float cx0, float cy0, float cx1, float cy1,
                                     char *err, int errlen) {
@@ -76,6 +77,33 @@ static char *gomupdf_page_text_opts(fz_context *ctx, fz_document *doc, int pagen
         return NULL;
     }
     return result;
+}
+
+// gomupdf_page_text_opts runs gomupdf_page_text_opts_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    int flags;
+    int clip_enabled;
+    float cx0;
+    float cy0;
+    float cx1;
+    float cy1;
+    char *err;
+    int errlen;
+    char *ret;
+} gomupdf_page_text_opts_args;
+
+static void gomupdf_page_text_opts_thunk(void *p) {
+    gomupdf_page_text_opts_args *a = p;
+    a->ret = gomupdf_page_text_opts_run(a->ctx, a->doc, a->pageno, a->flags, a->clip_enabled, a->cx0, a->cy0, a->cx1, a->cy1, a->err, a->errlen);
+}
+
+static char *gomupdf_page_text_opts(fz_context *ctx, fz_document *doc, int pageno, int flags, int clip_enabled, float cx0, float cy0, float cx1, float cy1, char *err, int errlen) {
+    gomupdf_page_text_opts_args a = {ctx, doc, pageno, flags, clip_enabled, cx0, cy0, cx1, cy1, err, errlen};
+    gomupdf_call_bigstack(gomupdf_page_text_opts_thunk, &a);
+    return a.ret;
 }
 */
 import "C"

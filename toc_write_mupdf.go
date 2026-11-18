@@ -5,12 +5,13 @@ package gomupdf
 /*
 
 #include <mupdf/fitz.h>
+#include "gomupdf_bigstack.h"
 #include <mupdf/pdf.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 
-static int gomupdf_set_toc(fz_context *ctx, fz_document *doc,
+static int gomupdf_set_toc_run(fz_context *ctx, fz_document *doc,
                            char *spec, char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) { snprintf(err, errlen, "not a PDF document"); return -1; }
@@ -92,6 +93,27 @@ static int gomupdf_set_toc(fz_context *ctx, fz_document *doc,
         return -1;
     }
     return 0;
+}
+
+// gomupdf_set_toc runs gomupdf_set_toc_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    char *spec;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_set_toc_args;
+
+static void gomupdf_set_toc_thunk(void *p) {
+    gomupdf_set_toc_args *a = p;
+    a->ret = gomupdf_set_toc_run(a->ctx, a->doc, a->spec, a->err, a->errlen);
+}
+
+static int gomupdf_set_toc(fz_context *ctx, fz_document *doc, char *spec, char *err, int errlen) {
+    gomupdf_set_toc_args a = {ctx, doc, spec, err, errlen};
+    gomupdf_call_bigstack(gomupdf_set_toc_thunk, &a);
+    return a.ret;
 }
 */
 import "C"
