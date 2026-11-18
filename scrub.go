@@ -513,10 +513,15 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // points at (pages, annotations, form XObjects and content streams, fonts,
 // namespaces; /AF files go as everywhere), and the part of the tree beyond its walk budget: the
 // walk is iterative, visits each object once per role, and stops after
-// 65,536 + 16 x (xref length) units of work (one per object, array entry,
-// dictionary value and name-tree pair); what it reached by then is
-// destroyed, walking /K first, and the rest goes with the catalog key unless
-// something else references it. Unlinked
+// 65,536 + 16 x (xref length) units of work (one per array or dictionary it
+// visits, indirect or direct; an MCID, a null or an object already visited
+// costs nothing, so an ordinary tree of any size fits); what it reached by
+// then is destroyed, walking /K first, the rest goes with the catalog key
+// unless something else references it, and Scrub returns an error, since a
+// kept object's stray reference can keep that rest (the document is then
+// not scrubbed; see below). Kept outline items lose their /SE and kept GoTo
+// actions their /SD structure destination, which point into the tree.
+// Unlinked
 // objects leave the file only if nothing else references them. Scrub's
 // marking pass and its edit pass each have an action budget of 4,096 + 32 x
 // (xref length) reaches, as a HiddenContent call does, and the edit pass

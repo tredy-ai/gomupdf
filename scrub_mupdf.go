@@ -152,6 +152,7 @@ typedef struct {
     int abudget;      // action budget of the current pass (gomupdf_action_walk)
     int nostruct;     // Scrub removes the structure tree (not ScrubOptions.KeepStructure)
     int sroot;        // object number of the catalog /StructTreeRoot, 0 if none or direct
+    int sleft;        // objects gomupdf_struct_walk left queued past its budget
     gomupdf_stack s[GS_COUNT];
     pdf_obj *cur;     // the entry being expanded, holding a reference
 } gomupdf_marks;
@@ -920,13 +921,12 @@ static void gomupdf_struct_rec(fz_context *ctx, gomupdf_marks *mk, pdf_obj *o, i
 }
 
 // gomupdf_struct_push queues v for gomupdf_struct_walk on stack which (GS_SK,
-// GS_ST or GS_SA), charging one unit of *budget whatever v is (a null array
-// entry too: PDF_NULL is NULL); an indirect object is queued once per stack,
-// and anything but an array or dictionary (an MCID, a class name) is not
-// queued.
-static void gomupdf_struct_push(fz_context *ctx, gomupdf_marks *mk, int which, pdf_obj *v, int *budget) {
+// GS_ST or GS_SA); an indirect object is queued once per stack, and anything
+// but an array or dictionary (an MCID, a null, a class name) is not queued.
+// Queuing costs nothing: the walk charges each object it pops.
+static void gomupdf_struct_push(fz_context *ctx, gomupdf_marks *mk, int which, pdf_obj *v) {
     static const unsigned int bit[] = {GM_SVK, GM_SVT, GM_SVA};
-    if (--*budget < 0 || !v) return;
+    if (!v) return;
     unsigned int *m = gomupdf_mark(ctx, mk, v);
     if (m) {
         if (*m & bit[which - GS_SK]) return;
@@ -936,21 +936,21 @@ static void gomupdf_struct_push(fz_context *ctx, gomupdf_marks *mk, int which, p
 }
 
 // gomupdf_struct_strings records the indirect strings among the values of
-// the element or attribute object o, and in its array values, charging one
-// unit per value and entry. It passes over the keys that lead out of the
-// tree (/Pg, /Obj, /Stm, /StmOwn, /AF, /NS, /Metadata), whose targets are
-// not part of it, and on an element over those the walk follows itself.
-static void gomupdf_struct_strings(fz_context *ctx, gomupdf_marks *mk, pdf_obj *o, int elem, int *budget) {
+// the element or attribute object o, and in its array values. It passes over
+// the keys that lead out of the tree (/Pg, /Obj, /Stm, /StmOwn, /AF, /NS,
+// /Metadata), whose targets are not part of it, and on an element over those
+// the walk follows itself.
+static void gomupdf_struct_strings(fz_context *ctx, gomupdf_marks *mk, pdf_obj *o, int elem) {
     static const char *out[] = {"Pg", "Obj", "Stm", "StmOwn", "AF", "NS", "Metadata", NULL};
     static const char *walked[] = {"K", "P", "Ref", "A", "C", NULL};
     int n = pdf_dict_len(ctx, o);
-    for (int i = 0; i < n && --*budget >= 0; i++) {
+    for (int i = 0; i < n; i++) {
         const char *k = pdf_to_name(ctx, pdf_dict_get_key(ctx, o, i));
         pdf_obj *v = pdf_dict_get_val(ctx, o, i);
         if (gomupdf_name_in(k, out) || (elem && gomupdf_name_in(k, walked))) continue;
         gomupdf_struct_rec(ctx, mk, v, GK_STRING);
         int len = pdf_array_len(ctx, v);
-        for (int j = 0; j < len && --*budget >= 0; j++) gomupdf_struct_rec(ctx, mk, pdf_array_get(ctx, v, j), GK_STRING);
+        for (int j = 0; j < len; j++) gomupdf_struct_rec(ctx, mk, pdf_array_get(ctx, v, j), GK_STRING);
     }
 }
 
@@ -994,10 +994,14 @@ static int gomupdf_struct_elem(fz_context *ctx, gomupdf_marks *mk, pdf_obj *o) {
 // The walk is iterative, with one stack per role (GS_SK for /K items, GS_ST
 // for tree nodes, GS_SA for attribute objects) and a visited bit per role
 // (gomupdf_struct_push), so cycles and shared objects cost one visit each.
-// Every object popped, array entry, dictionary value and name-tree pair
-// costs one unit of a budget of GOMUPDF_TREE_BUDGET + 16 x (xref length);
-// past it the walk stops, what it recorded is destroyed, and the rest of
-// the tree is only unlinked with the catalog key. The /K subtree is walked
+// Every object it pops (an array or dictionary, indirect or direct) costs
+// one unit of a budget of GOMUPDF_TREE_BUDGET + 16 x (xref length); what
+// leads nowhere (an MCID, a null) costs nothing, and an indirect object
+// reached again costs nothing either, so the work stays bounded by the size
+// of the file and an ordinary tree, which has a few direct dictionaries per
+// element, always fits. Past the budget the walk stops with objects still
+// queued (mk->sleft): what it recorded is destroyed, the rest is only
+// unlinked with the catalog key, and Scrub fails. The /K subtree is walked
 // first. Recording is only that: gomupdf_destroy_all never destroys a kept
 // object, and page content, served pages and page-tree nodes, kept
 // annotations, kept form nodes and outline items and what a kept appearance
@@ -1007,6 +1011,7 @@ static void gomupdf_struct_walk(fz_context *ctx, pdf_document *pdf, gomupdf_mark
     pdf_obj *root = pdf_dict_get(ctx, cat, PDF_NAME(StructTreeRoot));
     long long b = GOMUPDF_TREE_BUDGET + 16LL * pdf_xref_len(ctx, pdf);
     int budget = b > INT_MAX ? INT_MAX : (int)b;
+    mk->sleft = 0;
     pdf_obj *langv = pdf_dict_get(ctx, cat, PDF_NAME(Lang));
     unsigned int *lang = gomupdf_mark(ctx, mk, langv);
     if (lang && pdf_is_string(ctx, langv)) *lang |= GM_SKEEP;
@@ -1017,10 +1022,10 @@ static void gomupdf_struct_walk(fz_context *ctx, pdf_document *pdf, gomupdf_mark
     pdf_obj *cm = pdf_dict_gets(ctx, root, "ClassMap");
     gomupdf_struct_rec(ctx, mk, cm, GK_SMAP);
     int n = pdf_dict_len(ctx, cm);
-    for (int i = 0; i < n; i++) gomupdf_struct_push(ctx, mk, GS_SA, pdf_dict_get_val(ctx, cm, i), &budget);
-    gomupdf_struct_push(ctx, mk, GS_ST, pdf_dict_gets(ctx, root, "IDTree"), &budget);
-    gomupdf_struct_push(ctx, mk, GS_ST, pdf_dict_get(ctx, root, PDF_NAME(ParentTree)), &budget);
-    gomupdf_struct_push(ctx, mk, GS_SK, pdf_dict_get(ctx, root, PDF_NAME(K)), &budget);
+    for (int i = 0; i < n; i++) gomupdf_struct_push(ctx, mk, GS_SA, pdf_dict_get_val(ctx, cm, i));
+    gomupdf_struct_push(ctx, mk, GS_ST, pdf_dict_gets(ctx, root, "IDTree"));
+    gomupdf_struct_push(ctx, mk, GS_ST, pdf_dict_get(ctx, root, PDF_NAME(ParentTree)));
+    gomupdf_struct_push(ctx, mk, GS_SK, pdf_dict_get(ctx, root, PDF_NAME(K)));
     while (budget >= 0) {
         int which = mk->s[GS_SK].n ? GS_SK : mk->s[GS_ST].n ? GS_ST : mk->s[GS_SA].n ? GS_SA : -1;
         if (which < 0) break;
@@ -1031,43 +1036,47 @@ static void gomupdf_struct_walk(fz_context *ctx, pdf_document *pdf, gomupdf_mark
         if (pdf_is_array(ctx, o)) {
             // /K, /Ref, /A, /C or /Kids: each entry in the same role.
             n = pdf_array_len(ctx, o);
-            for (int i = 0; i < n && budget >= 0; i++) gomupdf_struct_push(ctx, mk, which, pdf_array_get(ctx, o, i), &budget);
+            for (int i = 0; i < n; i++) gomupdf_struct_push(ctx, mk, which, pdf_array_get(ctx, o, i));
         } else if (which == GS_SK && gomupdf_is_kind(ctx, o, GK_SREF)) {
             gomupdf_struct_rec(ctx, mk, o, GK_SREF); // its /Pg, /Obj and /Stm are not part of the tree
         } else if (which == GS_SK && gomupdf_struct_elem(ctx, mk, o)) {
             gomupdf_struct_rec(ctx, mk, o, GK_SELEM);
-            gomupdf_struct_push(ctx, mk, GS_SK, pdf_dict_get(ctx, o, PDF_NAME(K)), &budget);
-            gomupdf_struct_push(ctx, mk, GS_SK, pdf_dict_get(ctx, o, PDF_NAME(P)), &budget);
-            gomupdf_struct_push(ctx, mk, GS_SK, pdf_dict_get(ctx, o, PDF_NAME(Ref)), &budget);
-            gomupdf_struct_push(ctx, mk, GS_SA, pdf_dict_get(ctx, o, PDF_NAME(A)), &budget);
-            gomupdf_struct_push(ctx, mk, GS_SA, pdf_dict_get(ctx, o, PDF_NAME(C)), &budget);
-            gomupdf_struct_strings(ctx, mk, o, 1, &budget);
+            gomupdf_struct_push(ctx, mk, GS_SK, pdf_dict_get(ctx, o, PDF_NAME(K)));
+            gomupdf_struct_push(ctx, mk, GS_SK, pdf_dict_get(ctx, o, PDF_NAME(P)));
+            gomupdf_struct_push(ctx, mk, GS_SK, pdf_dict_get(ctx, o, PDF_NAME(Ref)));
+            gomupdf_struct_push(ctx, mk, GS_SA, pdf_dict_get(ctx, o, PDF_NAME(A)));
+            gomupdf_struct_push(ctx, mk, GS_SA, pdf_dict_get(ctx, o, PDF_NAME(C)));
+            gomupdf_struct_strings(ctx, mk, o, 1);
         } else if (which == GS_ST && gomupdf_is_kind(ctx, o, GK_STREE)) {
             gomupdf_struct_rec(ctx, mk, o, GK_STREE);
-            gomupdf_struct_push(ctx, mk, GS_ST, pdf_dict_get(ctx, o, PDF_NAME(Kids)), &budget);
+            gomupdf_struct_push(ctx, mk, GS_ST, pdf_dict_get(ctx, o, PDF_NAME(Kids)));
             // /Nums pairs (key, element or array of elements) and /Names
             // pairs (ID string, element); the ID strings and /Limits are text.
             pdf_obj *nums = pdf_dict_get(ctx, o, PDF_NAME(Nums)), *names = pdf_dict_get(ctx, o, PDF_NAME(Names));
             pdf_obj *lim = pdf_dict_get(ctx, o, PDF_NAME(Limits));
             n = pdf_array_len(ctx, nums);
-            for (int i = 1; i < n && budget >= 0; i += 2) gomupdf_struct_push(ctx, mk, GS_SK, pdf_array_get(ctx, nums, i), &budget);
+            for (int i = 1; i < n; i += 2) gomupdf_struct_push(ctx, mk, GS_SK, pdf_array_get(ctx, nums, i));
             n = pdf_array_len(ctx, names);
-            for (int i = 0; i + 1 < n && --budget >= 0; i += 2) {
+            for (int i = 0; i + 1 < n; i += 2) {
                 gomupdf_struct_rec(ctx, mk, pdf_array_get(ctx, names, i), GK_STRING);
-                gomupdf_struct_push(ctx, mk, GS_SK, pdf_array_get(ctx, names, i + 1), &budget);
+                gomupdf_struct_push(ctx, mk, GS_SK, pdf_array_get(ctx, names, i + 1));
             }
             n = pdf_array_len(ctx, lim);
-            for (int i = 0; i < n && --budget >= 0; i++) gomupdf_struct_rec(ctx, mk, pdf_array_get(ctx, lim, i), GK_STRING);
+            for (int i = 0; i < n; i++) gomupdf_struct_rec(ctx, mk, pdf_array_get(ctx, lim, i), GK_STRING);
         } else if (which == GS_SA && gomupdf_is_kind(ctx, o, GK_SATTR)) {
             gomupdf_struct_rec(ctx, mk, o, GK_SATTR);
-            gomupdf_struct_strings(ctx, mk, o, 0, &budget);
+            gomupdf_struct_strings(ctx, mk, o, 0);
         }
         pdf_drop_obj(ctx, mk->cur);
         mk->cur = NULL;
     }
-    // Past the budget: what is still queued is only unlinked.
+    // Past the budget: what is still queued is only unlinked, and Scrub
+    // reports it.
     for (int w = GS_SK; w <= GS_SA; w++)
-        while (mk->s[w].n) pdf_drop_obj(ctx, mk->s[w].v[--mk->s[w].n]);
+        while (mk->s[w].n) {
+            mk->sleft++;
+            pdf_drop_obj(ctx, mk->s[w].v[--mk->s[w].n]);
+        }
 }
 
 // gomupdf_shield_push queues v for gomupdf_struct_shield in a role position
@@ -2079,6 +2088,26 @@ static void gomupdf_struct_parents(fz_context *ctx, pdf_obj *ref) {
     if (pdf_is_int(ctx, pdf_dict_get(ctx, ref, PDF_NAME(StructParent)))) pdf_dict_del(ctx, ref, PDF_NAME(StructParent));
 }
 
+// gomupdf_struct_refs deletes, when Scrub removes the structure tree, the
+// standard keys of a kept object that point into it: an outline item's /SE
+// (an object kept as an outline item, GM_TOP, that is neither an annotation
+// nor a node of the form), and the /SD structure destination of a GoTo
+// action a kept object uses in a defined role (GM_RWALK) or holds directly
+// as /A or /PA (a kept annotation, field or outline item) or /OpenAction
+// (the catalog, is_root). Within the walk budget what they name is
+// destroyed anyway; past it (Scrub then fails) they would keep it. The
+// caller leaves page content and what a kept appearance draws alone.
+static void gomupdf_struct_refs(fz_context *ctx, pdf_obj *ref, unsigned int m, int is_root) {
+    static const char *acts[] = {"A", "PA", "OpenAction"};
+    if ((m & GM_TOP) && !(m & GM_FORM) && !gomupdf_annot_shaped(ctx, ref)) pdf_dict_dels(ctx, ref, "SE");
+    if ((m & GM_RWALK) && gomupdf_is_kind(ctx, ref, GK_ANYACTION)) pdf_dict_dels(ctx, ref, "SD");
+    if (!(m & GM_TOP) && !is_root) return;
+    for (int k = 0; k < 3; k++) {
+        pdf_obj *a = pdf_dict_gets(ctx, ref, acts[k]);
+        if (!pdf_is_indirect(ctx, a) && gomupdf_is_kind(ctx, a, GK_ANYACTION)) pdf_dict_dels(ctx, a, "SD");
+    }
+}
+
 // gomupdf_sweep visits every object in the xref. It finds each /AF that is an
 // associated-files array (gomupdf_af_files), skipping the catalog, pages and
 // intermediate page-tree nodes (GM_PAGE, GM_INODE or GM_DONE in mk, whose /AF
@@ -2137,7 +2166,10 @@ static void gomupdf_sweep(fz_context *ctx, pdf_document *pdf, gomupdf_marks *mk,
                 else if (!out[HC_JS] && gomupdf_actions(ctx, NULL, ref, 0, mk)) out[HC_JS] = 1;
             } else if (i != mk->root && !(m & (GM_PAGE | GM_INODE | GM_DONE)) && gomupdf_private_holder(ctx, ref))
                 gomupdf_private_keys(ctx, mk, ref, out);
-            if (!out && mk->nostruct && !(m & (GM_CONTENT | GM_APWALK))) gomupdf_struct_parents(ctx, ref);
+            if (!out && mk->nostruct && !(m & (GM_CONTENT | GM_APWALK))) {
+                gomupdf_struct_parents(ctx, ref);
+                gomupdf_struct_refs(ctx, ref, m, i == mk->root);
+            }
             if (out && out[HC_LAYERS]) gomupdf_layers(ctx, pdf, i, ref, out, &floor);
         }
         fz_always(ctx) {
@@ -2449,6 +2481,13 @@ static int gomupdf_scrub(fz_context *ctx, fz_document *doc, int keep_annots, int
         // annotations, outline items, Scrub's own copies), and pages that are
         // not in the page tree.
         gomupdf_sweep(ctx, pdf, &mk, NULL, keep_annots, keep_fields);
+        // A structure tree larger than the walk budget may stay referenced
+        // (a stray key of a kept object): the document is not scrubbed. What
+        // was recorded is still destroyed below.
+        if (mk.sleft)
+            fz_throw(ctx, FZ_ERROR_FORMAT,
+                     "structure tree larger than the walk budget: %d queued objects left unwalked, which other "
+                     "references may keep", mk.sleft);
     }
     fz_catch(ctx) {
         snprintf(err, errlen, "%s", fz_caught_message(ctx));

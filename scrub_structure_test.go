@@ -415,33 +415,79 @@ func TestScrubStructureHostile(t *testing.T) {
 	})
 }
 
-// Pins the documented limit: an element the walk does not reach within its
-// budget (here behind 100,000 null /Nums entries in a file of 6 objects) is
-// only unlinked with the tree, so a kept Link's stray reference keeps it in
-// the saved file; behind 10 entries the same element is destroyed.
-func TestScrubStructureBeyondBudgetOnlyUnlinks(t *testing.T) {
-	const tok = "GomupdfStructBeyond1f2a"
-	pdf := func(nulls int) []byte {
-		return scrubBuildPDF([]string{
-			`<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 4 0 R >>`,
-			`<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
-			`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots [6 0 R] >>`,
-			`<< /Type /StructTreeRoot /ParentTree << /Nums [` + strings.Repeat("0 null ", nulls) + `1 5 0 R] >> >>`,
-			`<< /Type /StructElem /S /Figure /P 4 0 R /Alt (` + tok + `) >>`,
-			`<< /Type /Annot /Subtype /Link /Rect [0 0 1 1] /Dest [3 0 R /Fit] /GomupdfRef 5 0 R >>`,
-		}, "")
-	}
+// scrubStructBudgetPDF is a one-page tagged PDF with an outline item (8)
+// whose /SE names the Figure 6, which holds tok and which a kept Link (7)
+// also references through a stray key; the Link's direct GoTo and the
+// item's indirect one (10) name it as their /SD structure destination too.
+// The tree's first element 5 is walked first and has the /K k.
+func scrubStructBudgetPDF(k, tok string) []byte {
+	return scrubBuildPDF([]string{
+		/* 1 */ `<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 4 0 R /Outlines 9 0 R >>`,
+		/* 2 */ `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+		/* 3 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots [7 0 R] >>`,
+		/* 4 */ `<< /Type /StructTreeRoot /K [6 0 R 5 0 R] >>`,
+		/* 5 */ `<< /Type /StructElem /S /P /P 4 0 R /Pg 3 0 R /K ` + k + ` >>`,
+		/* 6 */ `<< /Type /StructElem /S /Figure /P 4 0 R /Alt (` + tok + `) >>`,
+		/* 7 */ `<< /Type /Annot /Subtype /Link /Rect [0 0 1 1] /A << /S /GoTo /D [3 0 R /Fit] /SD [6 0 R /Fit] >> /GomupdfRef 6 0 R >>`,
+		/* 8 */ `<< /Title (Figure) /Parent 9 0 R /A 10 0 R /SE 6 0 R >>`,
+		/* 9 */ `<< /Type /Outlines /First 8 0 R /Last 8 0 R /Count 1 >>`,
+		/* 10 */ `<< /S /GoTo /D [3 0 R /Fit] /SD [6 0 R /Fit] >>`,
+	}, "")
+}
+
+// The walk budget is charged per object: an element whose /K holds 70,000
+// MCIDs (integers, which lead nowhere) does not exhaust it, so the Figure
+// walked after it is destroyed, and a kept outline item loses the /SE that
+// named it, and the kept GoTo actions their /SD. 70,000 direct MCR
+// dictionaries in a file of 10 objects do exhaust it: Scrub then returns an
+// error, as the tree may stay reachable (here through the kept Link's stray
+// key), and still leaves no /SE or /SD on what it keeps; with 10 of them it
+// succeeds.
+func TestScrubStructureBudget(t *testing.T) {
+	const tok = "GomupdfStructBudget1f2a"
+	mcids := "[" + strings.Repeat("0 ", 70000) + "]"
+	mcrs := func(n int) string { return "[" + strings.Repeat("<< /Type /MCR /MCID 0 >> ", n) + "]" }
 	for _, c := range []struct {
-		nulls int
-		leaks bool
-	}{{10, false}, {100000, true}} {
-		out, re := scrubRoundTrip(t, pdf(c.nulls), ScrubOptions{})
-		if got := bytes.Contains(out, []byte(tok)); got != c.leaks {
-			t.Errorf("%d nulls: element in save = %v, want %v", c.nulls, got, c.leaks)
-		}
-		if scrubHidden(t, re).StructTree {
-			t.Errorf("%d nulls: StructTree after scrub", c.nulls)
-		}
+		name, k string
+		fails   bool
+	}{{"70,000 MCIDs", mcids, false}, {"10 MCRs", mcrs(10), false}, {"70,000 MCRs", mcrs(70000), true}} {
+		t.Run(c.name, func(t *testing.T) {
+			pdf := scrubStructBudgetPDF(c.k, tok)
+			scrubControl(t, pdf, tok)
+			d, err := OpenStream(pdf)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			start := time.Now()
+			err = d.Scrub(ScrubOptions{KeepOutlines: true})
+			if el := time.Since(start); el > 5*time.Second {
+				t.Errorf("Scrub took %v", el)
+			}
+			if (err != nil) != c.fails {
+				t.Fatalf("Scrub error %v, want an error %v", err, c.fails)
+			}
+			out, err := d.SaveBytesWithOptions(scrubSaveOpts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, key := range []string{"/SE", "/SD"} {
+				if bytes.Contains(out, []byte(key)) {
+					t.Errorf("%s survives on what Scrub keeps", key)
+				}
+			}
+			if got := bytes.Contains(out, []byte(tok)); got != c.fails {
+				t.Errorf("Figure in the save = %v, want %v", got, c.fails)
+			}
+			re, err := OpenStream(out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer re.Close()
+			if toc, err := re.TOC(); err != nil || len(toc) != 1 || toc[0].Page != 0 {
+				t.Errorf("TOC after scrub = %+v, %v", toc, err)
+			}
+		})
 	}
 }
 
