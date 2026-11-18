@@ -55,7 +55,7 @@ f3b7339..main`), grouped by theme. The groups are thematic, not chronological:
 the order inside each group is the order in the history. "API impact" is
 `None`, `New API`, `Behavior change` (same signatures, different results or
 errors) or `BREAKING` (existing callers must change code or handle a new
-failure). Nothing has been pushed or tagged yet. 89 commits, the commit that last updated this list included.
+failure). Nothing has been pushed or tagged yet. 92 commits, the commit that last updated this list included.
 
 
 ### Fork and build
@@ -145,6 +145,8 @@ failure). Nothing has been pushed or tagged yet. 89 commits, the commit that las
 | `f096247` | `fix(scrub): keep what the catalog and kept objects use when removing the structure tree` | Behavior change: page labels, name trees, viewer preferences, the /OpenAction and kept objects' actions, /MK and /BS survive a crafted structure tree |
 | `69c4890` | `fix(scrub): leave no structure reference on kept outline items and budget the walk per object` | Behavior change: kept outline items lose /SE and kept GoTo actions /SD; the structure walk budget is per object; Scrub returns an error past it |
 | `69c77cb` | `fix(scrub): do not fail on kept indirect arrays when removing structure references` | None (KeepFormFields and KeepAnnotations no longer fail on a form with an indirect /Fields, /Kids or /CO array) |
+| `fd1ae14` | `fix(scrub): bound the structure walk's work on shared arrays` | None (an indirect array shared by many structure elements or tree nodes is scanned once) |
+| (this commit) | `fix(scrub): do not let a structure destination keep the element` | Behavior change: structure destinations of kept objects lead to the element's page or are removed; a structure element that is a catalog value is not kept |
 
 ### Layers
 
@@ -167,7 +169,8 @@ failure). Nothing has been pushed or tagged yet. 89 commits, the commit that las
 | `8cc4c9e` | `fix(scrub): do not re-parse unloadable objects in the sweep` | None (sweeps skip unloadable objects; no more minutes-long HiddenContent, Scrub, ShowAllLayers on broken object streams) |
 | `71a998e` | `fix: run deeply recursive MuPDF calls on a large stack` | None (saves, Scrub, extraction and rendering run on a 256 MiB stack; deep files no longer crash) |
 | `a54c345` | `fix: parse SetTOC, SetPageLabels and SetMetadata input reentrantly` | None (concurrent edits of different documents no longer lose entries or crash) |
-| (this commit) | `fix: run the remaining document-reading MuPDF calls on a large stack` | Behavior change: InsertPDF, InsertPDFRange, Scrub, HiddenContent and saves fail where MuPDF silently read past an exception-stack overflow; every document call runs on the large stack |
+| `3a4b88a` | `fix: run the remaining document-reading MuPDF calls on a large stack` | Behavior change: InsertPDF, InsertPDFRange, Scrub, HiddenContent and saves fail where MuPDF silently read past an exception-stack overflow; every document call runs on the large stack |
+| `63c7bd1` | `fix: return an error when the large-stack thread cannot be created` | Behavior change: a call whose large-stack thread cannot be created returns an error instead of running on the small stack; the stack is 64 MiB |
 
 ### Tests
 
@@ -470,7 +473,8 @@ screen readers use are gone, and reading order follows content order. Rules:
   (a typed element as a `/Dests` leaf). This protects only from the tree's
   removal: the catalog `/Lang` (when it is a string) and these values never
   keep `/Info`, XMP, an embedded file or a script `Scrub` removes otherwise.
-  Stray catalog keys keep nothing.
+  Stray catalog keys keep nothing, and a structure element that is itself
+  such a value (`/Dests 7 0 R` naming one) is not protected.
 - What the tree points at is not part of it: pages (`/Pg`), annotations and
   widgets (`/Obj`), forms and content streams (`/Stm`), fonts and namespaces
   stay unless something else removes them; `/AF` files go as everywhere. An
@@ -484,7 +488,12 @@ screen readers use are gone, and reading order follows content order. Rules:
   removed by `Scrub`; `ApplyRedactions` strips their declared text on redacted
   pages only. The catalog `/Lang` stays when it is a string. Kept outline items lose `/SE` and
   kept GoTo actions their `/SD` structure destination, which point into the
-  tree.
+  tree. Every other structure destination (PDF 2.0: a destination whose
+  first entry is a structure element, as a Link's or outline item's `/Dest`,
+  a GoTo `/D` or a `/Dests` or `/Names/Dests` entry) is pointed at the
+  element's page (its `/Pg`, its first content item's or its nearest
+  ancestor's), or removed when there is none (the Link or item stays), so
+  the element goes like the rest of the tree.
 - Limits. The walk is iterative, visits each object once per role and stops
   after 65,536 + 16 x (object count) units of work, one per array or
   dictionary it visits (an MCID, a null or an object already visited costs
@@ -869,10 +878,12 @@ and returns an error; it does not remove them.
   `TestCorpus`, or set `GOMUPDF_CORPUS_TIMEOUT` (which, when set, replaces
   that cap).
 
-**Corpus results (run of 2026-11-18 at `69c77cb`, whose code this document's
-commit does not change; MuPDF 1.26.11 on Alpine 3.23, Go 1.27).** Every
-outcome and failure category matches the previous run at `190caaf`; the
-only change is one file whose 429 MB render no longer fails to allocate.
+**Corpus results (run of 2026-11-18 on the code of the commit that last
+updated this paragraph, `fix(scrub): do not let a structure destination keep
+the element`; MuPDF 1.26.11 on Alpine 3.23, Go 1.27; 413 s wall time with three
+workers).** Every outcome and failure category matches the run at `190caaf`,
+but for one file the corpus test now fails because `Scrub` refuses it
+(`scrub-error`, see below).
 5,347 public test and real-world PDFs from the pdf.js, veraPDF, qpdf, PyMuPDF,
 Poppler, corkami and PDF Association suites (kept outside the repo), plus the
 163 committed regression files. Each file is opened, extracted, redacted by
@@ -882,10 +893,10 @@ committed ones) have a structure tree.
 
 | Outcome | Files |
 |---|---|
-| Passed every check | 5,191 |
+| Passed every check | 5,190 |
 | Rejected at open | 30 |
 | Need a password | 46 |
-| Broke a cosmetic invariant, or cannot be saved (see below) | 75 |
+| Broke a cosmetic invariant, cannot be saved, or refused by `Scrub` (see below) | 76 |
 | Exceeded the 2-minute limit inside MuPDF | 4 |
 | Crashed MuPDF, only with `UseActualText` | 1 |
 | Redacted text extracted after a successful redaction and save | **0** |
@@ -901,6 +912,9 @@ committed ones) have a structure tree.
   rate, not a bound.
 - **Layers.** 71 files have optional content; `ShowAllLayers` revealed words on
   6 of them and lost none. 48 of the 71 report `HiddenLayers >= 1`.
+- **One file `Scrub` refuses** (PyMuPDF `test_5101.pdf`): MuPDF raises "cycle in
+  resources" in three of the four modes; the error is the documented
+  outcome (discard the document), and the test counts it as a failure.
 - **One file cannot be saved after a rectangle redaction**: pixel redaction makes
   MuPDF store its images uncompressed, and the uncompressed save needs 306 MB.
 - **What still sits in the bytes after redaction, default `Scrub` and a

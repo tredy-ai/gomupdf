@@ -532,7 +532,11 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // unless something else references it, and Scrub returns an error, since a
 // kept object's stray reference can keep that rest (the document is then
 // not scrubbed; see below). Kept outline items lose their /SE and kept GoTo
-// actions their /SD structure destination, which point into the tree.
+// actions their /SD structure destination, which point into the tree, and
+// every other structure destination (a destination whose first entry is a
+// structure element: a Link's or outline item's /Dest, a GoTo /D, a /Dests
+// or /Names/Dests entry) leads to the element's page instead, or is removed
+// when no page can be found from the element.
 // Unlinked
 // objects leave the file only if nothing else references them. Scrub's
 // marking pass and its edit pass each have an action budget of 4,096 + 32 x

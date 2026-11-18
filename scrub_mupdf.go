@@ -1120,6 +1120,9 @@ static void gomupdf_shield_push(fz_context *ctx, gomupdf_marks *mk, int which, p
     if (pdf_is_indirect(ctx, v)) {
         unsigned int *m = gomupdf_mark(ctx, mk, v);
         if (!m || (which == GS_SHR ? (*m & GM_SHROLE) != 0 : (*m & (GM_SKEEP | GM_SNODE)) != 0)) return;
+        // A structure element is never what a catalog key means, even in a
+        // role position (/Dests 7 0 R naming an element).
+        if ((*m & GM_SNODE) && gomupdf_struct_elem(ctx, mk, v)) return;
         *m |= GM_SKEEP | (which == GS_SHR ? GM_SHROLE : 0);
     }
     if (pdf_is_array(ctx, v) || pdf_is_dict(ctx, v)) gomupdf_push(ctx, mk, which, v);
@@ -1190,6 +1193,113 @@ static void gomupdf_struct_shield(fz_context *ctx, pdf_document *pdf, gomupdf_ma
     }
 }
 
+// gomupdf_pg returns o's /Pg when it is a page dictionary, else NULL.
+static pdf_obj *gomupdf_pg(fz_context *ctx, pdf_obj *o) {
+    pdf_obj *pg = pdf_dict_gets(ctx, o, "Pg"); // Pg is not in MuPDF's name table
+    return pdf_is_indirect(ctx, pg) && pdf_name_eq(ctx, pdf_dict_get(ctx, pg, PDF_NAME(Type)), PDF_NAME(Page)) ? pg : NULL;
+}
+
+// gomupdf_elem_page returns the page of the structure element e, where a
+// structure destination to it leads: its /Pg; else that of its first content
+// item, following the first /K entry down (an element, MCR or OBJR with
+// /Pg); else that of its nearest ancestor up /P; NULL if none has one. Each
+// direction stops after 4,096 steps (a cycle).
+static pdf_obj *gomupdf_elem_page(fz_context *ctx, gomupdf_marks *mk, pdf_obj *e) {
+    pdf_obj *pg = NULL, *k = e;
+    for (int d = 0; d < 4096 && !pg && pdf_is_dict(ctx, k); d++) {
+        pg = gomupdf_pg(ctx, k);
+        k = pdf_dict_get(ctx, k, PDF_NAME(K));
+        if (pdf_is_array(ctx, k)) k = pdf_array_get(ctx, k, 0);
+    }
+    for (int d = 0; d < 4096 && !pg && gomupdf_struct_elem(ctx, mk, e); d++) {
+        e = pdf_dict_get(ctx, e, PDF_NAME(P));
+        pg = gomupdf_pg(ctx, e);
+    }
+    return pg;
+}
+
+// gomupdf_struct_dest rewrites the destination in slot key of the dictionary
+// holder (or, with a NULL key, entry i of the array holder) when its first
+// entry is a structure element: the element becomes its page
+// (gomupdf_elem_page), or, with no page, the destination is removed. A
+// destination dictionary (<< /D [...] >>, as /Dests and name-tree values may
+// be) is followed to its /D. An indirect array is not edited: the slot gets
+// a direct copy, so whatever else uses the array (page content, say) is
+// unchanged.
+static void gomupdf_struct_dest(fz_context *ctx, gomupdf_marks *mk, pdf_obj *holder, pdf_obj *key, int i,
+                                int nested) {
+    pdf_obj *v = key ? pdf_dict_get(ctx, holder, key) : pdf_array_get(ctx, holder, i);
+    if (!nested && pdf_is_dict(ctx, v)) {
+        gomupdf_struct_dest(ctx, mk, v, PDF_NAME(D), 0, 1);
+        return;
+    }
+    pdf_obj *first = pdf_array_get(ctx, v, 0);
+    if (!pdf_is_indirect(ctx, first) || !gomupdf_struct_elem(ctx, mk, first)) return;
+    pdf_obj *page = gomupdf_elem_page(ctx, mk, first);
+    if (!page) {
+        if (key) pdf_dict_del(ctx, holder, key);
+        else pdf_array_put(ctx, holder, i, PDF_NULL);
+        return;
+    }
+    if (!pdf_is_indirect(ctx, v)) {
+        pdf_array_put(ctx, v, 0, page);
+        return;
+    }
+    pdf_obj *copy = pdf_copy_array(ctx, v);
+    fz_try(ctx) {
+        pdf_array_put(ctx, copy, 0, page);
+        if (key) pdf_dict_put(ctx, holder, key, copy);
+        else pdf_array_put(ctx, holder, i, copy);
+    }
+    fz_always(ctx) pdf_drop_obj(ctx, copy);
+    fz_catch(ctx) fz_rethrow(ctx);
+}
+
+// gomupdf_struct_dests, when Scrub removes the structure tree, rewrites the
+// structure destinations (PDF 2.0: an explicit destination whose first
+// entry is a structure element) that would otherwise keep their element,
+// and its text, through a kept object: the /Dest of every object (a Link,
+// an outline item), the /D of every GoTo action (indirect, or direct as an
+// /A or /Next value), the values of the catalog /Dests and of every /Names
+// array (the /Names/Dests leaves). Each becomes the element's page, or is
+// removed when the element has none (gomupdf_struct_dest), so a structure
+// destination is dropped like any other reference into the tree. It runs
+// before anything is marked kept and touches only those slots.
+static void gomupdf_struct_dests(fz_context *ctx, pdf_document *pdf, gomupdf_marks *mk) {
+    pdf_obj *root = pdf_dict_get(ctx, pdf_trailer(ctx, pdf), PDF_NAME(Root));
+    pdf_obj *dests = pdf_dict_get(ctx, root, PDF_NAME(Dests));
+    for (int j = 0, n = pdf_dict_len(ctx, dests); j < n; j++)
+        gomupdf_struct_dest(ctx, mk, dests, pdf_dict_get_key(ctx, dests, j), 0, 0);
+    // A direct /Names/Dests root is reached through no object of its own
+    // (its /Kids are indirect, so the loop below sees them), nor is a direct
+    // /OpenAction (a destination array, or a GoTo action's /D).
+    pdf_obj *tree = pdf_dict_getp(ctx, root, "Names/Dests"), *names = pdf_dict_get(ctx, tree, PDF_NAME(Names));
+    for (int j = 1; j < pdf_array_len(ctx, names); j += 2) gomupdf_struct_dest(ctx, mk, names, NULL, j, 0);
+    pdf_obj *oa = pdf_new_name(ctx, "OpenAction");
+    fz_try(ctx) gomupdf_struct_dest(ctx, mk, root, oa, 0, 0);
+    fz_always(ctx) pdf_drop_obj(ctx, oa);
+    fz_catch(ctx) fz_rethrow(ctx);
+    int len = pdf_xref_len(ctx, pdf);
+    for (int i = 1; i < len; i++) {
+        if (gomupdf_unloaded(ctx, pdf, i)) continue;
+        pdf_obj *o = pdf_new_indirect(ctx, pdf, i, 0);
+        fz_try(ctx) {
+            if (pdf_is_dict(ctx, o)) {
+                gomupdf_struct_dest(ctx, mk, o, PDF_NAME(Dest), 0, 0);
+                pdf_obj *acts[] = {o, pdf_dict_get(ctx, o, PDF_NAME(A)), pdf_dict_get(ctx, o, PDF_NAME(Next))};
+                for (int k = 0; k < 3; k++)
+                    if ((k == 0 || !pdf_is_indirect(ctx, acts[k])) &&
+                        pdf_name_eq(ctx, pdf_dict_get(ctx, acts[k], PDF_NAME(S)), PDF_NAME(GoTo)))
+                        gomupdf_struct_dest(ctx, mk, acts[k], PDF_NAME(D), 0, 0);
+                pdf_obj *names = pdf_dict_get(ctx, o, PDF_NAME(Names));
+                for (int j = 1; j < pdf_array_len(ctx, names); j += 2) gomupdf_struct_dest(ctx, mk, names, NULL, j, 0);
+            }
+        }
+        fz_always(ctx) pdf_drop_obj(ctx, o);
+        fz_catch(ctx) fz_rethrow(ctx);
+    }
+}
+
 // gomupdf_keep_pass marks the kept content of the document (see GM_KEEP).
 // keep_fields (KeepFormFields, or KeepAnnotations) keeps the widgets and the
 // /AcroForm field tree. When Scrub removes the structure tree (mk->nostruct),
@@ -1201,7 +1311,10 @@ static void gomupdf_keep_pass(fz_context *ctx, pdf_document *pdf, gomupdf_marks 
                               int keep_annots, int keep_fields, int keep_outlines) {
     pdf_obj *root = pdf_dict_get(ctx, pdf_trailer(ctx, pdf), PDF_NAME(Root));
     mk->abudget = gomupdf_action_budget(ctx, pdf);
-    if (mk->nostruct) gomupdf_struct_walk(ctx, pdf, mk);
+    if (mk->nostruct) {
+        gomupdf_struct_walk(ctx, pdf, mk);
+        gomupdf_struct_dests(ctx, pdf, mk);
+    }
     gomupdf_mark_content(ctx, pdf, mk);
 
     // A safe /OpenAction stays, so its actions are kept like a kept /A: a

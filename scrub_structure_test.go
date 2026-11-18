@@ -907,6 +907,117 @@ func TestScrubStructureAndRedaction(t *testing.T) {
 	}
 }
 
+// scrubStructDestPDF is a two-page tagged PDF whose kept objects use
+// structure destinations (PDF 2.0: a destination whose first entry is a
+// structure element). Elements 11 (/Pg 4), 12 (no /Pg; its parent 14 has
+// /Pg 4), 16 (no /Pg; its first kid 17 has /Pg 4), 13 and 15 (no page
+// anywhere) hold the secrets. On page 3: Link 5 has /Dest [16 /Fit], Link 6
+// a GoTo /D [12 /Fit], Link 7 the named
+// destination (nd) from /Names/Dests, [12 /Fit], Link 8 the /Dests entry
+// /old, [13 /Fit], Link 9 a GoTo to page 3 with /SD [13 /Fit]. Outline item
+// 21 has /Dest [11 /Fit], item 22 /Dest [15 /Fit], item 23 /Dest (nd).
+func scrubStructDestPDF() []byte {
+	return scrubBuildPDF([]string{
+		/* 1 */ `<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 10 0 R /Outlines 20 0 R
+   /Names << /Dests << /Names [(nd) [12 0 R /Fit]] >> >> /Dests << /old [13 0 R /Fit] >> >>`,
+		/* 2 */ `<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>`,
+		/* 3 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Annots [5 0 R 6 0 R 7 0 R 8 0 R 9 0 R] >>`,
+		/* 4 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] >>`,
+		/* 5 */ `<< /Type /Annot /Subtype /Link /Rect [0 0 20 20] /Dest [16 0 R /Fit] >>`,
+		/* 6 */ `<< /Type /Annot /Subtype /Link /Rect [30 0 50 20] /A << /S /GoTo /D [12 0 R /Fit] >> >>`,
+		/* 7 */ `<< /Type /Annot /Subtype /Link /Rect [60 0 80 20] /Dest (nd) >>`,
+		/* 8 */ `<< /Type /Annot /Subtype /Link /Rect [90 0 110 20] /Dest /old >>`,
+		/* 9 */ `<< /Type /Annot /Subtype /Link /Rect [120 0 140 20] /A << /S /GoTo /D [3 0 R /Fit] /SD [13 0 R /Fit] >> >>`,
+		/* 10 */ `<< /Type /StructTreeRoot /K [11 0 R 14 0 R 13 0 R 15 0 R 16 0 R] >>`,
+		/* 11 */ `<< /Type /StructElem /S /P /P 10 0 R /Pg 4 0 R /Alt (GomupdfDestSecA) /T (GomupdfDestTsecA) >>`,
+		/* 12 */ `<< /Type /StructElem /S /P /P 14 0 R /Alt (GomupdfDestSecB) >>`,
+		/* 13 */ `<< /Type /StructElem /S /P /P 10 0 R /Alt (GomupdfDestSecC) >>`,
+		/* 14 */ `<< /Type /StructElem /S /Sect /P 10 0 R /Pg 4 0 R /K [12 0 R] >>`,
+		/* 15 */ `<< /Type /StructElem /S /P /P 10 0 R /Alt (GomupdfDestSecD) >>`,
+		/* 16 */ `<< /Type /StructElem /S /Sect /P 10 0 R /K [17 0 R] /Alt (GomupdfDestSecE) >>`,
+		/* 17 */ `<< /Type /StructElem /S /Span /P 16 0 R /Pg 4 0 R /K 0 >>` /* 18 */, `<< >>` /* 19 */, `<< >>`,
+		/* 20 */ `<< /Type /Outlines /First 21 0 R /Last 23 0 R /Count 3 >>`,
+		/* 21 */ `<< /Title (a) /Parent 20 0 R /Next 22 0 R /Dest [11 0 R /Fit] >>`,
+		/* 22 */ `<< /Title (b) /Parent 20 0 R /Prev 21 0 R /Next 23 0 R /Dest [15 0 R /Fit] >>`,
+		/* 23 */ `<< /Title (c) /Parent 20 0 R /Prev 22 0 R /Dest (nd) >>`,
+	}, "")
+}
+
+// A structure destination does not keep its element when Scrub removes the
+// tree: in a kept Link's or outline item's /Dest, a GoTo action's /D and the
+// /Dests and /Names/Dests entries kept links resolve through, the element is
+// replaced by its page (its /Pg, its first content item's or its nearest
+// ancestor's), and a
+// destination whose element has no page is dropped (the Link or outline item
+// stays, as with a removed unsafe action); /SD goes from kept GoTo actions
+// as before. The elements and their text are gone, the Links and the outline
+// item go to page 2, and HiddenContent reads clean. With KeepStructure
+// nothing changes.
+func TestScrubStructureDestinations(t *testing.T) {
+	pdf := scrubStructDestPDF()
+	secrets := []string{"GomupdfDestSecA", "GomupdfDestTsecA", "GomupdfDestSecB", "GomupdfDestSecC", "GomupdfDestSecD", "GomupdfDestSecE"}
+	scrubControl(t, pdf, secrets...)
+	out, re := scrubRoundTrip(t, pdf, ScrubOptions{KeepOutlines: true})
+	scrubNoTokens(t, "scrubbed", out, append(secrets, "/StructElem", "/SD")...)
+	if h := scrubHidden(t, re); h != (HiddenContent{Outlines: true}) {
+		t.Errorf("after scrub %+v", h)
+	}
+	p, err := re.LoadPage(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	links, err := p.Links()
+	if err != nil || len(links) < 3 {
+		t.Fatalf("links %+v, %v", links, err)
+	}
+	for _, l := range links[:2] {
+		if !strings.HasPrefix(l.URI, "#page=2") {
+			t.Errorf("link at %v goes to %q, want page 2", l.Rect, l.URI)
+		}
+	}
+	if links[2].URI != "#nameddest=nd" {
+		t.Errorf("named link goes to %q", links[2].URI)
+	}
+	// MuPDF resolves neither (nd) here (a catalog /Dests shadows
+	// /Names/Dests) nor the outline item whose destination was dropped, so
+	// the rewritten name-tree entry is read from the bytes (a Garbage 1
+	// save keeps object numbers: 4 is page 2).
+	if !bytes.Contains(out, []byte("(nd)[4 0 R/Fit]")) {
+		t.Error("the (nd) destination does not name page 2")
+	}
+	toc, err := re.TOC()
+	if err != nil || len(toc) != 3 || toc[0].Page != 1 {
+		t.Errorf("TOC %+v, %v", toc, err)
+	}
+	out, _ = scrubRoundTrip(t, pdf, ScrubOptions{KeepOutlines: true, KeepStructure: true})
+	for _, s := range secrets {
+		if !bytes.Contains(out, []byte(s)) {
+			t.Errorf("KeepStructure: %s is gone", s)
+		}
+	}
+}
+
+// A structure element that is directly the value of a catalog key Scrub
+// keeps for its own sake (/Dests, /ViewerPreferences, /Threads) is not
+// shielded by it: the element and its /Alt go with the tree.
+func TestScrubCatalogValueIsElement(t *testing.T) {
+	const tok = "GomupdfCatElemAlt5c6d"
+	for _, val := range []string{"/Dests 5 0 R", "/ViewerPreferences 5 0 R", "/Threads [5 0 R]"} {
+		t.Run(val, func(t *testing.T) {
+			pdf := scrubBuildPDF([]string{
+				/* 1 */ `<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 4 0 R ` + val + ` >>`,
+				/* 2 */ `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+				/* 3 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>`,
+				/* 4 */ `<< /Type /StructTreeRoot /K [5 0 R] >>`,
+				/* 5 */ `<< /Type /StructElem /S /Figure /P 4 0 R /Alt (` + tok + `) >>`,
+			}, "")
+			scrubControl(t, pdf, tok)
+			out, _ := scrubRoundTrip(t, pdf, ScrubOptions{})
+			scrubNoTokens(t, val, out, tok)
+		})
+	}
+}
+
 // A kept form whose /Fields, a field's /Kids or /CO is an indirect array
 // scrubs and keeps its widget: removing the structure tree's references from
 // kept objects (/SE, /SD) skips the arrays kept with them (it threw "not a
