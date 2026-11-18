@@ -45,8 +45,10 @@ redaction can fail without telling the caller. In short:
   there or moved. After such an error the `Document` must be discarded.
 - **`Scrub` and `HiddenContent`** remove, and report, the places outside page
   content where text survives: metadata, attachments, scripts, annotations,
-  form fields, outlines, private data. **`ShowAllLayers`** reveals hidden
-  optional-content layers so they can be extracted and redacted.
+  form fields, outlines, private data and, unless `KeepStructure` is set, the
+  logical structure tree (accessibility tagging). **`ShowAllLayers`** reveals
+  hidden optional-content layers so they can be extracted and redacted; call it
+  whenever `HiddenContent` reports `Layers > 0`.
 - **Extraction ignores `/ActualText` by default** and exposes per-character
   quads (`RawDictWithOptions`, `Char.Quad`).
 - **Damaged files are repaired at open**, locked documents answer nothing until
@@ -465,7 +467,7 @@ if err != nil {
 }
 fmt.Println(hc.JavaScript, hc.EmbeddedFiles, hc.Widgets, hc.Layers)
 
-if err := doc.Scrub(gomupdf.ScrubOptions{}); err != nil { // zero value removes everything it knows
+if err := doc.Scrub(gomupdf.ScrubOptions{}); err != nil { // zero value removes everything it knows, structure tree included
 	return err // discard doc
 }
 err = doc.SaveWithOptions("out.pdf", gomupdf.SaveOptions{Garbage: 3, Deflate: true})
@@ -482,17 +484,18 @@ PDF; `KeepStructure` keeps it, text and all. Reopen the output and call
 
 Content on a layer that MuPDF's default configuration hides is never
 extracted, searched, rendered or redacted, but stays in the file. `Scrub` does
-not touch it. `ShowAllLayers` makes all of it ordinary, visible content; call it
-before extraction and detection. `HiddenLayers` counts what MuPDF hides but
-cannot see inline `/OC << >> BDC` property lists in content streams, so call
-`ShowAllLayers` whenever `Layers > 0` if you need certainty.
+not touch it. `ShowAllLayers` makes all of it ordinary, visible content, and
+the output then shows every layer at once. The rule for a redaction service:
+call it before extraction and detection whenever `Layers > 0`.
+`HiddenLayers` counts what MuPDF hides but cannot see inline
+`/OC << >> BDC` property lists in content streams, so do not go by it.
 
 ```go
 hc, err := doc.HiddenContent()
 if err != nil {
 	return err
 }
-if hc.Layers > 0 { // only Layers == 0 rules out hidden content; reveal whenever certainty matters
+if hc.Layers > 0 { // only Layers == 0 rules out hidden content
 	if err := doc.ShowAllLayers(); err != nil {
 		return err
 	}
@@ -552,7 +555,7 @@ from. After a failed `ApplyRedactions`, every save returns an error wrapping
 | Outline / links | `doc.TOC`/`SetTOC` · `page.Links`/`InsertLink`/`DeleteLink` |
 | Annotate | `page.AddHighlight`/`AddFreeText`/`AddLine`/`Annotations`/`DeleteAnnotation` |
 | Redact | `page.AddRedaction`/`AddRedactionQuads` → `page.ApplyRedactions(ApplyOptions)` (errors: `*RedactionCheckError`, `ErrRedactionFailed`) |
-| Scrub / inspect | `doc.Scrub(ScrubOptions)` · `doc.HiddenContent` |
+| Scrub / inspect | `doc.Scrub(ScrubOptions)` (`KeepAnnotations`, `KeepFormFields`, `KeepOutlines`, `KeepStructure`) · `doc.HiddenContent` |
 | Layers | `doc.ShowAllLayers` · `HiddenContent.Layers`/`HiddenLayers` |
 | Version | `gomupdf.MuPDFVersion` |
 | Forms | `page.Widgets` · `page.SetTextField` · `page.AddTextField` |
@@ -592,6 +595,7 @@ Legend: ✅ supported · 🟡 partial · ⬜ not yet
 | Structure | Metadata read/write + XMP | ✅ |
 | Structure | Embedded files (read/write) | ⬜ (`Scrub` removes them) |
 | Structure | Optional-content layers: report hidden layers, reveal all | 🟡 no per-layer toggling |
+| Structure | Logical structure tree (tagging): report it, remove it | 🟡 no reading; `Scrub` removes it unless `KeepStructure` |
 | Render | Pixmap → raster (DPI, RGB/Gray/CMYK, clip, annot toggle) | ✅ |
 | Render | Pixmap ops (invert, gamma) + PNG/JPEG/PNM encode & save | ✅ |
 | Render | Extract images + placement bbox | ✅ |

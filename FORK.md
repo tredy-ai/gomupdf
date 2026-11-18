@@ -17,7 +17,7 @@ file if they ever disagree.
 5. [Migration notes](#5-migration-notes)
 6. [Using the package in a redaction service](#6-using-the-package-in-a-redaction-service)
 7. [Known limitations](#7-known-limitations)
-8. [Open decisions](#8-open-decisions)
+8. [Decisions](#8-decisions)
 9. [Testing](#9-testing)
 10. [Releases and staying current with upstream](#10-releases-and-staying-current-with-upstream)
 
@@ -55,7 +55,7 @@ f3b7339..main`), grouped by theme. The groups are thematic, not chronological:
 the order inside each group is the order in the history. "API impact" is
 `None`, `New API`, `Behavior change` (same signatures, different results or
 errors) or `BREAKING` (existing callers must change code or handle a new
-failure). Nothing has been pushed or tagged yet. 75 commits, not counting later edits to this document.
+failure). Nothing has been pushed or tagged yet. 79 commits, this document's last update included.
 
 
 ### Fork and build
@@ -66,6 +66,7 @@ failure). Nothing has been pushed or tagged yet. 75 commits, not counting later 
 | `2eb07d9` | `build: link Alpine's packaged MuPDF without a stub library` | None (cgo link flags) |
 | `5cb35d8` | `feat: add MuPDFVersion and require MuPDF 1.25+` | New API: MuPDFVersion |
 | `a3a3b33` | `build!: require Go 1.27 and test on Alpine 3.23 (MuPDF 1.26.11)` | BREAKING: module requires Go 1.27 |
+| `b1b009d` | `build!: require MuPDF 1.26` | BREAKING: MuPDF 1.25 no longer builds (compile guard) |
 
 ### Text extraction
 
@@ -138,6 +139,7 @@ failure). Nothing has been pushed or tagged yet. 75 commits, not counting later 
 | `e5f5dfe` | `fix(scrub): keep the appearance of a kept annotation on an orphan page` | Behavior change: a kept annotation on no page keeps its appearance stream |
 | `54ca4ae` | `fix(scrub): destroy every content-bearing resource of an orphan page` | Behavior change: orphan pages' patterns, Type 3 glyph procedures and soft-mask groups are destroyed too |
 | `ecd4da9` | `fix(scrub): treat a page entry that is not a dictionary as not served` | Behavior change: Scrub and HiddenContent skip a page-tree entry that is not a dictionary |
+| `190caaf` | `feat(scrub)!: remove the structure tree by default and add ScrubOptions.KeepStructure` | BREAKING: Scrub removes the logical structure tree unless KeepStructure; new ScrubOptions.KeepStructure, HiddenContent.StructTree |
 
 ### Layers
 
@@ -177,6 +179,8 @@ failure). Nothing has been pushed or tagged yet. 75 commits, not counting later 
 | `8a05b28` | `docs: update for the final review fixes` | None |
 | `10306a9` | `docs: record the final corpus run` | None |
 | `d26050a` | `docs: correct two statements about scrub and open` | None |
+| `f6bd637` | `docs: list the final commits and corpus figures` | None |
+| (this commit) | `docs: record the owner's decisions on layers, structure and MuPDF` | None |
 
 ## 4. Behavior differences from upstream and stock MuPDF
 
@@ -407,7 +411,8 @@ structure tree (below). Scripts: on every annotation and
 form node that stays, `/AA` and any `/A` or `/PA` that is or chains to a
 JavaScript or Launch action.
 
-**Structure tree.** Unless `KeepStructure` is set, `Scrub` deletes the catalog
+**Structure tree** (the owner's decision of 2026-11-17, section 8). Unless
+`KeepStructure` is set, `Scrub` deletes the catalog
 `/StructTreeRoot` and `/MarkInfo` and destroys the tree's own objects: the root,
 every structure element, the `/ParentTree` and `/IDTree` nodes, `/RoleMap` and
 `/ClassMap`, attribute objects, indirect MCR and OBJR dictionaries and the
@@ -513,7 +518,8 @@ Content hidden by the default optional-content configuration (an `/OFF` group,
 a group hidden by usage or intent, a membership dictionary whose policy hides
 it) is never extracted, searched, rendered or redacted, stays in the file, is
 copied unchanged into a redacted page, and can be switched on by a viewer's
-user. `Scrub` leaves layers alone.
+user. `Scrub` leaves layers alone. The decided rule (section 8): call
+`ShowAllLayers` before extraction whenever `HiddenContent.Layers > 0`.
 
 `Document.ShowAllLayers()` deletes `/OCProperties` and destroys the layer
 dictionaries (strictly typed `/OCG` and `/OCMD`, so their names do not stay in a
@@ -689,12 +695,12 @@ run. It is not a guarantee of the package.
    (`NeedsPass`, then `Authenticate`, or `OpenWithPassword`): until then
    `PageCount` is 0 and every read, change and save returns an error, and a
    read before it would garble strings for good.
-2. **Inspect first.** Call `HiddenContent`. Layers: if `Layers == 0` nothing is
-   hidden. If `Layers > 0` and you need certainty, call `ShowAllLayers` before
-   extraction and detection (every layer is then drawn at once); or refuse the
-   file. `HiddenLayers` alone is not enough (inline `/OC << >> BDC` property
-   lists in content streams are not counted). See
-   [Open decisions](#8-open-decisions) for the owner's choice.
+2. **Inspect first.** Call `HiddenContent`. Layers (decided, see
+   [Decisions](#8-decisions)): whenever `Layers > 0`, call `ShowAllLayers`
+   before extraction and detection, so the detector sees, and redaction
+   removes, everything on every layer; the output then shows every layer at
+   once. With `Layers == 0` nothing is hidden. Do not go by `HiddenLayers`:
+   inline `/OC << >> BDC` property lists in content streams are not counted.
 3. **Extract** with `RawDictWithOptions` and a fixed `TextOptions`. Also run
    detection on form field values (`Page.Widgets`), link targets
    (`Page.Links`) and annotation contents (`Page.Annotations`): none of them are
@@ -705,7 +711,10 @@ run. It is not a guarantee of the package.
    Document"** (4.4, 4.5).
 6. **Scrub**, then **save non-incrementally with `Garbage >= 1`**, with
    compression in production (`DefaultSaveOptions()`; the zero value's
-   uncompressed output is for tests).
+   uncompressed output is for tests). The zero `ScrubOptions` removes the
+   structure tree too (decided, section 8), so the output is not a tagged
+   PDF; set `KeepStructure` only where the output must stay accessible, and
+   accept the text the tree keeps, which detection never saw (4.5).
 7. **Verify** by reopening the output and extracting again, in both
    `/ActualText` modes if the process isolation allows (the `UseActualText`
    pass can crash), and by `HiddenContent` on the reopened file. Reject on any
@@ -733,16 +742,23 @@ content", "Optional content (layers)").
 Accurate as of `main`.
 
 **What still survives redaction + default `Scrub` + a garbage-collecting save**,
-by design or as an open decision:
+by design:
 
-- text on hidden layers, when `ShowAllLayers` is not called;
 - link URIs, and the `/Contents` of Link annotations that are kept;
-- accessibility structure attributes other than those stripped on redacted pages
-  (`/ID`, `/Summary`, `/T`, and `/Alt`, `/ActualText`, `/E` on unredacted pages);
-- optional-content group names;
+- layer names (optional-content group names), and the text of hidden layers,
+  when `ShowAllLayers` is not called (the decided rule calls it whenever
+  `Layers > 0`, section 8);
 - named-destination and name-tree keys;
 - font names and subset `/CharSet`;
-- the document `/ID`.
+- the document `/ID`;
+- declared text written inline or as named property lists in the content
+  streams of pages that were not redacted (`/Span << /ActualText (...) >>
+  BDC`): `Scrub` does not rewrite content streams, and `ApplyRedactions` strips
+  it on redacted pages only.
+
+With `KeepStructure`, the structure tree's text survives as well (`/Alt`,
+`/ActualText`, `/E`, `/T`, `/ID`, `/Lang`, table `/Summary` and `/Headers`),
+except the declared text stripped on redacted pages.
 
 **What redaction cannot reach (the service's own checks or process isolation
 must contain it).** MuPDF's redaction never visits tiling patterns, soft-mask
@@ -764,13 +780,21 @@ and returns an error; it does not remove them.
 - Deleting an object created in the same session broke saves on 1.25.6, so
   Scrub and `ShowAllLayers` leave an empty dictionary in its place; 1.26 does
   not need that, and it is harmless there.
+- A garbage-collecting save follows references recursively: a chain of
+  200,000 nested references (a crafted structure tree's `/K` chain, say)
+  overflows the stack and kills the process with SIGSEGV during
+  `SaveBytesWithOptions`, unscrubbed or with `KeepStructure`. A default
+  `Scrub` destroys a structure-tree chain within its walk budget first.
+  Process isolation must contain the rest (section 6, step 1).
 
-**Corpus results (final run, at `2ff3ebe`, MuPDF 1.26.11 on Alpine 3.23, Go 1.27).**
+**Corpus results (run of 2026-11-17 at `190caaf`, whose code this document's
+commit does not change; MuPDF 1.26.11 on Alpine 3.23, Go 1.27).**
 5,347 public test and real-world PDFs from the pdf.js, veraPDF, qpdf, PyMuPDF,
 Poppler, corkami and PDF Association suites (kept outside the repo), plus the
 163 committed regression files. Each file is opened, extracted, redacted by
 character quads and by rectangle, saved, reopened and checked, then scrubbed in
-three modes and compared with an unscrubbed save.
+four modes and compared with an unscrubbed save. 800 of the 5,347 files (and 20
+committed ones) have a structure tree.
 
 | Outcome | Files |
 |---|---|
@@ -796,11 +820,16 @@ three modes and compared with an unscrubbed save.
 - **One file cannot be saved after a rectangle redaction**: pixel redaction makes
   MuPDF store its images uncompressed, and the uncompressed save needs 306 MB.
 - **What still sits in the bytes after redaction, default `Scrub` and a
-  garbage-collecting save** (a redacted word found somewhere in 40 files): font
-  programs, signatures and name tables (mostly coincidental matches), link
-  `/URI` strings and the `/Contents` of kept Link annotations, structure-tree
-  `/ID`, `/Summary` and `/T`, layer names, named-destination keys, and
-  hidden-layer content when `ShowAllLayers` is not called. See sections 7 and 8.
+  garbage-collecting save** (a redacted word found somewhere in 24 files, 40
+  before the structure tree went): font programs, signatures and name tables
+  (streams, 12 files, mostly coincidental matches), font `/CharSet` (3),
+  font names (`/FontFamily`, `/FamilyName`, `/FullName`; 2), link `/URI`
+  strings (3), named-destination and name-tree keys (2), a layer name (1) and
+  an embedded-go-to target's file name (1). The structure-tree rows of the
+  previous run (`/ID` 4 files, `/Summary` 3, `/T` 1, `/ActualText` 1) are
+  gone, and so are 5 `/Contents` and 3 `/URI` rows: Links MuPDF's redaction
+  removed from the page, which only the tree's `/OBJR` still referenced. See
+  the list at the top of this section.
 
 **Gaps that remain in layers.** `HiddenLayers` does not read content streams: an
 inline `/OC << >> BDC` property list is not counted (section 4.6). Call
@@ -819,22 +848,27 @@ inline `/OC << >> BDC` property list is not counted (section 4.6). Call
   minimum became 1.26; it has not been run against 1.26.
 - The GitHub Actions workflow has never run: nothing has been pushed.
 
-## 8. Open decisions
+<a id="8-open-decisions"></a>
 
-Both belong to the owner. Neither is decided; the package does not pick one.
-(The third, the minimum MuPDF version, is decided: 1.26; see
-[MuPDF versions](#mupdf-versions).)
+## 8. Decisions
 
-1. **Hidden layers.** What a service should do with them:
-   - refuse any file with `HiddenContent.Layers > 0` (or `HiddenLayers > 0`);
-   - call `ShowAllLayers` before detection, accepting that every layer is then
-     drawn and redactable at once; or
-   - a future "delete hidden content" operation that removes what the
-     configuration hides, which does not exist.
-2. **The accessibility structure tree.** Whether `Scrub` should drop or strip
-   it. Today it keeps the tree (except the declared text stripped on redacted
-   pages) and so keeps `/ID`, `/Summary`, `/T` and the other attributes listed
-   in section 7.
+The three questions this section used to leave open, decided by the owner on
+2026-11-17.
+
+1. **Hidden layers (decided 2026-11-17).** The service calls
+   `Document.ShowAllLayers` before extraction whenever `HiddenContent` reports
+   `Layers > 0`, so the detector sees, and redaction removes, everything on
+   every layer. The output then shows every layer at once. Deleting the hidden
+   content instead was considered and not built. See section 6, step 2, and
+   4.6.
+2. **Accessibility structure (decided 2026-11-17).** `Scrub` removes the
+   logical structure tree by default; `ScrubOptions.KeepStructure` keeps it.
+   The tree's text (`/Alt`, `/ActualText`, `/E`, `/T`, `/ID`, `/Summary`, ...)
+   is invisible to page-text detection, and redacted words survived in it. The
+   output of a default `Scrub` is no longer a tagged PDF. See 4.5 and 5.9.
+3. **MuPDF (decided 2026-11-17).** MuPDF 1.26 is the minimum: the compile
+   guard rejects older headers, matching what CI, Docker and the committed
+   corpus test hold on (1.26.11). See 5.8 and [MuPDF versions](#mupdf-versions).
 
 ## 9. Testing
 
