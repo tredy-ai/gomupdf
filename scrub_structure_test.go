@@ -443,6 +443,56 @@ func scrubStructBudgetPDF(k, tok string) []byte {
 // error, as the tree may stay reachable (here through the kept Link's stray
 // key), and still leaves no /SE or /SD on what it keeps; with 10 of them it
 // succeeds.
+// The walk's work stays proportional to the file when many elements or tree
+// nodes share one indirect array: 20,000 elements whose /X is the same
+// 100,000-entry array, and 20,000 /ParentTree kids sharing their /Nums and
+// /Limits arrays, scrub in well under a second (the elements took 26.7 s,
+// growing quadratically, when each element scanned the array again).
+func TestScrubStructureSharedArrays(t *testing.T) {
+	var nums strings.Builder
+	nums.WriteString("[")
+	for i := range 100000 {
+		fmt.Fprintf(&nums, "%d ", i)
+	}
+	nums.WriteString("]")
+	const n = 20000
+	refs := func(first int) string {
+		var b strings.Builder
+		for i := range n {
+			fmt.Fprintf(&b, "%d 0 R ", first+i)
+		}
+		return b.String()
+	}
+	elems := []string{
+		`<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 6 0 R >>`, `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+		`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>`, `<< >>`, `<< >>`,
+		`<< /Type /StructTreeRoot /K [` + refs(8) + `] >>`, nums.String()}
+	nodes := []string{
+		`<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 6 0 R >>`, `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+		`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>`, `[0 99999]`, `<< >>`,
+		`<< /Type /StructTreeRoot /ParentTree << /Kids [` + refs(8) + `] >> >>`, nums.String()}
+	for range n {
+		elems = append(elems, `<< /Type /StructElem /S /Span /P 6 0 R /X 7 0 R >>`)
+		nodes = append(nodes, `<< /Nums 7 0 R /Limits 4 0 R >>`)
+	}
+	for name, objs := range map[string][]string{"elements": elems, "tree nodes": nodes} {
+		t.Run(name, func(t *testing.T) {
+			d, err := OpenStream(scrubBuildPDF(objs, ""))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			start := time.Now()
+			if err := d.Scrub(ScrubOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			if el := time.Since(start); el > time.Second {
+				t.Errorf("Scrub took %v", el)
+			}
+		})
+	}
+}
+
 func TestScrubStructureBudget(t *testing.T) {
 	const tok = "GomupdfStructBudget1f2a"
 	mcids := "[" + strings.Repeat("0 ", 70000) + "]"

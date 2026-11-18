@@ -156,6 +156,7 @@ typedef struct {
     int nostruct;     // Scrub removes the structure tree (not ScrubOptions.KeepStructure)
     int sroot;        // object number of the catalog /StructTreeRoot, 0 if none or direct
     int sleft;        // objects gomupdf_struct_walk left queued past its budget
+    unsigned char *sscan; // indirect arrays gomupdf_struct_walk has scanned (gomupdf_scan_once)
     gomupdf_stack s[GS_COUNT];
     pdf_obj *cur;     // the entry being expanded, holding a reference
 } gomupdf_marks;
@@ -188,6 +189,8 @@ static void gomupdf_marks_free(fz_context *ctx, gomupdf_marks *mk) {
     }
     pdf_drop_obj(ctx, mk->cur);
     mk->cur = NULL;
+    fz_free(ctx, mk->sscan);
+    mk->sscan = NULL;
     fz_free(ctx, mk->m);
     mk->m = NULL;
     mk->len = 0;
@@ -947,6 +950,21 @@ static void gomupdf_struct_push(fz_context *ctx, gomupdf_marks *mk, int which, p
 // the keys that lead out of the tree (/Pg, /Obj, /Stm, /StmOwn, /AF, /NS,
 // /Metadata), whose targets are not part of it, and on an element over those
 // the walk follows itself.
+// gomupdf_scan_once reports whether the walk should scan the entries of the
+// array v: a direct array always (it belongs to the one object being
+// walked, which is walked once), an indirect one only the first time in
+// this walk for each use (bit: 1 for the strings of an element or attribute
+// object, 2 for a tree node's /Nums, /Names or /Limits), so many elements
+// or tree nodes sharing one large array cost its length once, not once each.
+static int gomupdf_scan_once(fz_context *ctx, gomupdf_marks *mk, pdf_obj *v, unsigned char bit) {
+    if (!pdf_is_indirect(ctx, v)) return 1;
+    int num = pdf_to_num(ctx, v);
+    if (!mk->sscan || num <= 0 || num >= mk->len) return 1; // outside the xref: resolves to null
+    if (mk->sscan[num] & bit) return 0;
+    mk->sscan[num] |= bit;
+    return 1;
+}
+
 static void gomupdf_struct_strings(fz_context *ctx, gomupdf_marks *mk, pdf_obj *o, int elem) {
     static const char *out[] = {"Pg", "Obj", "Stm", "StmOwn", "AF", "NS", "Metadata", NULL};
     static const char *walked[] = {"K", "P", "Ref", "A", "C", NULL};
@@ -956,7 +974,7 @@ static void gomupdf_struct_strings(fz_context *ctx, gomupdf_marks *mk, pdf_obj *
         pdf_obj *v = pdf_dict_get_val(ctx, o, i);
         if (gomupdf_name_in(k, out) || (elem && gomupdf_name_in(k, walked))) continue;
         gomupdf_struct_rec(ctx, mk, v, GK_STRING);
-        int len = pdf_array_len(ctx, v);
+        int len = gomupdf_scan_once(ctx, mk, v, 1) ? pdf_array_len(ctx, v) : 0;
         for (int j = 0; j < len; j++) gomupdf_struct_rec(ctx, mk, pdf_array_get(ctx, v, j), GK_STRING);
     }
 }
@@ -1019,6 +1037,9 @@ static void gomupdf_struct_walk(fz_context *ctx, pdf_document *pdf, gomupdf_mark
     long long b = GOMUPDF_TREE_BUDGET + 16LL * pdf_xref_len(ctx, pdf);
     int budget = b > INT_MAX ? INT_MAX : (int)b;
     mk->sleft = 0;
+    fz_free(ctx, mk->sscan);
+    mk->sscan = NULL;
+    mk->sscan = fz_calloc(ctx, mk->len > 0 ? mk->len : 1, 1);
     pdf_obj *langv = pdf_dict_get(ctx, cat, PDF_NAME(Lang));
     unsigned int *lang = gomupdf_mark(ctx, mk, langv);
     if (lang && pdf_is_string(ctx, langv)) *lang |= GM_SKEEP;
@@ -1061,6 +1082,9 @@ static void gomupdf_struct_walk(fz_context *ctx, pdf_document *pdf, gomupdf_mark
             // pairs (ID string, element); the ID strings and /Limits are text.
             pdf_obj *nums = pdf_dict_get(ctx, o, PDF_NAME(Nums)), *names = pdf_dict_get(ctx, o, PDF_NAME(Names));
             pdf_obj *lim = pdf_dict_get(ctx, o, PDF_NAME(Limits));
+            if (!gomupdf_scan_once(ctx, mk, nums, 2)) nums = NULL;
+            if (!gomupdf_scan_once(ctx, mk, names, 2)) names = NULL;
+            if (!gomupdf_scan_once(ctx, mk, lim, 2)) lim = NULL;
             n = pdf_array_len(ctx, nums);
             for (int i = 1; i < n; i += 2) gomupdf_struct_push(ctx, mk, GS_SK, pdf_array_get(ctx, nums, i));
             n = pdf_array_len(ctx, names);
