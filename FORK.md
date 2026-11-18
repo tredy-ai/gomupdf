@@ -900,7 +900,32 @@ half a minute after the package install.
   than `TestCorpus` passed on 1.25.6 (last run at `d381f88`), and `TestCorpus`
   did not, because some corpus files behave differently there.
 - **1.28.6** (Homebrew, macOS): last checked at commit `f0ed073`; it built and
-  three tests failed (section 7). Not re-run since.
+  three tests failed (section 7). The tests have not been re-run since; the
+  package compiles against the 1.28.6 headers (check below).
+
+**Compile check against newer MuPDF headers (manual, before a MuPDF
+upgrade).** The package reads a few MuPDF struct fields directly
+(`pdf_document` `repair_attempted` and `fwd_page_map`, xref entry `type`,
+`ofs` and `gen`, `fz_device` callbacks, structured-text structs), and a field
+renamed upstream breaks the build. `go vet` compiles every cgo preamble, so it
+catches that without linking or installing anything. In the gate image, with
+the new version's source headers in a Docker volume (the version is an
+example):
+
+```sh
+docker run --rm -v sf-mupdf128:/m gomupdf-check sh -c 'cd /m &&
+  wget -q https://mupdf.com/downloads/archive/mupdf-1.28.6-source.tar.gz &&
+  tar xzf mupdf-1.28.6-source.tar.gz mupdf-1.28.6-source/include'
+docker run --rm -v "$PWD":/src:ro -w /src -v sf-mupdf128:/m:ro -e GOFLAGS=-buildvcs=false \
+  -e CGO_CFLAGS=-I/m/mupdf-1.28.6-source/include gomupdf-check go vet ./...
+```
+
+The `-I` directory comes before the image's 1.26.11 headers, so the
+preambles compile against the new ones (a missing field fails with
+`'pdf_document' has no member named ...`). It proves the code compiles, not
+that it behaves the same: run the tests and `TestCorpus` against a build of
+that version before adopting it. Last run: 1.28.6 at the commit that added
+this note, clean.
 - **`mupdf_bundled`**: built and tested once against MuPDF 1.25.6 from source
   and passed, before the minimum became 1.26; not run against 1.26 (section 7).
 

@@ -654,7 +654,11 @@ static int gomupdf_page_count(fz_context *ctx, pdf_document *pdf) {
         snprintf(why, sizeof why, "%s", fz_caught_message(ctx));
         fz_ignore_error(ctx);
     }
-    if (!why[0] && (pdf->page_tree_broken || !pdf->fwd_page_map)) snprintf(why, sizeof why, "broken page tree");
+    // A failed map build leaves no map (fwd_page_map NULL) in MuPDF 1.26
+    // through 1.28, whose flag for it changed name and sense (1.26's
+    // page_tree_broken became use_page_tree_map in 1.27), so only the map
+    // is read.
+    if (!why[0] && !pdf->fwd_page_map) snprintf(why, sizeof why, "broken page tree");
     if (why[0])
         fz_throw(ctx, FZ_ERROR_FORMAT,
                  "page tree declares %d pages, more than the file's %d objects, and MuPDF cannot serve them (%s)",
