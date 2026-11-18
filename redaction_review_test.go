@@ -100,7 +100,7 @@ func TestRedactionRegionLimit(t *testing.T) {
 			p, _ := d.LoadPage(0)
 			start := time.Now()
 			n, err := p.ApplyRedactions(ApplyOptions{Text: text})
-			if took := time.Since(start); took > time.Second {
+			if took := time.Since(start); took > timeLimit(time.Second) {
 				t.Errorf("%s, text %d: refusing took %v", c.name, text, took)
 			}
 			if err == nil || n != 0 || !strings.Contains(err.Error(), "too many redaction regions on page 0: "+c.want) {

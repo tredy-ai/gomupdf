@@ -64,7 +64,7 @@ func TestOpenBrokenObjectStream(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Close()
-	if took > time.Second {
+	if took > timeLimit(time.Second) {
 		t.Errorf("OpenStream took %v", took)
 	}
 	if n := d.PageCount(); n != 1 {

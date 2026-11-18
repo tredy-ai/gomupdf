@@ -912,7 +912,7 @@ func TestScrubNameTreeSharedNames(t *testing.T) {
 	defer d.Close()
 	start := time.Now()
 	h := scrubHidden(t, d)
-	if el := time.Since(start); el > 2*time.Second {
+	if el := time.Since(start); el > timeLimit(2*time.Second) {
 		t.Errorf("HiddenContent took %v", el)
 	}
 	if h.EmbeddedFiles < 1 {
@@ -935,7 +935,7 @@ func TestScrubNameTreeSharedNamesScrub(t *testing.T) {
 	if err := d.Scrub(ScrubOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if el := time.Since(start); el > 2*time.Second {
+	if el := time.Since(start); el > timeLimit(2*time.Second) {
 		t.Errorf("Scrub took %v", el)
 	}
 	if h := scrubHidden(t, d); h != (HiddenContent{}) {
@@ -968,7 +968,7 @@ func TestScrubSharedAAActions(t *testing.T) {
 	defer d.Close()
 	start := time.Now()
 	h := scrubHidden(t, d)
-	if el := time.Since(start); el > time.Second {
+	if el := time.Since(start); el > timeLimit(time.Second) {
 		t.Errorf("HiddenContent took %v", el)
 	}
 	if !h.JavaScript {
@@ -2743,7 +2743,7 @@ func TestScrubSharedFieldKids(t *testing.T) {
 				t.Errorf("before scrub: %+v, want %+v", h, want)
 			}
 			out, re := scrubRoundTrip(t, pdf, ScrubOptions{KeepFormFields: true})
-			if el := time.Since(start); el > 2*time.Second {
+			if el := time.Since(start); el > timeLimit(2*time.Second) {
 				t.Errorf("took %v", el)
 			}
 			scrubNoTokens(t, "KeepFormFields", out, tok)
@@ -3438,7 +3438,9 @@ func TestScrubOrphanPagesSharedContents(t *testing.T) {
 	if err := d.Scrub(ScrubOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if el := time.Since(start); el > 2*time.Second {
+	// Capped at 5x: 5,000 orphans sharing 50,000 entries once took 21.8 s
+	// against this 2 s base.
+	if el := time.Since(start); el > timeLimit(2*time.Second, 5) {
 		t.Errorf("HiddenContent and Scrub took %v", el)
 	}
 	if h := scrubHidden(t, d); h != (HiddenContent{}) {
@@ -3819,7 +3821,10 @@ func TestScrubUnloadableEntriesCost(t *testing.T) {
 					t.Errorf("%s: %v", step.name, err)
 				}
 				t.Logf("%s: %v", step.name, took)
-				if took > 500*time.Millisecond {
+				// Capped at 2x: the 155,000-entry sparse xref took 1.4 s per
+				// step before the fix (16 ms after); a 1 s limit still leaves
+				// a slow machine 15x or more.
+				if took > timeLimit(500*time.Millisecond, 2) {
 					t.Errorf("%s took %v", step.name, took)
 				}
 				if s := scrubText(t, d); !strings.Contains(s, "Hello") {
@@ -4146,7 +4151,7 @@ func TestScrubPageCountCeiling(t *testing.T) {
 		} {
 			start := time.Now()
 			d, err := open()
-			if el := time.Since(start); el > 500*time.Millisecond {
+			if el := time.Since(start); el > timeLimit(500*time.Millisecond) {
 				t.Errorf("%s: %s took %v", name, oname, el)
 			}
 			if c.msg == "" {
@@ -4173,7 +4178,7 @@ func TestScrubPageCountCeiling(t *testing.T) {
 		if err := d.Scrub(ScrubOptions{}); err == nil || !strings.Contains(err.Error(), c.msg) {
 			t.Errorf("%s: Scrub: %v, want %q", name, err, c.msg)
 		}
-		if el := time.Since(start); el > time.Second {
+		if el := time.Since(start); el > timeLimit(time.Second) {
 			t.Errorf("%s: HiddenContent and Scrub took %v", name, el)
 		}
 		d.Close()
@@ -4210,7 +4215,7 @@ func TestScrubManyPagesOpen(t *testing.T) {
 	if err := d.Scrub(ScrubOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if el := time.Since(start); el > 2*time.Second {
+	if el := time.Since(start); el > timeLimit(2*time.Second) {
 		t.Errorf("HiddenContent and Scrub took %v", el)
 	}
 }

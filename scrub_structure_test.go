@@ -358,7 +358,9 @@ func scrubStructHostile(t *testing.T, pdf []byte, limit time.Duration) {
 		if h, err := d.HiddenContent(); err != nil || h != (HiddenContent{}) {
 			t.Errorf("after scrub: %+v, %v", h, err)
 		}
-		if el := time.Since(start); el > limit {
+		// Capped at 5x: the shared-array bugs this guards took 15-25 s
+		// against a 2 s base.
+		if el := time.Since(start); el > timeLimit(limit, 5) {
 			t.Errorf("HiddenContent and Scrub took %v", el)
 		}
 	})
@@ -486,7 +488,7 @@ func TestScrubStructureSharedArrays(t *testing.T) {
 			if err := d.Scrub(ScrubOptions{}); err != nil {
 				t.Fatal(err)
 			}
-			if el := time.Since(start); el > time.Second {
+			if el := time.Since(start); el > timeLimit(time.Second) {
 				t.Errorf("Scrub took %v", el)
 			}
 		})
@@ -511,7 +513,9 @@ func TestScrubStructureBudget(t *testing.T) {
 			defer d.Close()
 			start := time.Now()
 			err = d.Scrub(ScrubOptions{KeepOutlines: true})
-			if el := time.Since(start); el > 5*time.Second {
+			// Capped at 5x like scrubStructHostile (the history records no
+			// regression time for this budget test).
+			if el := time.Since(start); el > timeLimit(5*time.Second, 5) {
 				t.Errorf("Scrub took %v", el)
 			}
 			if (err != nil) != c.fails {

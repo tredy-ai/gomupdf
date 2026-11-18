@@ -55,7 +55,7 @@ f3b7339..main`), grouped by theme. The groups are thematic, not chronological:
 the order inside each group is the order in the history. "API impact" is
 `None`, `New API`, `Behavior change` (same signatures, different results or
 errors) or `BREAKING` (existing callers must change code or handle a new
-failure). Nothing has been pushed or tagged yet. 92 commits, the commit that last updated this list included.
+failure). Nothing has been pushed or tagged yet. 94 commits, the commit that last updated this list included.
 
 
 ### Fork and build
@@ -68,6 +68,7 @@ failure). Nothing has been pushed or tagged yet. 92 commits, the commit that las
 | `a3a3b33` | `build!: require Go 1.27 and test on Alpine 3.23 (MuPDF 1.26.11)` | BREAKING: module requires Go 1.27 |
 | `b1b009d` | `build!: require MuPDF 1.26` | BREAKING: MuPDF 1.25 no longer builds (compile guard) |
 | `b09c5a8` | `fix(scrub): build against MuPDF 1.27 and later` | None (compiles against MuPDF 1.27+ headers) |
+| `46d63b2` | `ci: allow the workflow to be started by hand` | None (workflow_dispatch trigger) |
 
 ### Text extraction
 
@@ -146,7 +147,7 @@ failure). Nothing has been pushed or tagged yet. 92 commits, the commit that las
 | `69c4890` | `fix(scrub): leave no structure reference on kept outline items and budget the walk per object` | Behavior change: kept outline items lose /SE and kept GoTo actions /SD; the structure walk budget is per object; Scrub returns an error past it |
 | `69c77cb` | `fix(scrub): do not fail on kept indirect arrays when removing structure references` | None (KeepFormFields and KeepAnnotations no longer fail on a form with an indirect /Fields, /Kids or /CO array) |
 | `fd1ae14` | `fix(scrub): bound the structure walk's work on shared arrays` | None (an indirect array shared by many structure elements or tree nodes is scanned once) |
-| (this commit) | `fix(scrub): do not let a structure destination keep the element` | Behavior change: structure destinations of kept objects lead to the element's page or are removed; a structure element that is a catalog value is not kept |
+| `784ff69` | `fix(scrub): do not let a structure destination keep the element` | Behavior change: structure destinations of kept objects lead to the element's page or are removed; a structure element that is a catalog value is not kept |
 
 ### Layers
 
@@ -182,6 +183,7 @@ failure). Nothing has been pushed or tagged yet. 92 commits, the commit that las
 | `2fe60dc` | `test: align the corpus test with the final library behaviour` | None (corpus test expectations) |
 | `e383895` | `test: compare the scrubbed render with the unscrubbed control` | None (corpus test compares renders with the control) |
 | `29f613d` | `test: fail the corpus test when Scrub refuses a file the control accepts` | None (corpus test: scrub-error and redact-error failures) |
+| (this commit) | `test: make time limits hold on a slow machine` | None (timeLimit helper, GOMUPDF_TEST_TIME_FACTOR) |
 
 ### Documentation
 
@@ -988,6 +990,18 @@ CI (`.github/workflows/ci.yml`) runs the same steps in a
 `golang:1.27-alpine3.23` container and additionally fails the build below 80%
 total coverage (the last line above prints the total). The tests take about
 half a minute after the package install.
+
+**Time limits.** A few tests assert that a hostile file opens, scrubs or is
+refused within a time limit; they guard against quadratic or runaway work (the
+bugs they caught went from milliseconds to tens of seconds or minutes). Each
+test states its base limit, the figure that is comfortable on a fast machine,
+and passes it through `timeLimit` (`timelimit_test.go`), which multiplies it by
+10 by default or by `GOMUPDF_TEST_TIME_FACTOR` (a positive integer) when set, so
+a shared CI runner several times slower than a laptop passes. Tests whose old
+bug was under about 25x slower than their base limit cap the factor at 5 (2 for
+`TestScrubUnloadableEntriesCost`, whose sparse-xref bug took 1.4 s against a
+0.5 s base); the environment variable can only lower a capped factor. Pass
+`GOMUPDF_TEST_TIME_FACTOR=1` on a fast machine to see the base limits.
 
 ### MuPDF versions
 
