@@ -6,6 +6,7 @@ package gomupdf
 
 #include <mupdf/fitz.h>
 #include <mupdf/pdf.h>
+#include "gomupdf_bigstack.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,7 +43,7 @@ static int gomupdf_layer_dict(fz_context *ctx, pdf_obj *ref) {
 // before, and an entry that holds no object after that (free, or a member of
 // an object stream that does not parse) holds nothing to destroy and is
 // skipped rather than parsed again.
-static int gomupdf_show_all_layers(fz_context *ctx, fz_document *doc, char *err, int errlen) {
+static int gomupdf_show_all_layers_run(fz_context *ctx, fz_document *doc, char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) { snprintf(err, errlen, "not a PDF document"); return -1; }
     int failed = 0;
@@ -83,6 +84,26 @@ static int gomupdf_show_all_layers(fz_context *ctx, fz_document *doc, char *err,
         failed = 1;
     }
     return failed ? -1 : 0;
+}
+
+// gomupdf_show_all_layers runs gomupdf_show_all_layers_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_show_all_layers_args;
+
+static void gomupdf_show_all_layers_thunk(void *p) {
+    gomupdf_show_all_layers_args *a = p;
+    a->ret = gomupdf_show_all_layers_run(a->ctx, a->doc, a->err, a->errlen);
+}
+
+static int gomupdf_show_all_layers(fz_context *ctx, fz_document *doc, char *err, int errlen) {
+    gomupdf_show_all_layers_args a = {ctx, doc, err, errlen, -1};
+    gomupdf_call_bigstack(gomupdf_show_all_layers_thunk, &a);
+    return a.ret;
 }
 */
 import "C"

@@ -6,6 +6,7 @@ package gomupdf
 
 #include <mupdf/fitz.h>
 #include <mupdf/pdf.h>
+#include "gomupdf_bigstack.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -50,7 +51,7 @@ static int gomupdf_save_path(
         gomupdf_fill_write_opts(&opts, garbage, deflate, deflate_images, deflate_fonts,
                                 clean, linear, ascii, pretty,
                                 encrypt, upwd, opwd, permissions);
-        pdf_save_document(ctx, pdf, path, &opts);
+        gomupdf_write_big(ctx, pdf, NULL, path, &opts);
     }
     fz_catch(ctx) {
         snprintf(err, errlen, "%s", fz_caught_message(ctx));
@@ -89,7 +90,7 @@ static unsigned char *gomupdf_save_opts(
             fz_append_data(ctx, buf, origdata, origlen);
         }
         out = fz_new_output_with_buffer(ctx, buf);
-        pdf_write_document(ctx, pdf, out, &opts);
+        gomupdf_write_big(ctx, pdf, out, NULL, &opts);
         fz_close_output(ctx, out);
         unsigned char *data = NULL;
         size_t n = fz_buffer_storage(ctx, buf, &data);
@@ -130,7 +131,7 @@ static unsigned char *gomupdf_save_encrypted(fz_context *ctx, fz_document *doc,
         opts.permissions = -1;
         snprintf(opts.upwd_utf8, sizeof(opts.upwd_utf8), "%s", user_pw ? user_pw : "");
         snprintf(opts.opwd_utf8, sizeof(opts.opwd_utf8), "%s", owner_pw ? owner_pw : "");
-        pdf_write_document(ctx, pdf, out, &opts);
+        gomupdf_write_big(ctx, pdf, out, NULL, &opts);
         fz_close_output(ctx, out);
         unsigned char *data = NULL;
         size_t n = fz_buffer_storage(ctx, buf, &data);

@@ -6,6 +6,7 @@ package gomupdf
 
 #include <mupdf/fitz.h>
 #include <mupdf/pdf.h>
+#include "gomupdf_bigstack.h"
 #include <limits.h>
 #include <math.h>
 #include <stdlib.h>
@@ -14,7 +15,7 @@ package gomupdf
 #include <stdatomic.h>
 #include "gomupdf_stext.h"
 
-static int gomupdf_add_redaction(fz_context *ctx, fz_document *doc, int pageno,
+static int gomupdf_add_redaction_run(fz_context *ctx, fz_document *doc, int pageno,
                                  float x0, float y0, float x1, float y1,
                                  char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
@@ -41,6 +42,31 @@ static int gomupdf_add_redaction(fz_context *ctx, fz_document *doc, int pageno,
     return 0;
 }
 
+// gomupdf_add_redaction runs gomupdf_add_redaction_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    float x0;
+    float y0;
+    float x1;
+    float y1;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_add_redaction_args;
+
+static void gomupdf_add_redaction_thunk(void *p) {
+    gomupdf_add_redaction_args *a = p;
+    a->ret = gomupdf_add_redaction_run(a->ctx, a->doc, a->pageno, a->x0, a->y0, a->x1, a->y1, a->err, a->errlen);
+}
+
+static int gomupdf_add_redaction(fz_context *ctx, fz_document *doc, int pageno, float x0, float y0, float x1, float y1, char *err, int errlen) {
+    gomupdf_add_redaction_args a = {ctx, doc, pageno, x0, y0, x1, y1, err, errlen, -1};
+    gomupdf_call_bigstack(gomupdf_add_redaction_thunk, &a);
+    return a.ret;
+}
+
 // fz_quad is read straight from the caller's flat float array.
 _Static_assert(sizeof(fz_quad) == 8 * sizeof(float), "fz_quad is not 8 packed floats");
 
@@ -49,7 +75,7 @@ _Static_assert(sizeof(fz_quad) == 8 * sizeof(float), "fz_quad is not 8 packed fl
 // does not touch /Rect; pdf_update_annot synthesises the appearance and sets
 // /Rect to the union of the quads' bounds, each expanded by its 1pt outline.
 // It overwrites any /Rect set before it, so none is set here.
-static int gomupdf_add_redaction_quads(fz_context *ctx, fz_document *doc, int pageno,
+static int gomupdf_add_redaction_quads_run(fz_context *ctx, fz_document *doc, int pageno,
                                        const float *quads, int n,
                                        char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
@@ -74,6 +100,29 @@ static int gomupdf_add_redaction_quads(fz_context *ctx, fz_document *doc, int pa
         return -1;
     }
     return 0;
+}
+
+// gomupdf_add_redaction_quads runs gomupdf_add_redaction_quads_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    const float *quads;
+    int n;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_add_redaction_quads_args;
+
+static void gomupdf_add_redaction_quads_thunk(void *p) {
+    gomupdf_add_redaction_quads_args *a = p;
+    a->ret = gomupdf_add_redaction_quads_run(a->ctx, a->doc, a->pageno, a->quads, a->n, a->err, a->errlen);
+}
+
+static int gomupdf_add_redaction_quads(fz_context *ctx, fz_document *doc, int pageno, const float *quads, int n, char *err, int errlen) {
+    gomupdf_add_redaction_quads_args a = {ctx, doc, pageno, quads, n, err, errlen, -1};
+    gomupdf_call_bigstack(gomupdf_add_redaction_quads_thunk, &a);
+    return a.ret;
 }
 
 // --- per-glyph text removal ------------------------------------------------
@@ -1467,7 +1516,7 @@ static long gomupdf_count_left(fz_context *ctx, pdf_page *page, const gomupdf_re
 // page has started to change, so an error after that leaves it half done.
 // check[4] is how many characters the page has beyond the check[5] kept
 // (gomupdf_count_left's count rule; 0 when not more).
-static int gomupdf_apply_redactions(fz_context *ctx, fz_document *doc, int pageno,
+static int gomupdf_apply_redactions_run(fz_context *ctx, fz_document *doc, int pageno,
                                     int black_boxes, int image_method,
                                     int line_art, int text,
                                     int *check, char *err, int errlen) {
@@ -1567,6 +1616,32 @@ static int gomupdf_apply_redactions(fz_context *ctx, fz_document *doc, int pagen
         return -1;
     }
     return count;
+}
+
+// gomupdf_apply_redactions runs gomupdf_apply_redactions_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int pageno;
+    int black_boxes;
+    int image_method;
+    int line_art;
+    int text;
+    int *check;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_apply_redactions_args;
+
+static void gomupdf_apply_redactions_thunk(void *p) {
+    gomupdf_apply_redactions_args *a = p;
+    a->ret = gomupdf_apply_redactions_run(a->ctx, a->doc, a->pageno, a->black_boxes, a->image_method, a->line_art, a->text, a->check, a->err, a->errlen);
+}
+
+static int gomupdf_apply_redactions(fz_context *ctx, fz_document *doc, int pageno, int black_boxes, int image_method, int line_art, int text, int *check, char *err, int errlen) {
+    gomupdf_apply_redactions_args a = {ctx, doc, pageno, black_boxes, image_method, line_art, text, check, err, errlen, -1};
+    gomupdf_call_bigstack(gomupdf_apply_redactions_thunk, &a);
+    return a.ret;
 }
 */
 import "C"

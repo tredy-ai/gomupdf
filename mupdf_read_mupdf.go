@@ -414,7 +414,7 @@ static char *gomupdf_images(fz_context *ctx, fz_document *doc, int pageno,
         dev = fz_new_device_of_size(ctx, sizeof(gomupdf_img_meta_device));
         dev->fill_image = gomupdf_img_meta_fill;
         ((gomupdf_img_meta_device *)dev)->buf = buf;
-        fz_run_page(ctx, page, dev, fz_identity, NULL);
+        gomupdf_run_page_big(ctx, page, dev, 0);
         fz_close_device(ctx, dev);
         unsigned char *data = NULL;
         size_t sz = fz_buffer_storage(ctx, buf, &data);
@@ -504,7 +504,7 @@ static unsigned char *gomupdf_image_bytes(fz_context *ctx, fz_document *doc, int
         dev->result = NULL;
         dev->len = 0;
         dev->ext[0] = '\0';
-        fz_run_page(ctx, page, (fz_device *)dev, fz_identity, NULL);
+        gomupdf_run_page_big(ctx, page, (fz_device *)dev, 0);
         fz_close_device(ctx, (fz_device *)dev);
         result = dev->result;
         *out_len = dev->len;
@@ -622,7 +622,7 @@ static char *gomupdf_drawings(fz_context *ctx, fz_document *doc, int pageno,
         dev->fill_path = gomupdf_fill_path;
         dev->stroke_path = gomupdf_stroke_path;
         ((gomupdf_draw_device *)dev)->buf = buf;
-        fz_run_page(ctx, page, dev, fz_identity, NULL);
+        gomupdf_run_page_big(ctx, page, dev, 0);
         fz_close_device(ctx, dev);
         unsigned char *data = NULL;
         size_t sz = fz_buffer_storage(ctx, buf, &data);

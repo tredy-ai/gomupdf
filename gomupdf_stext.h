@@ -2,6 +2,7 @@
 #define GOMUPDF_STEXT_H
 
 #include <mupdf/fitz.h>
+#include "gomupdf_bigstack.h"
 
 /*
  * gomupdf_new_stext_page is fz_new_stext_page_from_page with one difference:
@@ -30,7 +31,7 @@ gomupdf_new_stext_page(fz_context *ctx, fz_page *page, const fz_stext_options *o
             dev->begin_metatext = NULL;
             dev->end_metatext = NULL;
         }
-        fz_run_page_contents(ctx, page, dev, fz_identity, NULL);
+        gomupdf_run_page_big(ctx, page, dev, 1); // on a large stack: content nesting recurses
         fz_close_device(ctx, dev);
     }
     fz_always(ctx) {

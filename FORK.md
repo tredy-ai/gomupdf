@@ -780,12 +780,24 @@ and returns an error; it does not remove them.
 - Deleting an object created in the same session broke saves on 1.25.6, so
   Scrub and `ShowAllLayers` leave an empty dictionary in its place; 1.26 does
   not need that, and it is harmless there.
-- A garbage-collecting save follows references recursively: a chain of
-  200,000 nested references (a crafted structure tree's `/K` chain, say)
-  overflows the stack and kills the process with SIGSEGV during
-  `SaveBytesWithOptions`, unscrubbed or with `KeepStructure`. A default
-  `Scrub` destroys a structure-tree chain within its walk budget first.
-  Process isolation must contain the rest (section 6, step 1).
+- MuPDF recurses once per indirect reference hop when it saves and once per
+  nesting level when it interprets content. Cgo calls run on the calling
+  thread's stack, 128 KiB on musl for threads the Go runtime creates, so
+  before this was handled a Garbage 1 save crashed the process with SIGSEGV
+  at about 1,600 sibling outline items (a `/Next` chain) from an ordinary
+  goroutine (about 5,800 on the main thread), and at about 16,000 dictionaries
+  chained under a page's `/Resources`; 60 nested forms crashed extraction.
+  Saves, `Scrub`, `HiddenContent`, `ShowAllLayers`, the load at open,
+  `ApplyRedactions` and `AddRedaction*`, `ConvertToPDF`, text extraction,
+  search, image and drawing listing and rendering now run on a thread with a
+  256 MiB stack (about 81 bytes per hop): a save handles chains of about 3.3
+  million objects (3,250,000 outline items saved, 3,500,000 crashed). A
+  hostile file can still exceed any stack, and if that thread cannot be
+  created (an address-space limit) the call runs on the caller's stack as
+  before: process isolation must contain the rest (section 6, step 1).
+  Merging (`InsertPDF`, `InsertPDFRange`) and the cheap calls are not moved. Forms nested more
+  than about 65 levels fail with "exception stack overflow" (MuPDF's own
+  limit), without crashing.
 
 **Corpus results (run of 2026-11-17 at `190caaf`, whose code this document's
 commit does not change; MuPDF 1.26.11 on Alpine 3.23, Go 1.27).**

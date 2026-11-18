@@ -5,6 +5,7 @@ package gomupdf
 /*
 
 #include <mupdf/fitz.h>
+#include "gomupdf_bigstack.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
@@ -55,10 +56,7 @@ static unsigned char *gomupdf_render(
             fz_clear_pixmap_with_value(ctx, pix, 0xff);
 
         dev = fz_new_draw_device(ctx, m, pix);
-        if (no_annots)
-            fz_run_page_contents(ctx, page, dev, fz_identity, NULL);
-        else
-            fz_run_page(ctx, page, dev, fz_identity, NULL);
+        gomupdf_run_page_big(ctx, page, dev, no_annots);
         fz_close_device(ctx, dev);
         fz_drop_device(ctx, dev);
         dev = NULL;

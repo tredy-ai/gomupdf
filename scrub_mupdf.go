@@ -6,15 +6,18 @@ package gomupdf
 
 #include <mupdf/fitz.h>
 #include <mupdf/pdf.h>
+#include "gomupdf_bigstack.h"
 #include <limits.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
 // Limits for the walks over hidden content. Action, name-tree and field-tree
-// walks recurse, and cgo calls from ordinary goroutines run on small thread
-// stacks (128 KiB on musl), so the depth cap is what keeps the C stack
-// bounded; the budgets bound the work, charging every node and every array
+// walks recurse. Scrub and HiddenContent run on a large stack
+// (gomupdf_bigstack.h), but on the calling thread's stack (128 KiB on musl
+// for a thread the Go runtime created) when that thread cannot be created,
+// so the depth cap is what keeps the C stack bounded; the budgets bound the
+// work, charging every node and every array
 // entry or name-tree pair a walk looks at, so shared subgraphs cannot multiply
 // it. Real /Next chains, name trees and field trees are a few levels deep.
 // Every walk fails closed on any limit.
@@ -1285,7 +1288,7 @@ static void gomupdf_load_pass(fz_context *ctx, pdf_document *pdf) {
 // read at all is left to fail where it is used, as before. Returns 0; -1 with
 // err set when loading fails (only running out of memory does); or -2 with
 // err set for a page tree gomupdf_page_count refuses.
-static int gomupdf_stabilise(fz_context *ctx, fz_document *doc, char *err, int errlen) {
+static int gomupdf_stabilise_run(fz_context *ctx, fz_document *doc, char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) return 0;
     fz_try(ctx) gomupdf_load_all(ctx, pdf);
@@ -1308,6 +1311,26 @@ static int gomupdf_stabilise(fz_context *ctx, fz_document *doc, char *err, int e
         return fz_caught(ctx) == FZ_ERROR_SYSTEM ? -1 : -2;
     }
     return 0;
+}
+
+// gomupdf_stabilise runs gomupdf_stabilise_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_stabilise_args;
+
+static void gomupdf_stabilise_thunk(void *p) {
+    gomupdf_stabilise_args *a = p;
+    a->ret = gomupdf_stabilise_run(a->ctx, a->doc, a->err, a->errlen);
+}
+
+static int gomupdf_stabilise(fz_context *ctx, fz_document *doc, char *err, int errlen) {
+    gomupdf_stabilise_args a = {ctx, doc, err, errlen, -1};
+    gomupdf_call_bigstack(gomupdf_stabilise_thunk, &a);
+    return a.ret;
 }
 
 static int gomupdf_repair_attempted(fz_context *ctx, fz_document *doc) {
@@ -1731,7 +1754,7 @@ static void gomupdf_page_nodes(fz_context *ctx, gomupdf_marks *mk, pdf_obj *page
     }
 }
 
-static int gomupdf_hidden_content(fz_context *ctx, fz_document *doc, int *out,
+static int gomupdf_hidden_content_run(fz_context *ctx, fz_document *doc, int *out,
                                   char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) { snprintf(err, errlen, "not a PDF document"); return -1; }
@@ -1827,6 +1850,27 @@ static int gomupdf_hidden_content(fz_context *ctx, fz_document *doc, int *out,
         failed = 1;
     }
     return failed ? -1 : 0;
+}
+
+// gomupdf_hidden_content runs gomupdf_hidden_content_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int *out;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_hidden_content_args;
+
+static void gomupdf_hidden_content_thunk(void *p) {
+    gomupdf_hidden_content_args *a = p;
+    a->ret = gomupdf_hidden_content_run(a->ctx, a->doc, a->out, a->err, a->errlen);
+}
+
+static int gomupdf_hidden_content(fz_context *ctx, fz_document *doc, int *out, char *err, int errlen) {
+    gomupdf_hidden_content_args a = {ctx, doc, out, err, errlen, -1};
+    gomupdf_call_bigstack(gomupdf_hidden_content_thunk, &a);
+    return a.ret;
 }
 
 // gomupdf_kept reports whether obj is indirect and kept (GM_KEEP).
@@ -2355,7 +2399,7 @@ static void gomupdf_scrub_annots(fz_context *ctx, pdf_document *pdf, int pageno,
     fz_catch(ctx) { fz_rethrow(ctx); }
 }
 
-static int gomupdf_scrub(fz_context *ctx, fz_document *doc, int keep_annots, int keep_fields,
+static int gomupdf_scrub_run(fz_context *ctx, fz_document *doc, int keep_annots, int keep_fields,
                          int keep_outlines, int keep_structure, char *err, int errlen) {
     pdf_document *pdf = pdf_specifics(ctx, doc);
     if (!pdf) { snprintf(err, errlen, "not a PDF document"); return -1; }
@@ -2516,6 +2560,30 @@ static int gomupdf_scrub(fz_context *ctx, fz_document *doc, int keep_annots, int
     }
     gomupdf_marks_free(ctx, &mk);
     return failed ? -1 : 0;
+}
+
+// gomupdf_scrub runs gomupdf_scrub_run on a large stack (gomupdf_bigstack.h).
+typedef struct {
+    fz_context *ctx;
+    fz_document *doc;
+    int keep_annots;
+    int keep_fields;
+    int keep_outlines;
+    int keep_structure;
+    char *err;
+    int errlen;
+    int ret;
+} gomupdf_scrub_args;
+
+static void gomupdf_scrub_thunk(void *p) {
+    gomupdf_scrub_args *a = p;
+    a->ret = gomupdf_scrub_run(a->ctx, a->doc, a->keep_annots, a->keep_fields, a->keep_outlines, a->keep_structure, a->err, a->errlen);
+}
+
+static int gomupdf_scrub(fz_context *ctx, fz_document *doc, int keep_annots, int keep_fields, int keep_outlines, int keep_structure, char *err, int errlen) {
+    gomupdf_scrub_args a = {ctx, doc, keep_annots, keep_fields, keep_outlines, keep_structure, err, errlen, -1};
+    gomupdf_call_bigstack(gomupdf_scrub_thunk, &a);
+    return a.ret;
 }
 */
 import "C"

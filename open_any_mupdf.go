@@ -6,6 +6,7 @@ package gomupdf
 
 #include <mupdf/fitz.h>
 #include <mupdf/pdf.h>
+#include "gomupdf_bigstack.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -40,7 +41,7 @@ static unsigned char *gomupdf_convert_to_pdf(fz_context *ctx, fz_document *src,
                 page = fz_load_page(ctx, src, i);
                 fz_rect bounds = fz_bound_page(ctx, page);
                 dev = pdf_page_write(ctx, pdf, bounds, &resources, &contents);
-                fz_run_page(ctx, page, dev, fz_identity, NULL);
+                gomupdf_run_page_big(ctx, page, dev, 0);
                 fz_close_device(ctx, dev);
                 pageobj = pdf_add_page(ctx, pdf, bounds, 0, resources, contents);
                 pdf_insert_page(ctx, pdf, -1, pageobj);
@@ -60,7 +61,7 @@ static unsigned char *gomupdf_convert_to_pdf(fz_context *ctx, fz_document *src,
         memset(&opts, 0, sizeof(opts));
         opts.do_garbage = 3;
         opts.do_compress = 1;
-        pdf_write_document(ctx, pdf, out, &opts);
+        gomupdf_write_big(ctx, pdf, out, NULL, &opts);
         fz_close_output(ctx, out);
         unsigned char *data = NULL;
         size_t sz = fz_buffer_storage(ctx, outbuf, &data);
