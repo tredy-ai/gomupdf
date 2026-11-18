@@ -27,9 +27,11 @@ type ScrubOptions struct {
 	// The annotations of a page MuPDF does not serve and other annotations
 	// on no page are kept as well; one that only something Scrub removes
 	// references (an outline item's GoTo3DView action, without
-	// KeepOutlines) is kept by Scrub but has nothing left referencing it, so
-	// a garbage-collecting save drops it. The zero value removes all
-	// annotations except Link annotations, all widgets, and /AcroForm.
+	// KeepOutlines; a structure element's /OBJR, or a page only a structure
+	// element's /Pg reaches, without KeepStructure) is kept by Scrub but has
+	// nothing left referencing it, so a garbage-collecting save drops it.
+	// The zero value removes all annotations except Link annotations, all
+	// widgets, and /AcroForm.
 	KeepAnnotations bool
 	// KeepFormFields keeps the form: every widget annotation and the catalog
 	// /AcroForm with its whole field tree (fields on no page included), with
@@ -57,6 +59,46 @@ type ScrubOptions struct {
 	// action. The zero value removes the outlines and resets /PageMode
 	// /UseOutlines to /UseNone.
 	KeepOutlines bool
+	// KeepStructure keeps the document's logical structure tree, the
+	// tagging that accessibility tools read. The zero value removes it:
+	// Scrub deletes the catalog /StructTreeRoot and /MarkInfo (a file must
+	// not claim to be tagged when it is not) and destroys the tree's own
+	// objects, so that their text cannot survive through another reference:
+	// the root, every structure element, the /ParentTree and /IDTree nodes,
+	// /RoleMap and /ClassMap, attribute objects, indirect MCR and OBJR
+	// dictionaries, and indirect strings held by elements and attribute
+	// objects. What the tree points at is not part of it and stays unless
+	// Scrub removes it for another reason: pages (/Pg), annotations and
+	// widgets (/Obj), form XObjects and content streams (/Stm), fonts and
+	// namespaces; files in /AF go as everywhere (see Scrub). Scrub also
+	// deletes the integer /StructParents and /StructParent from pages,
+	// annotations, form fields and image and form XObjects, except from
+	// objects that are page content or that a kept appearance draws, where
+	// the stale integer stays (it leaks nothing). Kept annotations, widgets
+	// and fields are otherwise untouched.
+	//
+	// Why: the tree holds human-readable text that page-text extraction
+	// never returns, so a detector that reads page text never sees it:
+	// image alternate text (/Alt), replacement text (/ActualText),
+	// expansions (/E), element titles (/T), element IDs (/ID and the /IDTree
+	// keys), language tags (/Lang), and table /Summary and /Headers and other
+	// values in attribute objects. Without it the output is no longer a
+	// tagged PDF: PDF/UA conformance and the structure screen readers use are
+	// lost, and reading order follows content order. The catalog /Lang
+	// stays. Marked-content operators in content streams are not rewritten:
+	// /MCID tags remain as inert markers, and property lists in page content
+	// (an inline /Span << /ActualText (...) >> BDC, or a named one in
+	// /Resources /Properties) are not removed by Scrub; ApplyRedactions
+	// strips /ActualText, /Alt and /E from them on redacted pages only.
+	//
+	// With KeepStructure, Scrub leaves the tree, /MarkInfo and every
+	// /StructParents and /StructParent as they are (as Scrub did before this
+	// option existed), and all the text above stays in the file, except the
+	// /ActualText, /Alt and /E that ApplyRedactions strips from the elements
+	// of redacted pages and their ancestors. KeepStructure is independent of
+	// the other options. It is new in this fork, and the zero value's
+	// removal of the tree is a change from the fork's earlier Scrub.
+	KeepStructure bool
 }
 
 // HiddenContent counts the document-level content that Scrub removes. A zero
@@ -227,10 +269,16 @@ type HiddenContent struct {
 	// before extraction to make all of it ordinary content, after which both
 	// read 0.
 	Layers, HiddenLayers int
+
+	// StructTree reports a catalog /StructTreeRoot that is not null (a
+	// reference to a missing object is null): the logical structure tree,
+	// which Scrub removes unless ScrubOptions.KeepStructure is set. It does
+	// not count the text the tree holds; see KeepStructure for what that is.
+	StructTree bool
 }
 
 // hiddenContentCounts is the number of counts the backend returns.
-const hiddenContentCounts = 22
+const hiddenContentCounts = 23
 
 // hiddenContentFromCounts maps the backend's counts, in HiddenContent field
 // order, to a HiddenContent.
@@ -261,6 +309,7 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 		WebCapture:         c[19] != 0,
 		Layers:             c[20],
 		HiddenLayers:       c[21],
+		StructTree:         c[22] != 0,
 	}, nil
 }
 
@@ -294,14 +343,19 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 //   - whatever the options, /AcroForm /XFA (a stream, or an array of
 //     name/stream pairs) and the catalog /NeedsRendering, while the rest of
 //     a kept /AcroForm stays;
+//   - unless opts.KeepStructure, the logical structure tree: the catalog
+//     /StructTreeRoot and /MarkInfo, and the integer /StructParents and
+//     /StructParent of pages, annotations, form fields and XObjects that are
+//     not page content (see ScrubOptions.KeepStructure);
 //   - the file specifications of /AF wherever else an object (an image or
 //     form XObject, a structure element, an annotation that stays, an
 //     outline item) has an /AF array holding one, and the /AF key too when
 //     every entry is one; a direct dictionary nested inside another object
 //     is not searched;
 //   - on every page dictionary that is not a page MuPDF serves (see
-//     HiddenContent's OrphanPages; a structure element's /Pg, a destination
-//     or /Names/Templates can still reach one), /Contents, /Resources, /B,
+//     HiddenContent's OrphanPages; a destination, /Names/Templates or, with
+//     opts.KeepStructure, a structure element's /Pg can still reach one),
+//     /Contents, /Resources, /B,
 //     /Group, /StructParents, /Parent and the keys removed from pages above,
 //     and the same on each /Type /Pages node outside the page tree it
 //     inherits from (32 levels); the dictionary itself stays, with its /Type,
@@ -358,14 +412,27 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // its /JS script string or stream, its /URI string, its /F file and a Launch
 // action's /Win, /Mac and /Unix dictionaries with their /F files, and with
 // every other action dictionary of the chain it removes (a GoTo whose /Next
-// is the script, say). Each is destroyed only if it is recognisably of its
-// kind (an /Info dictionary has no /Type or /Type /Info, an XMP stream has /Type /Metadata
+// is the script, say); and, unless opts.KeepStructure, the objects of the
+// structure tree: the root, the structure elements reached from it down /K,
+// up /P, through /Ref and as /ParentTree or /IDTree values, the nodes of
+// those two trees, /RoleMap and /ClassMap, the attribute objects of
+// elements' /A and /C and of /ClassMap, indirect MCR and OBJR dictionaries,
+// and the indirect strings of elements, attribute objects, /IDTree keys and
+// /Limits (the catalog's own /Lang excepted). Each is destroyed only if it
+// is recognisably of its kind (an /Info dictionary has no /Type or /Type
+// /Info, an XMP stream has /Type /Metadata
 // or /Subtype /XML, a filespec has /Type /Filespec, a script action is one
 // as HiddenContent's JavaScript field defines it, another action has /S and
 // no /Type other than /Action, an XFA stream or content stream has no /Type
 // or /Subtype, an image or form has /Subtype /Image or /Form and no /Type
 // other than /XObject, a signature dictionary has /Type /Sig or
-// /DocTimeStamp, and so on).
+// /DocTimeStamp, a structure tree root is a dictionary with no /Type or
+// /Type /StructTreeRoot, a structure element a dictionary with an /S name,
+// no /Subtype, and /Type /StructElem or no /Type and a /P, a tree node a
+// dictionary with no /Type and /Kids, /Nums or /Names, /RoleMap and
+// /ClassMap a dictionary with no /Type, an attribute object a dictionary
+// with no /Type and an /O name, an MCR or OBJR dictionary /Type /MCR or
+// /OBJR, and so on).
 //
 // Scrub never destroys kept content. Before it changes anything it loads
 // every object (so that an xref repair MuPDF needs happens first) and marks
@@ -389,7 +456,8 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // field, outline item), except on a page or an intermediate page-tree node
 // that Scrub edits, where the walk skips the keys Scrub removes there and
 // /Annots, on the catalog, where it skips the keys Scrub removes or edits
-// there, /Pages and /StructTreeRoot, on the objects ObjectMetadata lists the
+// there, /Pages and /StructTreeRoot (and /MarkInfo unless
+// opts.KeepStructure), on the objects ObjectMetadata lists the
 // /Metadata, /PieceInfo and /LastModified Scrub removes there, and on any
 // object the file specifications in an /AF array (an image the page draws
 // may carry one; Scrub removes them in place, which does not change the
@@ -402,7 +470,16 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // a node of a kept form), not because something kept points at it: a kept
 // Link's or /OpenAction's Hide action whose /T names an annotation Scrub
 // removes keeps the action, and the annotation is destroyed, as is one a
-// kept annotation's /IRT, /Dest or other key names. A removed entry that points at kept
+// kept annotation's /IRT, /Dest or other key names. Unless opts.KeepStructure,
+// the same holds for a structure element, attribute object, tree node, MCR
+// or OBJR dictionary and a root typed /StructTreeRoot: it is kept only as
+// page content, as something a kept appearance draws, or in a kept role of
+// its own (a page, a kept annotation, form node or outline item), never
+// because a kept object refers to it, so a kept Link's stray reference to a
+// structure element neither keeps that element nor the tree through it. The
+// tree's indirect strings, /RoleMap, /ClassMap and an untyped root, which
+// any untyped dictionary or string could pass for, are destroyed unless a
+// kept object references them too. A removed entry that points at kept
 // content (a /Thumb that the page also draws, an /Info that is the page's
 // /Resources, a JavaScript action that is also a graphics state, an action
 // that a kept /A or a kept /OpenAction also uses) is only unlinked. A
@@ -417,7 +494,16 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // removed kind, and the parts of
 // a name tree, field tree or outline beyond 32 levels or 65,536 units of
 // walk work (a field listed by several parents is walked once), and of a
-// page tree more than 32 levels above a page. Unlinked
+// page tree more than 32 levels above a page. Unless opts.KeepStructure,
+// so are the arrays of the structure tree (/K, /Kids, /Nums, /Names and
+// attribute arrays: an array has no kind to recognise it by), what the tree
+// points at (pages, annotations, form XObjects and content streams, fonts,
+// namespaces; /AF files go as everywhere), and the part of the tree beyond its walk budget: the
+// walk is iterative, visits each object once per role, and stops after
+// 65,536 + 16 x (xref length) units of work (one per object, array entry,
+// dictionary value and name-tree pair); what it reached by then is
+// destroyed, walking /K first, and the rest goes with the catalog key unless
+// something else references it. Unlinked
 // objects leave the file only if nothing else references them. Scrub's
 // marking pass and its edit pass each have an action budget of 4,096 + 32 x
 // (xref length) reaches, as a HiddenContent call does, and the edit pass
@@ -432,8 +518,11 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // field-tree node, outline item or page-tree node that is also page content,
 // and an annotation, field or page dictionary on no page that is also page
 // content; one of those that is a direct object nested in another (Scrub
-// finds them among the indirect objects); text in structure elements, name
-// trees and other document-level dictionaries Scrub does not list here; and
+// finds them among the indirect objects); text in structure elements with
+// opts.KeepStructure, and in name trees and other document-level
+// dictionaries Scrub does not list here; marked-content property lists in
+// content streams (/MCID tags stay as inert markers; declared text there is
+// stripped by Page.ApplyRedactions on redacted pages only); and
 // optional content (layers): Scrub keeps /OCProperties as page content, so
 // content a layer hides stays hidden from extraction and in the file. Call
 // Document.ShowAllLayers before extraction to make it ordinary content, and

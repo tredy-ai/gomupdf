@@ -1,0 +1,546 @@
+package gomupdf
+
+import (
+	"bytes"
+	"fmt"
+	"regexp"
+	"strings"
+	"testing"
+	"time"
+)
+
+// Tokens of scrubStructPDF, each in exactly one place of the structure tree.
+const (
+	stAlt     = "GomupdfStructAlt1a2b"
+	stActual  = "GomupdfStructActual3c4d"
+	stExp     = "GomupdfStructExp5e6f"
+	stTitle   = "GomupdfStructTitle7a8b"
+	stID      = "GomupdfStructID9c0d"
+	stSummary = "GomupdfStructSummary2e3f"
+	stHeaders = "GomupdfStructHeaders4a5b"
+	stClass   = "GomupdfStructClass6c7d"
+	stRole    = "GomupdfStructRole8e9f"
+	stLang    = "x-GomupdfStructLang0a1b"
+	stIndir   = "GomupdfStructIndirect2c3d"
+	stLinkT   = "GomupdfStructLinkTitle4e5f"
+	stFormT   = "GomupdfStructFormTitle6a7b"
+)
+
+var stTokens = []string{stAlt, stActual, stExp, stTitle, stID, stSummary, stHeaders, stClass, stRole, stLang,
+	stIndir, stLinkT, stFormT}
+
+// stKeys are names only the structure tree uses.
+var stKeys = []string{"/StructTreeRoot", "/MarkInfo", "/ParentTree", "/IDTree", "/RoleMap", "/ClassMap", "/OBJR",
+	"/MCR", "/StructElem"}
+
+// scrubStructPDF is a tagged two-page form. Page 1 (3) has marked content
+// MCID 0 (text) and 1 (a red square) and draws the form XObject 10, whose own
+// marked content an MCR /Stm names; page 2 (4) has MCID 0. A structure
+// element (31) points at the Link 8 through an OBJR, another (32) at the
+// widget 9. The elements carry /Alt, /ActualText, /E, /T (one an indirect
+// string), /ID (also an /IDTree key) and /Lang; a table has an indirect
+// attribute object with /Summary, a class from the /ClassMap, and a header
+// cell with /Headers; the /RoleMap maps a custom type. The catalog's /Lang 35
+// is an indirect string a structure element shares. cat, link and widget are
+// spliced into the catalog, the Link and the widget; more objects are
+// numbered from 36.
+func scrubStructPDF(cat, link, widget string, more ...string) []byte {
+	return scrubBuildPDF(append([]string{
+		/* 1 */ `<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 20 0 R /MarkInfo << /Marked true >> /Lang 35 0 R
+   /AcroForm << /Fields [9 0 R] /DA (/Helv 0 Tf 0 g) >> ` + cat + ` >>`,
+		/* 2 */ `<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>`,
+		/* 3 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> /XObject << /Fm1 10 0 R >> >>
+   /Contents 6 0 R /Annots [8 0 R 9 0 R] /StructParents 0 >>`,
+		/* 4 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> >> /Contents 7 0 R /StructParents 1 >>`,
+		/* 5 */ `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>`,
+		/* 6 */ "\nstream\n/P << /MCID 0 >> BDC BT /F1 12 Tf 20 150 Td (" + scrubPageText + ") Tj ET EMC" +
+			" /Figure << /MCID 1 >> BDC 1 0 0 rg 200 100 40 40 re f EMC /Fm1 Do",
+		/* 7 */ "\nstream\n/P << /MCID 0 >> BDC BT /F1 12 Tf 20 150 Td (Tagged page two) Tj ET EMC",
+		/* 8 */ `<< /Type /Annot /Subtype /Link /Rect [20 20 120 40] /A << /S /URI /URI (https://example.com/) >> /StructParent 3 ` + link + ` >>`,
+		/* 9 */ `<< /Type /Annot /Subtype /Widget /FT /Tx /T (field) /V (fieldvalue) /Rect [20 60 200 80] /F 2 /P 3 0 R /StructParent 4` + widget + ` >>`,
+		/* 10 */ "/Type /XObject /Subtype /Form /BBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> >> /StructParents 2" +
+			"\nstream\n/Span << /MCID 0 >> BDC BT /F1 12 Tf 20 120 Td (Form text) Tj ET EMC",
+		/* 11 */ `<< >>`,
+		/* 12 */ `<< >>`,
+		/* 13 */ `<< >>`,
+		/* 14 */ `<< >>`,
+		/* 15 */ `<< >>`,
+		/* 16 */ `<< >>`,
+		/* 17 */ `<< >>`,
+		/* 18 */ `<< >>`,
+		/* 19 */ `<< >>`,
+		/* 20 */ `<< /Type /StructTreeRoot /K 21 0 R /ParentTree 22 0 R /IDTree 23 0 R /RoleMap << /` + stRole + ` /P >>
+   /ClassMap << /TableClass 24 0 R >> /ParentTreeNextKey 5 >>`,
+		/* 21 */ `<< /Type /StructElem /S /Document /P 20 0 R /K [25 0 R 26 0 R 27 0 R 28 0 R 29 0 R 31 0 R 32 0 R] >>`,
+		/* 22 */ `<< /Nums [0 [25 0 R 26 0 R] 1 [29 0 R] 2 [28 0 R] 3 31 0 R 4 32 0 R] >>`,
+		/* 23 */ `<< /Names [(` + stID + `) 25 0 R] >>`,
+		/* 24 */ `<< /O /Table /Summary (` + stClass + `) >>`,
+		/* 25 */ `<< /Type /StructElem /S /` + stRole + ` /P 21 0 R /Pg 3 0 R /K 0 /ID (` + stID + `) /T 30 0 R /Lang (` + stLang + `) >>`,
+		/* 26 */ `<< /Type /StructElem /S /Figure /P 21 0 R /Pg 3 0 R /K 1 /Alt (` + stAlt + `) /E (` + stExp + `) >>`,
+		/* 27 */ `<< /Type /StructElem /S /Table /P 21 0 R /A 33 0 R /C /TableClass /T (` + stTitle + `) /K [34 0 R] >>`,
+		/* 28 */ `<< /Type /StructElem /S /Span /P 21 0 R /Pg 3 0 R /K << /Type /MCR /Pg 3 0 R /Stm 10 0 R /MCID 0 >> /ActualText (` + stActual + `) >>`,
+		/* 29 */ `<< /Type /StructElem /S /P /P 21 0 R /Pg 4 0 R /K 0 /Lang 35 0 R >>`,
+		/* 30 */ `(` + stIndir + `)`,
+		/* 31 */ `<< /Type /StructElem /S /Link /P 21 0 R /Pg 3 0 R /K << /Type /OBJR /Obj 8 0 R >> /T (` + stLinkT + `) >>`,
+		/* 32 */ `<< /Type /StructElem /S /Form /P 21 0 R /Pg 3 0 R /K << /Type /OBJR /Obj 9 0 R >> /T (` + stFormT + `) >>`,
+		/* 33 */ `<< /O /Table /Summary (` + stSummary + `) >>`,
+		/* 34 */ `<< /Type /StructElem /S /TH /P 27 0 R /A << /O /Table /Headers [(` + stHeaders + `)] >> >>`,
+		/* 35 */ `(en-US)`,
+	}, more...), "")
+}
+
+// scrubStructPages returns the text and rendering of every page of d.
+func scrubStructPages(t *testing.T, d *Document) ([]string, [][]byte) {
+	t.Helper()
+	var texts []string
+	var pix [][]byte
+	for i := range d.PageCount() {
+		p, err := d.LoadPage(i)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s, err := p.GetText()
+		if err != nil {
+			t.Fatal(err)
+		}
+		pm, err := p.Pixmap()
+		if err != nil {
+			t.Fatal(err)
+		}
+		texts, pix = append(texts, s), append(pix, pm.Samples)
+	}
+	return texts, pix
+}
+
+// scrubStructSave scrubs pdf with opts, checks that every page's text and
+// rendering match an unscrubbed control, saves with scrubSaveOpts and
+// returns the saved bytes and the reopened document.
+func scrubStructSave(t *testing.T, pdf []byte, opts ScrubOptions) ([]byte, *Document) {
+	t.Helper()
+	ctl, err := OpenStream(pdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ctl.Close()
+	texts, pix := scrubStructPages(t, ctl)
+	out, re := scrubRoundTrip(t, pdf, opts)
+	if re.PageCount() != len(texts) {
+		t.Fatalf("%+v: %d pages, want %d", opts, re.PageCount(), len(texts))
+	}
+	gotT, gotP := scrubStructPages(t, re)
+	for i := range texts {
+		if gotT[i] != texts[i] {
+			t.Errorf("%+v: page %d text %q, want %q", opts, i, gotT[i], texts[i])
+		}
+		if !bytes.Equal(gotP[i], pix[i]) {
+			t.Errorf("%+v: page %d rendering differs from the unscrubbed control", opts, i)
+		}
+	}
+	return out, re
+}
+
+// A default Scrub removes the structure tree and every text it held, the
+// claim that the file is tagged and the stale /StructParent(s) of pages and
+// annotations, while the pages read and render as before, the catalog /Lang
+// stays, the Link works and, with KeepFormFields, the widget is still the
+// form's field and can be filled. The form XObject, which is page content,
+// keeps its /StructParents integer.
+func TestScrubRemovesStructure(t *testing.T) {
+	pdf := scrubStructPDF("", "", "")
+	scrubControl(t, pdf, stTokens...)
+	d, err := OpenStream(pdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if h, want := scrubHidden(t, d), (HiddenContent{AcroForm: true, Widgets: 1, StructTree: true}); h != want {
+		t.Errorf("before scrub: %+v, want %+v", h, want)
+	}
+	for _, opts := range []ScrubOptions{{}, {KeepFormFields: true}, {KeepAnnotations: true, KeepOutlines: true}} {
+		t.Run(fmt.Sprintf("%+v", opts), func(t *testing.T) {
+			out, re := scrubStructSave(t, pdf, opts)
+			scrubNoTokens(t, "scrubbed", out, append(stTokens, stKeys...)...)
+			if !bytes.Contains(out, []byte("(en-US)")) {
+				t.Error("the catalog /Lang is gone")
+			}
+			if n := len(regexp.MustCompile(`/StructParents?\b`).FindAll(out, -1)); n != 1 {
+				t.Errorf("%d /StructParent(s) keys in the save, want 1 (the form XObject's)", n)
+			}
+			want := HiddenContent{}
+			if opts.KeepFormFields || opts.KeepAnnotations {
+				want.AcroForm, want.Widgets = true, 1
+			}
+			if h := scrubHidden(t, re); h != want {
+				t.Errorf("after scrub: %+v, want %+v", h, want)
+			}
+			p, err := re.LoadPage(0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if l, err := p.Links(); err != nil || len(l) != 1 || l[0].URI != "https://example.com/" {
+				t.Errorf("links after scrub = %+v, %v; want the URI link", l, err)
+			}
+			if !opts.KeepFormFields {
+				return
+			}
+			w, err := p.Widgets()
+			if err != nil || len(w) != 1 || w[0].Value != "fieldvalue" {
+				t.Fatalf("widgets %+v, %v; want the one field", w, err)
+			}
+			const newValue = "GomupdfStructNewValue8b9c"
+			if err := p.SetTextField(0, newValue); err != nil {
+				t.Fatal(err)
+			}
+			set, err := re.SaveBytesWithOptions(scrubSaveOpts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(set, []byte("fieldvalue")) {
+				t.Error("old field value survives SetTextField")
+			}
+			if n := len(regexp.MustCompile(`/V\s*\(`+newValue+`\)`).FindAll(set, -1)); n != 1 {
+				t.Errorf("new field value set %d times, want 1", n)
+			}
+		})
+	}
+}
+
+// KeepStructure keeps the tree, every text in it and /MarkInfo, while the
+// rest of what Scrub removes (here /Info, the widget and /AcroForm) goes.
+func TestScrubKeepStructure(t *testing.T) {
+	const infoTok = "GomupdfStructInfo3d4e"
+	pdf := scrubStructPDF("", "", "")
+	pdf = bytes.Replace(pdf, []byte("/Root 1 0 R"), []byte("/Root 1 0 R /Info << /Title ("+infoTok+") >>"), 1)
+	scrubControl(t, pdf, append(stTokens, infoTok)...)
+	out, re := scrubStructSave(t, pdf, ScrubOptions{KeepStructure: true})
+	for _, tok := range append(stTokens, "/StructTreeRoot", "/MarkInfo", "/StructParents 0", "/StructParent 3") {
+		if !bytes.Contains(out, []byte(tok)) {
+			t.Errorf("%q removed under KeepStructure", tok)
+		}
+	}
+	scrubNoTokens(t, "KeepStructure", out, infoTok, "fieldvalue")
+	if h := scrubHidden(t, re); h != (HiddenContent{StructTree: true}) {
+		t.Errorf("after scrub: %+v, want only StructTree", h)
+	}
+}
+
+// The structure tree's objects (the root, every element, the /ParentTree and
+// /IDTree, the attribute objects) that something Scrub keeps also
+// references (a kept Link's and a kept outline item's unknown keys, a kept
+// widget's, a /Names/Dests entry) are destroyed all the same: the references
+// do not keep them, nor the tree through them.
+func TestScrubStructureReferencedFromKept(t *testing.T) {
+	pdf := scrubStructPDF(`/Outlines 36 0 R /Names << /Dests << /Names [(d) 27 0 R] >> >>`,
+		`/GomupdfRef [20 0 R 21 0 R 26 0 R 25 0 R 22 0 R 23 0 R]`, `/GomupdfRef [32 0 R 31 0 R 29 0 R 34 0 R 24 0 R]`,
+		/* 36 */ `<< /Type /Outlines /First 37 0 R /Last 37 0 R /Count 1 >>`,
+		/* 37 */ `<< /Title (Item) /Parent 36 0 R /Dest [3 0 R /Fit] /GomupdfRef [28 0 R 33 0 R] >>`)
+	scrubControl(t, pdf, stTokens...)
+	for _, opts := range []ScrubOptions{{}, {KeepOutlines: true, KeepFormFields: true}, {KeepAnnotations: true, KeepOutlines: true}} {
+		t.Run(fmt.Sprintf("%+v", opts), func(t *testing.T) {
+			out, re := scrubStructSave(t, pdf, opts)
+			scrubNoTokens(t, "scrubbed", out, append(stTokens, stKeys...)...)
+			if scrubHidden(t, re).StructTree {
+				t.Error("StructTree after scrub")
+			}
+			if opts.KeepOutlines {
+				if toc, err := re.TOC(); err != nil || len(toc) != 1 {
+					t.Errorf("TOC after scrub = %+v, %v", toc, err)
+				}
+			}
+		})
+	}
+}
+
+// scrubStructAliasPDF is a one-page tagged PDF whose page draws text in the
+// font 9, a square under the graphics state 10 and the image 11 through the
+// indirect /Resources 5; its /MediaBox (14), /Annots (15, holding the Link
+// 6, whose URI action is 7) and the page tree's /Kids (13) are indirect.
+// root is the catalog's /StructTreeRoot, rootBody spliced into the root 8;
+// pages (the page tree root's /Type, "/Type /Pages" if empty), font and gs
+// are spliced into objects 2, 9 and 10; extra objects are numbered from 16.
+func scrubStructAliasPDF(root, rootBody, pages, font, gs string, extra ...string) []byte {
+	if root == "" {
+		root = "8 0 R"
+	}
+	if pages == "" {
+		pages = "/Type /Pages"
+	}
+	return scrubBuildPDF(append([]string{
+		/* 1 */ `<< /Type /Catalog /Pages 2 0 R /MarkInfo << /Marked true >> /StructTreeRoot ` + root + ` >>`,
+		/* 2 */ `<< ` + pages + ` /Kids 13 0 R /Count 1 >>`,
+		/* 3 */ `<< /Type /Page /Parent 2 0 R /MediaBox 14 0 R /Resources 5 0 R /Contents 4 0 R /Annots 15 0 R /StructParents 0 >>`,
+		/* 4 */ "\nstream\nBT /F1 12 Tf 20 150 Td (" + scrubPageText + ") Tj ET q /G1 gs 1 0 0 rg 10 10 80 80 re f Q q 40 0 0 40 120 20 cm /Im1 Do Q",
+		/* 5 */ `<< /Font << /F1 9 0 R >> /ExtGState << /G1 10 0 R >> /XObject << /Im1 11 0 R >> >>`,
+		/* 6 */ `<< /Type /Annot /Subtype /Link /Rect [0 0 50 50] /A 7 0 R /StructParent 1 >>`,
+		/* 7 */ `<< /S /URI /URI (https://example.com/) >>`,
+		/* 8 */ `<< /Type /StructTreeRoot ` + rootBody + ` >>`,
+		/* 9 */ `<< /Type /Font /Subtype /Type1 /BaseFont /Courier ` + font + ` >>`,
+		/* 10 */ `<< /ca 0.5 ` + gs + ` >>`,
+		/* 11 */ "/Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8\nstream\n\x00\xff\xff\x00",
+		/* 12 */ `<< /Type /StructElem /S /Figure /P 8 0 R /K 0 /Alt (GomupdfStructAliasAlt5f6a) >>`,
+		/* 13 */ `[3 0 R]`,
+		/* 14 */ `[0 0 200 200]`,
+		/* 15 */ `[6 0 R]`,
+	}, extra...), "")
+}
+
+// A crafted structure tree that names page content, the page tree, the
+// page's geometry and annotations, or the kept Link's action never damages
+// them: the page reads and renders as the unscrubbed control, the Link keeps
+// its target, and Scrub succeeds.
+func TestScrubStructureAliasing(t *testing.T) {
+	cases := []struct {
+		name, root, rootBody, pages, font, gs string
+		extra                                 []string
+	}{
+		{name: "K is the page resources", rootBody: "/K 5 0 R"},
+		{name: "ParentTree lists the content stream", rootBody: "/ParentTree << /Nums [0 4 0 R 1 [4 0 R 12 0 R]] >>"},
+		{name: "K is a font with /S and /P", rootBody: "/K [9 0 R 12 0 R]", font: "/S /P /P 8 0 R"},
+		{name: "attribute object is the ExtGState", rootBody: "/K 16 0 R", gs: "/O /Layout",
+			extra: []string{`<< /Type /StructElem /S /Figure /P 8 0 R /A 10 0 R >>`}},
+		{name: "attribute object is the resources", rootBody: "/K 16 0 R",
+			extra: []string{`<< /Type /StructElem /S /Figure /P 8 0 R /A [5 0 R 10 0 R] /C /X >>`}},
+		{name: "root is the catalog", root: "1 0 R"},
+		{name: "root is the page tree root", root: "2 0 R"},
+		{name: "IDTree leaf is the served page", rootBody: "/K 12 0 R /IDTree << /Kids [3 0 R] >>"},
+		{name: "IDTree value is the served page", rootBody: "/K 12 0 R /IDTree << /Names [(a) 3 0 R] >>"},
+		{name: "K is the page tree's Kids", rootBody: "/K 13 0 R"},
+		{name: "ParentTree is the untyped page tree root", rootBody: "/ParentTree 2 0 R", pages: "/GomupdfUntyped true"},
+		{name: "ParentTree kid is the untyped page tree root", rootBody: "/ParentTree << /Kids [2 0 R] >>", pages: "/GomupdfUntyped true"},
+		{name: "K and BBox are the MediaBox", rootBody: "/K [14 0 R 16 0 R]",
+			extra: []string{`<< /Type /StructElem /S /Figure /P 8 0 R /A << /O /Layout /BBox 14 0 R >> >>`}},
+		{name: "K is the Annots array", rootBody: "/K 15 0 R"},
+		{name: "K is the Link", rootBody: "/K [6 0 R 12 0 R]"},
+		{name: "K is the Link's action", rootBody: "/K [7 0 R 12 0 R]"},
+		{name: "untyped root is the Link's action", root: "7 0 R"},
+		{name: "RoleMap is the Link's action", rootBody: "/K 12 0 R /RoleMap 7 0 R"},
+		{name: "ClassMap is the Link's action", rootBody: "/K 12 0 R /ClassMap 7 0 R"},
+		{name: "K is the page", rootBody: "/K [3 0 R 12 0 R] /ParentTree << /Nums [0 3 0 R] >>"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			pdf := scrubStructAliasPDF(c.root, c.rootBody, c.pages, c.font, c.gs, c.extra...)
+			re := scrubCheckKept(t, pdf, ScrubOptions{})
+			p, err := re.LoadPage(0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if l, err := p.Links(); err != nil || len(l) != 1 || l[0].URI != "https://example.com/" {
+				t.Errorf("links after scrub = %+v, %v; want the URI link", l, err)
+			}
+			if h := scrubHidden(t, re); h != (HiddenContent{}) {
+				t.Errorf("after scrub: %+v", h)
+			}
+		})
+	}
+}
+
+// scrubStructHostile runs HiddenContent, Scrub and HiddenContent again on pdf
+// from several goroutines, within limit, and checks that the tree is
+// reported before and gone after.
+func scrubStructHostile(t *testing.T, pdf []byte, limit time.Duration) {
+	t.Helper()
+	scrubConcurrently(func() {
+		d, err := OpenStream(pdf)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer d.Close()
+		start := time.Now()
+		if h, err := d.HiddenContent(); err != nil || h != (HiddenContent{StructTree: true}) {
+			t.Errorf("before scrub: %+v, %v", h, err)
+		}
+		if err := d.Scrub(ScrubOptions{}); err != nil {
+			t.Error(err)
+		}
+		if h, err := d.HiddenContent(); err != nil || h != (HiddenContent{}) {
+			t.Errorf("after scrub: %+v, %v", h, err)
+		}
+		if el := time.Since(start); el > limit {
+			t.Errorf("HiddenContent and Scrub took %v", el)
+		}
+	})
+}
+
+// scrubStructTreePDF is a one-page PDF whose catalog names the structure
+// tree root 4 (body rootBody); extra objects are numbered from 5.
+func scrubStructTreePDF(rootBody string, extra ...string) []byte {
+	return scrubBuildPDF(append([]string{
+		`<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 4 0 R >>`,
+		`<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+		`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>`,
+		`<< /Type /StructTreeRoot ` + rootBody + ` >>`,
+	}, extra...), "")
+}
+
+// Hostile trees (a /K cycle, a 200,000-deep /K chain, a /ParentTree of
+// 100,000 entries naming one element, a /Nums array of 2,000,000 nulls)
+// neither crash nor take long, from several goroutines, and the tree is gone
+// after Scrub. Within the walk's budget the element at the bottom of the
+// deep chain is destroyed although a kept Link references it.
+func TestScrubStructureHostile(t *testing.T) {
+	const tok = "GomupdfStructDeep8d9e"
+	t.Run("cycle", func(t *testing.T) {
+		scrubStructHostile(t, scrubStructTreePDF("/K 5 0 R",
+			`<< /Type /StructElem /S /P /P 4 0 R /K [6 0 R 5 0 R] >>`,
+			`<< /Type /StructElem /S /P /P 5 0 R /K 5 0 R /Ref [5 0 R 6 0 R] >>`), 2*time.Second)
+	})
+	t.Run("deep", func(t *testing.T) {
+		const n = 200000
+		objs := []string{
+			`<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 4 0 R >>`,
+			`<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+			fmt.Sprintf(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots [%d 0 R] >>`, 5+n),
+			`<< /Type /StructTreeRoot /K 5 0 R >>`,
+		}
+		for i := range n - 1 {
+			objs = append(objs, fmt.Sprintf(`<< /Type /StructElem /S /Div /P %d 0 R /K %d 0 R >>`, 4+i, 6+i))
+		}
+		objs = append(objs, fmt.Sprintf(`<< /Type /StructElem /S /Span /P %d 0 R /Alt (%s) >>`, 3+n, tok),
+			fmt.Sprintf(`<< /Type /Annot /Subtype /Link /Rect [0 0 1 1] /Dest [3 0 R /Fit] /GomupdfRef %d 0 R >>`, 4+n))
+		pdf := scrubBuildPDF(objs, "")
+		scrubStructHostile(t, pdf, 5*time.Second)
+		out, _ := scrubRoundTrip(t, pdf, ScrubOptions{})
+		scrubNoTokens(t, "deep", out, tok)
+	})
+	t.Run("shared parent tree", func(t *testing.T) {
+		scrubStructHostile(t, scrubStructTreePDF("/K 5 0 R /ParentTree << /Nums ["+strings.Repeat("0 5 0 R ", 100000)+"] >>",
+			`<< /Type /StructElem /S /P /P 4 0 R /K 0 >>`), 2*time.Second)
+	})
+	t.Run("null nums", func(t *testing.T) {
+		scrubStructHostile(t, scrubStructTreePDF("/ParentTree << /Nums ["+strings.Repeat("0 null ", 1000000)+"] >>"),
+			2*time.Second)
+	})
+}
+
+// Pins the documented limit: an element the walk does not reach within its
+// budget (here behind 100,000 null /Nums entries in a file of 6 objects) is
+// only unlinked with the tree, so a kept Link's stray reference keeps it in
+// the saved file; behind 10 entries the same element is destroyed.
+func TestScrubStructureBeyondBudgetOnlyUnlinks(t *testing.T) {
+	const tok = "GomupdfStructBeyond1f2a"
+	pdf := func(nulls int) []byte {
+		return scrubBuildPDF([]string{
+			`<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 4 0 R >>`,
+			`<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+			`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots [6 0 R] >>`,
+			`<< /Type /StructTreeRoot /ParentTree << /Nums [` + strings.Repeat("0 null ", nulls) + `1 5 0 R] >> >>`,
+			`<< /Type /StructElem /S /Figure /P 4 0 R /Alt (` + tok + `) >>`,
+			`<< /Type /Annot /Subtype /Link /Rect [0 0 1 1] /Dest [3 0 R /Fit] /GomupdfRef 5 0 R >>`,
+		}, "")
+	}
+	for _, c := range []struct {
+		nulls int
+		leaks bool
+	}{{10, false}, {100000, true}} {
+		out, re := scrubRoundTrip(t, pdf(c.nulls), ScrubOptions{})
+		if got := bytes.Contains(out, []byte(tok)); got != c.leaks {
+			t.Errorf("%d nulls: element in save = %v, want %v", c.nulls, got, c.leaks)
+		}
+		if scrubHidden(t, re).StructTree {
+			t.Errorf("%d nulls: StructTree after scrub", c.nulls)
+		}
+	}
+}
+
+// StructTree reads false for a /StructTreeRoot that is null or names a
+// missing object, true for any other value.
+func TestHiddenContentStructTree(t *testing.T) {
+	for _, c := range []struct {
+		val  string
+		want bool
+	}{{"null", false}, {"99 0 R", false}, {"<< >>", true}, {"4 0 R", true}} {
+		pdf := scrubBuildPDF([]string{
+			`<< /Type /Catalog /Pages 2 0 R /StructTreeRoot ` + c.val + ` >>`,
+			`<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+			`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>`,
+			`<< /Type /StructTreeRoot >>`,
+		}, "")
+		d, err := OpenStream(pdf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := scrubHidden(t, d).StructTree; got != c.want {
+			t.Errorf("/StructTreeRoot %s: StructTree = %v, want %v", c.val, got, c.want)
+		}
+		d.Close()
+	}
+}
+
+// scrubStructRedactPDF is a tagged page whose text holds word, under an
+// inline /ActualText that repeats it, and which draws a form (with its own
+// /StructParents) whose text holds word too and that an MCR /Stm names; the
+// structure elements of both carry /ActualText with word as well.
+func scrubStructRedactPDF(word string) []byte {
+	return scrubBuildPDF([]string{
+		/* 1 */ `<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 8 0 R /MarkInfo << /Marked true >> >>`,
+		/* 2 */ `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+		/* 3 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> /XObject << /Fm1 6 0 R >> >>
+   /Contents 4 0 R /StructParents 0 >>`,
+		/* 4 */ "\nstream\n/Span << /MCID 0 /ActualText (" + word + ") >> BDC BT /F1 12 Tf 20 150 Td (Visible " + word + ") Tj ET EMC /Fm1 Do",
+		/* 5 */ `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>`,
+		/* 6 */ "/Type /XObject /Subtype /Form /BBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> >> /StructParents 1" +
+			"\nstream\n/Span << /MCID 0 >> BDC BT /F1 12 Tf 20 100 Td (Form keeps this " + word + ") Tj ET EMC",
+		/* 7 */ `<< /Type /StructElem /S /Document /P 8 0 R /K [9 0 R 10 0 R] /ActualText (` + word + `) >>`,
+		/* 8 */ `<< /Type /StructTreeRoot /K 7 0 R /ParentTree << /Nums [0 [9 0 R] 1 [10 0 R]] >> >>`,
+		/* 9 */ `<< /Type /StructElem /S /Span /P 7 0 R /Pg 3 0 R /K 0 /ActualText (` + word + `) >>`,
+		/* 10 */ `<< /Type /StructElem /S /Span /P 7 0 R /Pg 3 0 R /K << /Type /MCR /Stm 6 0 R /MCID 0 >> /ActualText (` + word + `) >>`,
+	}, "")
+}
+
+// Redaction and the structure removal work in either order on the same
+// Document: ApplyRedactions then Scrub, and Scrub then ApplyRedactions, then
+// a save. The redacted word is gone from extraction, with and without
+// /ActualText, and from the saved bytes, and nothing of the tree is left.
+func TestScrubStructureAndRedaction(t *testing.T) {
+	const word = "GomupdfStructSecret7c8d"
+	pdf := scrubStructRedactPDF(word)
+	scrubControl(t, pdf, word)
+	for _, scrubFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("scrub first %v", scrubFirst), func(t *testing.T) {
+			d, err := OpenStream(pdf)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			if scrubFirst {
+				if err := d.Scrub(ScrubOptions{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			scrubRedactWord(t, d, word)
+			if !scrubFirst {
+				if err := d.Scrub(ScrubOptions{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			out, err := d.SaveBytesWithOptions(scrubSaveOpts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			scrubNoTokens(t, "saved", out, append(stKeys, word)...)
+			re, err := OpenStream(out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer re.Close()
+			if h := scrubHidden(t, re); h != (HiddenContent{}) {
+				t.Errorf("after: %+v", h)
+			}
+			p, err := re.LoadPage(0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, actual := range []bool{false, true} {
+				s, err := p.ExtractText(TextOptions{UseActualText: actual})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(s, word) || !strings.Contains(s, "Visible") || !strings.Contains(s, "Form keeps this") {
+					t.Errorf("UseActualText %v: text %q", actual, s)
+				}
+			}
+		})
+	}
+}

@@ -330,7 +330,9 @@ that page (inline and named property lists, in the page and its forms) and from
 the structure elements that own it, up to the structure tree root. Stock MuPDF
 leaves them. The cost is the page's accessibility text: a structure ancestor
 spanning other pages loses its declared text for them too, and a named property
-dictionary other pages share is copied for this page and kept for them.
+dictionary other pages share is copied for this page and kept for them. A
+default `Scrub` then removes the whole structure tree (4.5); the property lists
+in content streams stay, stripped only on redacted pages.
 
 **Forms and the structure tree.** Redaction makes the page draw redacted copies
 of its form XObjects. A structure element that still named the original form
@@ -399,10 +401,56 @@ JavaScript or Launch action; `/Outlines`; page and page-tree-node `/Thumb`,
 structure elements, output intents, ICC profiles and embedded files; `/AF`
 file specifications on any object; every annotation except Links (popups and
 replies included), every widget and the catalog `/AcroForm`; `/AcroForm /XFA`
-always; annotations and fields that are on no page; and everything in the page
-dictionaries MuPDF does not serve (orphan pages, below). Scripts: on every annotation and
+always; annotations and fields that are on no page; everything in the page
+dictionaries MuPDF does not serve (orphan pages, below); and the logical
+structure tree (below). Scripts: on every annotation and
 form node that stays, `/AA` and any `/A` or `/PA` that is or chains to a
 JavaScript or Launch action.
+
+**Structure tree.** Unless `KeepStructure` is set, `Scrub` deletes the catalog
+`/StructTreeRoot` and `/MarkInfo` and destroys the tree's own objects: the root,
+every structure element, the `/ParentTree` and `/IDTree` nodes, `/RoleMap` and
+`/ClassMap`, attribute objects, indirect MCR and OBJR dictionaries and the
+indirect strings of elements, attribute objects and `/IDTree` keys. Reason: the
+tree holds text page-text extraction never returns, so the detector never sees
+it (`/Alt`, `/ActualText`, `/E`, `/T`, `/ID` and `/IDTree` keys, `/Lang`, table
+`/Summary` and `/Headers`); a corpus run found redacted words surviving the
+whole pipeline in structure `/ID`, `/Summary`, `/T` and `/ActualText`. The
+output is then no longer a tagged PDF: PDF/UA conformance and the structure
+screen readers use are gone, and reading order follows content order. Rules:
+
+- Kinds. Each object is destroyed only if it is of its kind: an element has an
+  `/S` name, no `/Subtype`, and `/Type /StructElem` or no `/Type` and a `/P`;
+  the root no `/Type` or `/Type /StructTreeRoot`; a tree node no `/Type` and
+  `/Kids`, `/Nums` or `/Names`; `/RoleMap` and `/ClassMap` no `/Type`; an
+  attribute object no `/Type` and an `/O` name; MCR and OBJR their `/Type`.
+  Arrays are never destroyed (nothing marks the arrays a page tree relies on);
+  they leave with the objects holding them.
+- Kept content wins. Page content, served pages and page-tree nodes, kept
+  annotations, kept form nodes and outline items, and what a kept appearance
+  draws are never destroyed, whatever the tree says. An element, attribute
+  object, tree node, MCR or OBJR dictionary or typed root is not kept merely
+  because a kept object references it (a kept Link's stray key, say), as for
+  annotations; `/RoleMap`, `/ClassMap`, an untyped root and indirect strings,
+  which an action or a field's own data could pass for, are only unlinked when
+  a kept object references them.
+- What the tree points at is not part of it: pages (`/Pg`), annotations and
+  widgets (`/Obj`), forms and content streams (`/Stm`), fonts and namespaces
+  stay unless something else removes them; `/AF` files go as everywhere. An
+  annotation or page only the tree referenced (an `/OBJR`, a `/Pg`) has no
+  referrer left, so the save drops it even under `KeepAnnotations`.
+- Integers. `/StructParents` and `/StructParent` are deleted from pages,
+  annotations, fields and XObjects, except on page content and kept
+  appearances, where the stale integer stays.
+- In content streams nothing changes: `/MCID` tags stay as inert markers, and
+  inline or named property lists (`/Span << /ActualText (...) >> BDC`) are not
+  removed by `Scrub`; `ApplyRedactions` strips their declared text on redacted
+  pages only. The catalog `/Lang` stays.
+- Limits. The walk is iterative, visits each object once per role and stops
+  after 65,536 + 16 x (object count) units of work; what it reached is
+  destroyed, the rest is only unlinked with the catalog key.
+- `ApplyRedactions` works before or after such a `Scrub` on the same
+  `Document`.
 
 **Orphan pages.** The pages MuPDF serves (the `PageCount` pages) are
 authoritative. Any other page dictionary is an orphan: one outside the page
@@ -425,9 +473,10 @@ error. A page tree that claims more pages than it can serve is refused (4.2).
 | `KeepAnnotations` | Every annotation (including those on pages MuPDF does not serve) and widget and the whole `/AcroForm` (and `/Perms`, `/DSS`, signature dictionaries), with scripts removed. `/XFA` still goes. Embedded media in kept annotations stay (a FileAttachment's file, Sound, Movie, Screen rendition, RichMedia assets, 3D streams). An annotation reachable only through an outline item's action (a GoTo3DView) is kept by Scrub but unreferenced when outlines are removed, so a garbage-collecting save drops it; keep outlines to keep it. |
 | `KeepFormFields` | Widgets and the `/AcroForm` field tree, with scripts removed and the signature remnants kept as above. Other non-Link annotations still go. Hidden template pages (`/Names/Templates`) are emptied whatever the options, so templates spawn blank pages. You must inspect form values yourself (`Page.Widgets`); they are not reliably in page text. |
 | `KeepOutlines` | `/Outlines`. Titles and `/Dest` stay; an `/A` that is or chains to a JavaScript or Launch action goes. |
+| `KeepStructure` | The logical structure tree, `/MarkInfo` and every `/StructParents` and `/StructParent`, as before this option existed, with all their text (`/Alt`, `/ActualText`, `/E`, `/T`, `/ID`, `/Lang`, attribute values) except the declared text `ApplyRedactions` strips on redacted pages. Independent of the other options. |
 
 **Destruction, not unlinking.** Removed objects that may be reachable from
-elsewhere (a structure tree's `/OBJR`, an `/AF`) are destroyed, so surviving
+elsewhere (a kept structure tree's `/OBJR`, an `/AF`) are destroyed, so surviving
 references resolve to null. Scrub first marks everything kept content depends
 on and never destroys a marked object. Other things (appearance streams, URI
 and other actions, `/VRI`, parts beyond the walk limits) are only unlinked and
@@ -435,7 +484,8 @@ leave the file only if nothing else references them, which is why a
 garbage-collecting save matters.
 
 **HiddenContent** reports the same locations: booleans (`Info`, `XMP`,
-`AcroForm`, `XFA`, `Outlines`, `JavaScript`, `Perms`, `DSS`, `WebCapture`) and
+`AcroForm`, `XFA`, `Outlines`, `JavaScript`, `Perms`, `DSS`, `WebCapture`,
+`StructTree`) and
 counts (`EmbeddedFiles`, `AssociatedFiles`, `NonLinkAnnotations`, `Widgets`,
 `Thumbnails`, `PageMetadata`, `PieceInfo`, `TrailerKeys`, `OrphanPages`,
 `ObjectMetadata`, `LastModified`, `Layers`, `HiddenLayers`). When a walk hits a
@@ -605,6 +655,24 @@ the committed corpus test only ever held on 1.26 (1.26.11 on Alpine 3.23).
 Nothing changes in the API. Build against MuPDF 1.26 or newer (Alpine 3.23's
 `mupdf-dev`, or a newer distribution package), and check `MuPDFVersion()` in
 your build if you record extraction output.
+
+### 5.9 `Scrub` removes the structure tree by default
+
+A zero `ScrubOptions` now also removes the logical structure tree (4.5): the
+output of `Scrub` is no longer a tagged PDF, and `HiddenContent` has a new
+field, `StructTree`, which reads false afterwards. A caller that must keep the
+file accessible sets `KeepStructure` and accepts the text the tree keeps.
+
+```go
+// before: the tree stayed
+err := doc.Scrub(gomupdf.ScrubOptions{})
+
+// after: the same call removes it; to keep it
+err := doc.Scrub(gomupdf.ScrubOptions{KeepStructure: true})
+```
+
+An annotation or page only the structure tree referenced now leaves the saved
+file even under `KeepAnnotations` or `KeepFormFields`.
 
 ## 6. Using the package in a redaction service
 
@@ -812,8 +880,13 @@ checks that the words are gone (by position, in `GetText` and in the
 `UseActualText` text), that no text outside the redaction areas disappeared or
 moved, and that the rendering outside the redaction areas did not change.
 Redacted words still found in the saved bytes (also after `Scrub`) are reported
-as notes with the key or stream that holds them, not as failures. It then scrubs in three modes and checks the
-reopened output with `HiddenContent`, link survival and unchanged text. Files
+as notes with the key or stream that holds them, not as failures. It then scrubs in four modes (default,
+`KeepFormFields`, `KeepAnnotations` with `KeepOutlines`, and `KeepStructure`) and checks the
+reopened output with `HiddenContent`, link, annotation and widget survival and
+unchanged text and rendering. Without `KeepStructure`, fewer annotations or
+widgets on no page than the unscrubbed control is accepted only when the same
+options plus `KeepStructure` give the control's counts (they were ones only
+the structure tree referenced; noted as `scrub-structure-orphans`). Files
 with optional content go round again after `ShowAllLayers`. Refusals the
 library documents (empty rects, failed checks, limits, saves refused after a
 failed apply) are recorded as notes, not failures. A child that crashes in

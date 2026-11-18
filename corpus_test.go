@@ -1259,7 +1259,40 @@ func scrubWant(opts ScrubOptions, ctrl HiddenContent) HiddenContent {
 	if opts.KeepOutlines {
 		w.Outlines = ctrl.Outlines
 	}
+	if opts.KeepStructure {
+		w.StructTree = ctrl.StructTree
+	}
 	return w
+}
+
+// structureOnlyCounts reports whether data, scrubbed with opts plus
+// KeepStructure, saved and reopened, reads the annotation and widget counts
+// that scrubWant expects for those options: then the annotations and fields
+// a Scrub with opts left out were ones only the structure tree referenced
+// (an /OBJR, or a page only a /Pg reached), which leave the file with the
+// tree, as KeepAnnotations documents.
+func structureOnlyCounts(data []byte, opts ScrubOptions, ctrl HiddenContent) bool {
+	d, err := OpenStream(data)
+	if err != nil {
+		return false
+	}
+	defer d.Close()
+	opts.KeepStructure = true
+	if d.Scrub(opts) != nil {
+		return false
+	}
+	out, err := d.SaveBytesWithOptions(SaveOptions{Garbage: 1})
+	if err != nil {
+		return false
+	}
+	da, err := OpenStream(out)
+	if err != nil {
+		return false
+	}
+	defer da.Close()
+	h, err := da.HiddenContent()
+	want := scrubWant(opts, ctrl)
+	return err == nil && h.NonLinkAnnotations == want.NonLinkAnnotations && h.Widgets == want.Widgets
 }
 
 // outlinesKeepJS reports whether data, scrubbed keeping only its outlines,
@@ -1339,6 +1372,7 @@ func (c *corpusCheck) scrub(data []byte, pages []*corpusPage) {
 	// only if the same step succeeds here (a missing /Kids entry, which any
 	// save writes as null, breaks both).
 	ctrlText, ctrlLinks, ctrlRender := map[int]string{}, map[int][]string{}, map[int]bool{}
+	ctrlAnnots, ctrlWidgets := map[int]int{}, map[int]int{}
 	for _, pg := range pages {
 		if p, err := dc.LoadPage(pg.n); err == nil {
 			if lines, err := corpusChars(p, TextOptions{}); err == nil {
@@ -1346,6 +1380,12 @@ func (c *corpusCheck) scrub(data []byte, pages []*corpusPage) {
 			}
 			if ls, err := p.Links(); err == nil {
 				ctrlLinks[pg.n] = webLinks(ls)
+			}
+			if a, err := p.Annotations(); err == nil {
+				ctrlAnnots[pg.n] = len(a)
+			}
+			if w, err := p.Widgets(); err == nil {
+				ctrlWidgets[pg.n] = len(w)
 			}
 			_, _, err := lowRender(p, pg.bound, true)
 			ctrlRender[pg.n] = err == nil
@@ -1355,7 +1395,8 @@ func (c *corpusCheck) scrub(data []byte, pages []*corpusPage) {
 	for _, mode := range []struct {
 		name string
 		opts ScrubOptions
-	}{{"default", ScrubOptions{}}, {"keepforms", ScrubOptions{KeepFormFields: true}}, {"keepannots", ScrubOptions{KeepAnnotations: true, KeepOutlines: true}}} {
+	}{{"default", ScrubOptions{}}, {"keepforms", ScrubOptions{KeepFormFields: true}}, {"keepannots", ScrubOptions{KeepAnnotations: true, KeepOutlines: true}},
+		{"keepstructure", ScrubOptions{KeepStructure: true}}} {
 		c.step("scrub %s", mode.name)
 		d, err := OpenStream(data)
 		if err != nil {
@@ -1390,6 +1431,17 @@ func (c *corpusCheck) scrub(data []byte, pages []*corpusPage) {
 			if mode.opts.KeepOutlines && after.JavaScript && !want.JavaScript && outlinesKeepJS(data) {
 				want.JavaScript = true
 			}
+			// An annotation or field on no page that only the structure
+			// tree referenced leaves the file with the tree; accept fewer
+			// only if keeping the tree as well gives the control's counts.
+			if !mode.opts.KeepStructure && ctrl.StructTree && after.NonLinkAnnotations <= want.NonLinkAnnotations &&
+				after.Widgets <= want.Widgets && (after.NonLinkAnnotations < want.NonLinkAnnotations || after.Widgets < want.Widgets) {
+				if structureOnlyCounts(data, mode.opts, ctrl) {
+					c.note("scrub-structure-orphans", "%s: NonLinkAnnotations %d of %d, Widgets %d of %d; the rest only the structure tree referenced",
+						mode.name, after.NonLinkAnnotations, want.NonLinkAnnotations, after.Widgets, want.Widgets)
+					want.NonLinkAnnotations, want.Widgets = after.NonLinkAnnotations, after.Widgets
+				}
+			}
 			if after != want {
 				c.fail("scrub-residue", "%s: %s", mode.name, hcDiff(after, want))
 			}
@@ -1416,6 +1468,18 @@ func (c *corpusCheck) scrub(data []byte, pages []*corpusPage) {
 						c.fail("scrub-lost-link", "%s page %d: %q", mode.name, pg.n, u)
 						break
 					}
+				}
+			}
+			// The annotations and widgets on a page stay with the options
+			// that keep them, structure tree or not.
+			if want, ok := ctrlAnnots[pg.n]; ok && mode.opts.KeepAnnotations {
+				if a, err := p.Annotations(); err != nil || len(a) != want {
+					c.fail("scrub-lost-annotation", "%s page %d: %d annotations, %v; unscrubbed save has %d", mode.name, pg.n, len(a), err, want)
+				}
+			}
+			if want, ok := ctrlWidgets[pg.n]; ok && (mode.opts.KeepAnnotations || mode.opts.KeepFormFields) {
+				if w, err := p.Widgets(); err != nil || len(w) != want {
+					c.fail("scrub-lost-annotation", "%s page %d: %d widgets, %v; unscrubbed save has %d", mode.name, pg.n, len(w), err, want)
 				}
 			}
 			if _, _, err := lowRender(p, pg.bound, true); err != nil && pg.render != nil {

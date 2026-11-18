@@ -147,6 +147,22 @@ func scrubRoundTrip(t *testing.T, pdf []byte, opts ScrubOptions) ([]byte, *Docum
 
 var scrubTokens = []string{scrubTitle, scrubAttach, scrubScript}
 
+// scrubStructOpts returns each of opts as given and again with KeepStructure
+// set. A tagged fixture whose point is that Scrub destroys what it removes
+// although the structure tree references it shows that under KeepStructure,
+// where the tree stays; without it the tree goes too, and the same tokens
+// must be gone either way.
+func scrubStructOpts(opts ...ScrubOptions) []ScrubOptions {
+	var out []ScrubOptions
+	for _, o := range opts {
+		o.KeepStructure = false
+		ks := o
+		ks.KeepStructure = true
+		out = append(out, o, ks)
+	}
+	return out
+}
+
 func TestScrubRemovesEverything(t *testing.T) {
 	pdf := scrubFixture()
 	d, err := OpenStream(pdf)
@@ -615,7 +631,7 @@ func TestScrubTaggedPDF(t *testing.T) {
 	// AssociatedFiles: the page's /AF and the StructElem 25 /AF.
 	want := HiddenContent{
 		Info: true, XMP: true, AcroForm: true, EmbeddedFiles: 1, AssociatedFiles: 2, JavaScript: true,
-		NonLinkAnnotations: 2, Widgets: 2, Thumbnails: 1, PageMetadata: 1,
+		NonLinkAnnotations: 2, Widgets: 2, Thumbnails: 1, PageMetadata: 1, StructTree: true,
 	}
 	if got := scrubHidden(t, d); got != want {
 		t.Fatalf("before scrub:\n got %+v\nwant %+v", got, want)
@@ -632,7 +648,8 @@ func TestScrubTaggedPDF(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	for garbage := range 5 {
+	for i := range 10 {
+		garbage, opts := i/2, ScrubOptions{KeepStructure: i%2 == 1}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -651,7 +668,7 @@ func TestScrubTaggedPDF(t *testing.T) {
 			if a, err := p.Annotations(); err != nil || len(a) == 0 {
 				t.Errorf("annotations before scrub: %v, %v", a, err)
 			}
-			if err := d.Scrub(ScrubOptions{}); err != nil {
+			if err := d.Scrub(opts); err != nil {
 				t.Error(err)
 				return
 			}
@@ -665,7 +682,7 @@ func TestScrubTaggedPDF(t *testing.T) {
 			}
 			for _, tok := range tagTokens {
 				if bytes.Contains(out, []byte(tok)) {
-					t.Errorf("garbage %d: scrubbed save still contains %q", garbage, tok)
+					t.Errorf("garbage %d %+v: scrubbed save still contains %q", garbage, opts, tok)
 				}
 			}
 			re, err := OpenStream(out)
@@ -674,8 +691,8 @@ func TestScrubTaggedPDF(t *testing.T) {
 				return
 			}
 			defer re.Close()
-			if h, err := re.HiddenContent(); err != nil || h != (HiddenContent{}) {
-				t.Errorf("garbage %d: after scrub %+v, %v", garbage, h, err)
+			if h, err := re.HiddenContent(); err != nil || h != (HiddenContent{StructTree: opts.KeepStructure}) {
+				t.Errorf("garbage %d %+v: after scrub %+v, %v", garbage, opts, h, err)
 			}
 			p, _ = re.LoadPage(0)
 			if s, err := p.GetText(); err != nil || s != text {
@@ -990,17 +1007,19 @@ func TestScrubFileAttachmentFS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, re := scrubRoundTrip(t, pdf, ScrubOptions{})
-	for _, tok := range []string{fsBody, afBody} {
-		if !bytes.Contains(control, []byte(tok)) {
-			t.Fatalf("%q missing from the unscrubbed save", tok)
+	for _, opts := range scrubStructOpts(ScrubOptions{}) {
+		out, re := scrubRoundTrip(t, pdf, opts)
+		for _, tok := range []string{fsBody, afBody} {
+			if !bytes.Contains(control, []byte(tok)) {
+				t.Fatalf("%q missing from the unscrubbed save", tok)
+			}
+			if bytes.Contains(out, []byte(tok)) {
+				t.Errorf("%+v: scrubbed save still contains %q", opts, tok)
+			}
 		}
-		if bytes.Contains(out, []byte(tok)) {
-			t.Errorf("scrubbed save still contains %q", tok)
+		if h := scrubHidden(t, re); h != (HiddenContent{StructTree: opts.KeepStructure}) {
+			t.Errorf("%+v: after scrub: %+v", opts, h)
 		}
-	}
-	if h := scrubHidden(t, re); h != (HiddenContent{}) {
-		t.Errorf("after scrub: %+v", h)
 	}
 }
 
@@ -1061,24 +1080,26 @@ func TestScrubFailureStillDestroys(t *testing.T) {
 		/* 6 */ `<< /Type /StructTreeRoot /K [7 0 R] >>`,
 		/* 7 */ `<< /Type /StructElem /S /Annot /P 6 0 R /K << /Type /OBJR /Obj 4 0 R >> /GomupdfRefs [5 0 R] >>`,
 	}, "/Info 5 0 R")
-	d, err := OpenStream(pdf)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer d.Close()
-	if err := d.Scrub(ScrubOptions{}); err == nil {
-		t.Fatal("Scrub succeeded on a catalog /Names that is not a dictionary")
-	}
-	out, err := d.SaveBytesWithOptions(SaveOptions{Garbage: 4})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, tok := range []string{annotTok, infoTok} {
-		if !bytes.Contains(pdf, []byte(tok)) {
-			t.Fatalf("%q missing from the fixture", tok)
+	for _, opts := range scrubStructOpts(ScrubOptions{}) {
+		d, err := OpenStream(pdf)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if bytes.Contains(out, []byte(tok)) {
-			t.Errorf("save after the failed scrub still contains %q", tok)
+		defer d.Close()
+		if err := d.Scrub(opts); err == nil {
+			t.Fatal("Scrub succeeded on a catalog /Names that is not a dictionary")
+		}
+		out, err := d.SaveBytesWithOptions(SaveOptions{Garbage: 4})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, tok := range []string{annotTok, infoTok} {
+			if !bytes.Contains(pdf, []byte(tok)) {
+				t.Fatalf("%q missing from the fixture", tok)
+			}
+			if bytes.Contains(out, []byte(tok)) {
+				t.Errorf("%+v: save after the failed scrub still contains %q", opts, tok)
+			}
 		}
 	}
 }
@@ -1299,8 +1320,9 @@ func TestScrubRepairsBeforeMarking(t *testing.T) {
 
 	// With the page open, rendered and its annotations listed first, as a
 	// redaction does, the repair must not leave Scrub working on a stale page.
-	for _, open := range []bool{false, true} {
-		t.Run(fmt.Sprintf("page open %v", open), func(t *testing.T) {
+	for _, c := range []struct{ open, keep bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
+		open, opts := c.open, ScrubOptions{KeepStructure: c.keep}
+		t.Run(fmt.Sprintf("page open %v %+v", open, opts), func(t *testing.T) {
 			d, err := OpenStream(pdf)
 			if err != nil {
 				t.Fatal(err)
@@ -1318,7 +1340,7 @@ func TestScrubRepairsBeforeMarking(t *testing.T) {
 					t.Fatalf("annotations before scrub: %v, %v", a, err)
 				}
 			}
-			if err := d.Scrub(ScrubOptions{}); err != nil {
+			if err := d.Scrub(opts); err != nil {
 				t.Fatal(err)
 			}
 			out, err := d.SaveBytesWithOptions(scrubSaveOpts)
@@ -1335,7 +1357,7 @@ func TestScrubRepairsBeforeMarking(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer re.Close()
-			if h := scrubHidden(t, re); h != (HiddenContent{}) {
+			if h := scrubHidden(t, re); h != (HiddenContent{StructTree: opts.KeepStructure}) {
 				t.Errorf("after scrub: %+v", h)
 			}
 		})
@@ -1822,7 +1844,7 @@ func scrubFieldActionsPDF(calcTok, actTok, fields string) []byte {
 // A field left out of /AcroForm /Fields is reached up its widget's /Parent.
 // KeepFormFields does the same, but removes the Text annotation.
 func TestScrubKeepAnnotationsFieldActions(t *testing.T) {
-	for _, opts := range []ScrubOptions{{KeepAnnotations: true}, {KeepFormFields: true}} {
+	for _, opts := range scrubStructOpts(ScrubOptions{KeepAnnotations: true}, ScrubOptions{KeepFormFields: true}) {
 		for _, fields := range []string{"[5 0 R]", "[]"} {
 			t.Run(fmt.Sprintf("%+v Fields %s", opts, fields), func(t *testing.T) { scrubFieldActionsCase(t, opts, fields) })
 		}
@@ -1863,7 +1885,7 @@ func scrubFieldActionsCase(t *testing.T, opts ScrubOptions, fields string) {
 	out, re := scrubRoundTrip(t, pdf, opts)
 	scrubNoTokens(t, "scrubbed", out, calcTok, actTok)
 	scrubCheckAnnotsIndirect(t, "scrubbed", out)
-	if h, want := scrubHidden(t, re), (HiddenContent{AcroForm: true, NonLinkAnnotations: notes, Widgets: 1}); h != want {
+	if h, want := scrubHidden(t, re), (HiddenContent{AcroForm: true, NonLinkAnnotations: notes, Widgets: 1, StructTree: opts.KeepStructure}); h != want {
 		t.Errorf("after scrub: %+v, want %+v", h, want)
 	}
 	p, err := re.LoadPage(0)
@@ -1912,14 +1934,16 @@ func TestScrubLinkActionInStructTree(t *testing.T) {
 		/* 11 */ `<< /Type /Filespec /F (` + launchTok + `) >>`,
 	}, "")
 	scrubControl(t, pdf, jsTok, launchTok)
-	out, re := scrubRoundTrip(t, pdf, ScrubOptions{})
-	scrubNoTokens(t, "default", out, jsTok, launchTok)
-	if h := scrubHidden(t, re); h != (HiddenContent{}) {
-		t.Errorf("after scrub: %+v", h)
-	}
-	p, _ := re.LoadPage(0)
-	if l, err := p.Links(); err != nil || len(l) != 1 || l[0].URI != "https://example.com/" {
-		t.Errorf("links after scrub = %+v, %v; want the URI link", l, err)
+	for _, opts := range scrubStructOpts(ScrubOptions{}) {
+		out, re := scrubRoundTrip(t, pdf, opts)
+		scrubNoTokens(t, fmt.Sprintf("%+v", opts), out, jsTok, launchTok)
+		if h := scrubHidden(t, re); h != (HiddenContent{StructTree: opts.KeepStructure}) {
+			t.Errorf("%+v: after scrub: %+v", opts, h)
+		}
+		p, _ := re.LoadPage(0)
+		if l, err := p.Links(); err != nil || len(l) != 1 || l[0].URI != "https://example.com/" {
+			t.Errorf("%+v: links after scrub = %+v, %v; want the URI link", opts, l, err)
+		}
 	}
 }
 
@@ -1961,19 +1985,21 @@ func TestScrubPageTreeNodes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Close()
-	want := HiddenContent{JavaScript: true, AssociatedFiles: 1, Thumbnails: 1, PageMetadata: 1, PieceInfo: 1}
+	want := HiddenContent{JavaScript: true, AssociatedFiles: 1, Thumbnails: 1, PageMetadata: 1, PieceInfo: 1, StructTree: true}
 	if got := scrubHidden(t, d); got != want {
 		t.Errorf("before scrub:\n got %+v\nwant %+v", got, want)
 	}
-	re := scrubCheckKept(t, pdf, ScrubOptions{})
-	if h := scrubHidden(t, re); h != (HiddenContent{}) {
-		t.Errorf("after scrub: %+v", h)
+	for _, opts := range scrubStructOpts(ScrubOptions{}) {
+		re := scrubCheckKept(t, pdf, opts)
+		if h := scrubHidden(t, re); h != (HiddenContent{StructTree: opts.KeepStructure}) {
+			t.Errorf("%+v: after scrub: %+v", opts, h)
+		}
+		out, err := re.SaveBytesWithOptions(scrubSaveOpts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		scrubNoTokens(t, fmt.Sprintf("%+v", opts), out, metaTok, thumbTok)
 	}
-	out, err := re.SaveBytesWithOptions(scrubSaveOpts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	scrubNoTokens(t, "default", out, metaTok, thumbTok)
 }
 
 // A large well-formed file (70 pages of 1,000 Links, each with its own GoTo
@@ -2106,11 +2132,12 @@ func TestScrubChainActionsDestroyed(t *testing.T) {
 		/* 12 */ `<< /Title (Item) /Parent 4 0 R /A 9 0 R >>`,
 	}, "")
 	scrubControl(t, pdf, linkTok, itemTok, fieldTok)
-	opts := ScrubOptions{KeepOutlines: true, KeepFormFields: true}
-	out, re := scrubRoundTrip(t, pdf, opts)
-	scrubNoTokens(t, "scrubbed", out, linkTok, itemTok, fieldTok)
-	if h, want := scrubHidden(t, re), (HiddenContent{AcroForm: true, Outlines: true, Widgets: 1}); h != want {
-		t.Errorf("after scrub: %+v, want %+v", h, want)
+	for _, opts := range scrubStructOpts(ScrubOptions{KeepOutlines: true, KeepFormFields: true}) {
+		out, re := scrubRoundTrip(t, pdf, opts)
+		scrubNoTokens(t, fmt.Sprintf("%+v", opts), out, linkTok, itemTok, fieldTok)
+		if h, want := scrubHidden(t, re), (HiddenContent{AcroForm: true, Outlines: true, Widgets: 1, StructTree: opts.KeepStructure}); h != want {
+			t.Errorf("%+v: after scrub: %+v, want %+v", opts, h, want)
+		}
 	}
 }
 
@@ -2272,12 +2299,18 @@ func TestScrubKeepFormFields(t *testing.T) {
 		}
 	}
 	scrubControl(t, pdf, ffAllTokens()...)
+	for _, opts := range scrubStructOpts(ScrubOptions{KeepFormFields: true}) {
+		t.Run(fmt.Sprintf("%+v", opts), func(t *testing.T) { scrubKeepFormFieldsCase(t, pdf, opts) })
+	}
+}
+
+func scrubKeepFormFieldsCase(t *testing.T, pdf []byte, opts ScrubOptions) {
 	d, err := OpenStream(pdf)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer d.Close()
-	if err := d.Scrub(ScrubOptions{KeepFormFields: true}); err != nil {
+	if err := d.Scrub(opts); err != nil {
 		t.Fatal(err)
 	}
 	out, err := d.SaveBytesWithOptions(scrubSaveOpts)
@@ -2296,7 +2329,7 @@ func TestScrubKeepFormFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer re.Close()
-	if h, want := scrubHidden(t, re), (HiddenContent{AcroForm: true, Widgets: 3}); h != want {
+	if h, want := scrubHidden(t, re), (HiddenContent{AcroForm: true, Widgets: 3, StructTree: opts.KeepStructure}); h != want {
 		t.Errorf("after scrub: %+v, want %+v", h, want)
 	}
 	if got, want := scrubWidgetValues(t, re), []string{ffMerged, ffPair, ffPair}; !slices.Equal(got, want) {
@@ -2361,10 +2394,12 @@ func TestScrubKeepFormFields(t *testing.T) {
 // whatever KeepFormFields says.
 func TestScrubFormsFixtureOtherOptions(t *testing.T) {
 	pdf := scrubFormsFixture()
-	out, re := scrubRoundTrip(t, pdf, ScrubOptions{})
-	scrubNoTokens(t, "default", out, ffAllTokens()...)
-	if h := scrubHidden(t, re); h != (HiddenContent{}) {
-		t.Errorf("default: after scrub %+v", h)
+	for _, opts := range scrubStructOpts(ScrubOptions{}) {
+		out, re := scrubRoundTrip(t, pdf, opts)
+		scrubNoTokens(t, fmt.Sprintf("%+v", opts), out, ffAllTokens()...)
+		if h := scrubHidden(t, re); h != (HiddenContent{StructTree: opts.KeepStructure}) {
+			t.Errorf("%+v: after scrub %+v", opts, h)
+		}
 	}
 	for _, opts := range []ScrubOptions{{KeepAnnotations: true}, {KeepAnnotations: true, KeepFormFields: true}} {
 		where := fmt.Sprintf("%+v", opts)
@@ -2474,7 +2509,7 @@ func TestScrubXFA(t *testing.T) {
 			t.Errorf("%s: XFA not reported before scrub: %+v", c.name, h)
 		}
 		d.Close()
-		for _, opts := range []ScrubOptions{{}, {KeepFormFields: true}, {KeepAnnotations: true}} {
+		for _, opts := range scrubStructOpts(ScrubOptions{}, ScrubOptions{KeepFormFields: true}, ScrubOptions{KeepAnnotations: true}) {
 			where := fmt.Sprintf("%s %+v", c.name, opts)
 			out, re := scrubRoundTrip(t, pdf, opts)
 			scrubNoTokens(t, where, out, append([]string{"NeedsRendering"}, c.tokens...)...)
@@ -2482,10 +2517,10 @@ func TestScrubXFA(t *testing.T) {
 			if h.XFA {
 				t.Errorf("%s: XFA after scrub", where)
 			}
-			if opts == (ScrubOptions{}) {
+			if !opts.KeepFormFields && !opts.KeepAnnotations {
 				continue
 			}
-			if want := (HiddenContent{AcroForm: true, Widgets: 1}); h != want {
+			if want := (HiddenContent{AcroForm: true, Widgets: 1, StructTree: opts.KeepStructure}); h != want {
 				t.Errorf("%s: after scrub %+v, want %+v", where, h, want)
 			}
 			p, err := re.LoadPage(0)
@@ -2568,10 +2603,12 @@ func TestScrubLaunchPlatformsAndNamesNext(t *testing.T) {
 		/* 12 */ `<< /Type /StructElem /S /Figure /P 11 0 R /GomupdfRefs [5 0 R 6 0 R 7 0 R 8 0 R 9 0 R 10 0 R] >>`,
 	}, "")
 	scrubControl(t, pdf, winTok, macTok, nextTok)
-	out, re := scrubRoundTrip(t, pdf, ScrubOptions{})
-	scrubNoTokens(t, "default", out, winTok, macTok, nextTok)
-	if h := scrubHidden(t, re); h != (HiddenContent{}) {
-		t.Errorf("after scrub: %+v", h)
+	for _, opts := range scrubStructOpts(ScrubOptions{}) {
+		out, re := scrubRoundTrip(t, pdf, opts)
+		scrubNoTokens(t, fmt.Sprintf("%+v", opts), out, winTok, macTok, nextTok)
+		if h := scrubHidden(t, re); h != (HiddenContent{StructTree: opts.KeepStructure}) {
+			t.Errorf("%+v: after scrub: %+v", opts, h)
+		}
 	}
 }
 
@@ -2651,10 +2688,12 @@ func TestScrubInfoTrailerCopies(t *testing.T) {
 			if h := scrubHidden(t, d); h != (HiddenContent{}) {
 				t.Errorf("in memory after scrub: %+v", h)
 			}
-			out, re := scrubRoundTrip(t, pdf, ScrubOptions{})
-			scrubNoTokens(t, "default", out, tok)
-			if h := scrubHidden(t, re); h != (HiddenContent{}) {
-				t.Errorf("after scrub: %+v", h)
+			for _, opts := range scrubStructOpts(ScrubOptions{}) {
+				out, re := scrubRoundTrip(t, pdf, opts)
+				scrubNoTokens(t, fmt.Sprintf("%+v", opts), out, tok)
+				if h := scrubHidden(t, re); h != (HiddenContent{StructTree: opts.KeepStructure}) {
+					t.Errorf("%+v: after scrub: %+v", opts, h)
+				}
 			}
 		})
 	}
@@ -2756,18 +2795,20 @@ func TestScrubAFEverywhere(t *testing.T) {
 	if h := scrubHidden(t, d); h.AssociatedFiles != 4 {
 		t.Errorf("AssociatedFiles before scrub = %d, want 4", h.AssociatedFiles)
 	}
-	re := scrubCheckKept(t, pdf, ScrubOptions{})
-	if h := scrubHidden(t, re); h != (HiddenContent{}) {
-		t.Errorf("after scrub: %+v", h)
-	}
-	out, err := re.SaveBytesWithOptions(scrubSaveOpts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	scrubNoTokens(t, "default", out, imgTok, formTok, elemTok, linkTok, bodyTok)
-	p, _ := re.LoadPage(0)
-	if l, err := p.Links(); err != nil || len(l) != 1 {
-		t.Errorf("links after scrub = %+v, %v; want the URI link", l, err)
+	for _, opts := range scrubStructOpts(ScrubOptions{}) {
+		re := scrubCheckKept(t, pdf, opts)
+		if h := scrubHidden(t, re); h != (HiddenContent{StructTree: opts.KeepStructure}) {
+			t.Errorf("%+v: after scrub: %+v", opts, h)
+		}
+		out, err := re.SaveBytesWithOptions(scrubSaveOpts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		scrubNoTokens(t, fmt.Sprintf("%+v", opts), out, imgTok, formTok, elemTok, linkTok, bodyTok)
+		p, _ := re.LoadPage(0)
+		if l, err := p.Links(); err != nil || len(l) != 1 {
+			t.Errorf("%+v: links after scrub = %+v, %v; want the URI link", opts, l, err)
+		}
 	}
 }
 
@@ -3059,6 +3100,9 @@ func scrubOrphanPagesPDF() []byte {
 // page shares with them stay, and the real page renders and extracts as
 // before. Each emptied dictionary stays, page-shaped, for the references to
 // it. KeepAnnotations keeps (only unlinks) the orphan page's annotation.
+// That holds under KeepStructure; without it the structure tree goes, so the
+// orphan page A, which only its /Pg reached, leaves the file with its
+// annotation, and the other emptied dictionaries stay.
 func TestScrubOrphanPages(t *testing.T) {
 	pdf := scrubOrphanPagesPDF()
 	content := []string{orphanA, orphanForm, orphanB, orphanC, orphanT}
@@ -3072,10 +3116,10 @@ func TestScrubOrphanPages(t *testing.T) {
 		t.Fatalf("fixture: %d pages, want 1", d.PageCount())
 	}
 	// The Square on the orphan page A is an annotation on no page.
-	if h := scrubHidden(t, d); h != (HiddenContent{OrphanPages: 4, NonLinkAnnotations: 1}) {
+	if h := scrubHidden(t, d); h != (HiddenContent{OrphanPages: 4, NonLinkAnnotations: 1, StructTree: true}) {
 		t.Errorf("before scrub: %+v, want OrphanPages 4 and one annotation", h)
 	}
-	for _, opts := range []ScrubOptions{{}, {KeepAnnotations: true}} {
+	for _, opts := range scrubStructOpts(ScrubOptions{}, ScrubOptions{KeepAnnotations: true}) {
 		t.Run(fmt.Sprintf("%+v", opts), func(t *testing.T) {
 			re := scrubCheckKept(t, pdf, opts)
 			out, err := re.SaveBytesWithOptions(scrubSaveOpts)
@@ -3083,18 +3127,23 @@ func TestScrubOrphanPages(t *testing.T) {
 				t.Fatal(err)
 			}
 			scrubNoTokens(t, "orphan pages", out, content...)
-			if got := bytes.Contains(out, []byte(orphanAnnot)); got != opts.KeepAnnotations {
-				t.Errorf("orphan page annotation in save = %v, want %v", got, opts.KeepAnnotations)
+			kept := opts.KeepAnnotations && opts.KeepStructure
+			if got := bytes.Contains(out, []byte(orphanAnnot)); got != kept {
+				t.Errorf("orphan page annotation in save = %v, want %v", got, kept)
 			}
-			want := HiddenContent{}
-			if opts.KeepAnnotations {
+			want := HiddenContent{StructTree: opts.KeepStructure}
+			if kept {
 				want.NonLinkAnnotations = 1
 			}
 			if h := scrubHidden(t, re); h != want {
 				t.Errorf("after scrub: %+v, want %+v", h, want)
 			}
-			if n := len(regexp.MustCompile(`/Type\s*/Page\b`).FindAll(out, -1)); n != 3 {
-				t.Errorf("%d /Type /Page dictionaries after scrub, want 3", n)
+			pages := 2 // the served page and B; A went with the structure tree
+			if opts.KeepStructure {
+				pages = 3
+			}
+			if n := len(regexp.MustCompile(`/Type\s*/Page\b`).FindAll(out, -1)); n != pages {
+				t.Errorf("%d /Type /Page dictionaries after scrub, want %d", n, pages)
 			}
 			if !regexp.MustCompile(`/Type\s*/Template\b`).Match(out) {
 				t.Error("the emptied template is gone")
@@ -3112,8 +3161,10 @@ func TestScrubOrphanPages(t *testing.T) {
 
 // scrubOrphanCase checks pdf (whose real page 0 shows scrubPageText and
 // shares resources or content with the content it hides) before Scrub
-// against before, then for each opts that a Scrub keeps page 0's text and
-// rendering, leaves none of tokens in a Garbage 1 save and reads after.
+// against before, then that a Scrub, with the default options and with
+// KeepStructure, keeps page 0's text and rendering, leaves none of tokens in
+// a Garbage 1 save and reads after (with StructTree as before under
+// KeepStructure).
 func scrubOrphanCase(t *testing.T, pdf []byte, before, after HiddenContent, tokens ...string) {
 	t.Helper()
 	scrubControl(t, pdf, tokens...)
@@ -3125,14 +3176,18 @@ func scrubOrphanCase(t *testing.T, pdf []byte, before, after HiddenContent, toke
 	if h := scrubHidden(t, d); h != before {
 		t.Errorf("before scrub:\n got %+v\nwant %+v", h, before)
 	}
-	re := scrubCheckKept(t, pdf, ScrubOptions{})
-	out, err := re.SaveBytesWithOptions(scrubSaveOpts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	scrubNoTokens(t, "scrubbed", out, tokens...)
-	if h := scrubHidden(t, re); h != after {
-		t.Errorf("after scrub:\n got %+v\nwant %+v", h, after)
+	for _, opts := range scrubStructOpts(ScrubOptions{}) {
+		re := scrubCheckKept(t, pdf, opts)
+		out, err := re.SaveBytesWithOptions(scrubSaveOpts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		scrubNoTokens(t, fmt.Sprintf("%+v", opts), out, tokens...)
+		want := after
+		want.StructTree = opts.KeepStructure && before.StructTree
+		if h := scrubHidden(t, re); h != want {
+			t.Errorf("%+v: after scrub:\n got %+v\nwant %+v", opts, h, want)
+		}
 	}
 }
 
@@ -3168,7 +3223,7 @@ func TestScrubOrphanPageClosure(t *testing.T) {
 		/* 14 */ form(`<< /Font << /F1 5 0 R >> >>`, text(nestedTok)),
 		/* 15 */ form(`<< >>`, "\nstream\n0 0 1 rg 200 20 30 30 re f"),
 	}, "")
-	scrubOrphanCase(t, pdf, HiddenContent{OrphanPages: 2}, HiddenContent{}, inheritTok, nestedTok)
+	scrubOrphanCase(t, pdf, HiddenContent{OrphanPages: 2, StructTree: true}, HiddenContent{}, inheritTok, nestedTok)
 }
 
 // A served page with no /Resources of its own inherits them from its /Parent,
@@ -3184,9 +3239,9 @@ func TestScrubPageShapedParent(t *testing.T) {
 		name, parent string
 		before       HiddenContent
 	}{
-		{"typed page", `<< /Type /Page /MediaBox [0 0 300 200] /Resources 5 0 R /Contents 9 0 R >>`, HiddenContent{OrphanPages: 1}},
-		{"untyped", `<< /MediaBox [0 0 300 200] /Resources 5 0 R /Parent 2 0 R >>`, HiddenContent{}},
-		{"template", `<< /Type /Template /Resources 5 0 R >>`, HiddenContent{}},
+		{"typed page", `<< /Type /Page /MediaBox [0 0 300 200] /Resources 5 0 R /Contents 9 0 R >>`, HiddenContent{OrphanPages: 1, StructTree: true}},
+		{"untyped", `<< /MediaBox [0 0 300 200] /Resources 5 0 R /Parent 2 0 R >>`, HiddenContent{StructTree: true}},
+		{"template", `<< /Type /Template /Resources 5 0 R >>`, HiddenContent{StructTree: true}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			pdf := scrubBuildPDF([]string{
@@ -3216,10 +3271,10 @@ func TestScrubPageShapedParent(t *testing.T) {
 			if h := scrubHidden(t, d); h != c.before {
 				t.Errorf("before scrub: %+v, want %+v", h, c.before)
 			}
-			for _, opts := range []ScrubOptions{{}, {KeepAnnotations: true}} {
+			for _, opts := range scrubStructOpts(ScrubOptions{}, ScrubOptions{KeepAnnotations: true}) {
 				t.Run(fmt.Sprintf("%+v", opts), func(t *testing.T) {
 					re := scrubCheckKept(t, pdf, opts)
-					if h := scrubHidden(t, re); h != (HiddenContent{}) {
+					if h := scrubHidden(t, re); h != (HiddenContent{StructTree: opts.KeepStructure}) {
 						t.Errorf("after scrub: %+v", h)
 					}
 					out, err := re.SaveBytesWithOptions(scrubSaveOpts)
@@ -3308,13 +3363,15 @@ func TestScrubOrphanPageResourceKinds(t *testing.T) {
 				/* 9 */ `<< /Type /StructElem /S /P /P 8 0 R /Pg 6 0 R /K [<< /Type /MCR /Pg 6 0 R /Stm ` + c.stm + ` /MCID 0 >>]
    /GomupdfRefs [10 0 R 11 0 R 12 0 R 13 0 R] >>`,
 			}, c.extra...), "")
-			scrubOrphanCase(t, pdf, HiddenContent{OrphanPages: 1}, HiddenContent{}, c.tokens...)
-			re := scrubCheckKept(t, pdf, ScrubOptions{KeepAnnotations: true})
-			out, err := re.SaveBytesWithOptions(scrubSaveOpts)
-			if err != nil {
-				t.Fatal(err)
+			scrubOrphanCase(t, pdf, HiddenContent{OrphanPages: 1, StructTree: true}, HiddenContent{}, c.tokens...)
+			for _, opts := range scrubStructOpts(ScrubOptions{KeepAnnotations: true}) {
+				re := scrubCheckKept(t, pdf, opts)
+				out, err := re.SaveBytesWithOptions(scrubSaveOpts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				scrubNoTokens(t, fmt.Sprintf("%+v", opts), out, c.tokens...)
 			}
-			scrubNoTokens(t, "KeepAnnotations", out, c.tokens...)
 		})
 	}
 }
@@ -3497,11 +3554,11 @@ func TestScrubPrivateData(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Close()
-	want := HiddenContent{PieceInfo: 2, ObjectMetadata: 5, LastModified: 4, Perms: true, DSS: true, WebCapture: true}
+	want := HiddenContent{PieceInfo: 2, ObjectMetadata: 5, LastModified: 4, Perms: true, DSS: true, WebCapture: true, StructTree: true}
 	if h := scrubHidden(t, d); h != want {
 		t.Errorf("before scrub:\n got %+v\nwant %+v", h, want)
 	}
-	for _, opts := range []ScrubOptions{{}, {KeepFormFields: true}, {KeepAnnotations: true}} {
+	for _, opts := range scrubStructOpts(ScrubOptions{}, ScrubOptions{KeepFormFields: true}, ScrubOptions{KeepAnnotations: true}) {
 		t.Run(fmt.Sprintf("%+v", opts), func(t *testing.T) {
 			re := scrubCheckKept(t, pdf, opts)
 			out, err := re.SaveBytesWithOptions(scrubSaveOpts)
@@ -3514,13 +3571,13 @@ func TestScrubPrivateData(t *testing.T) {
 					t.Errorf("the property list holding %q was removed", tok)
 				}
 			}
-			keep := opts != (ScrubOptions{})
+			keep := opts.KeepFormFields || opts.KeepAnnotations
 			for _, tok := range pvSignature {
 				if got := bytes.Contains(out, []byte(tok)); got != keep {
 					t.Errorf("%q in save = %v, want %v", tok, got, keep)
 				}
 			}
-			if h := scrubHidden(t, re); h != (HiddenContent{Perms: keep, DSS: keep}) {
+			if h := scrubHidden(t, re); h != (HiddenContent{Perms: keep, DSS: keep, StructTree: opts.KeepStructure}) {
 				t.Errorf("after scrub: %+v", h)
 			}
 		})
@@ -3577,6 +3634,9 @@ func scrubOrphanAnnotsPDF() []byte {
 // them but the Link, with KeepFormFields the Square, with KeepAnnotations
 // nothing. Whatever stays loses its scripts, as on a page; the orphan Link
 // stays inert. A widget of the form that is on no page is part of the form.
+// That is with KeepStructure; without it the structure tree, the only thing
+// that referenced them, goes, so what Scrub keeps of them has no referrer
+// and leaves the file with the save, and only the form's own nodes stay.
 func TestScrubOrphanAnnotations(t *testing.T) {
 	pdf := scrubOrphanAnnotsPDF()
 	all := []string{oaWidget, oaWidgetJS, oaAP, oaField, oaSquare, oaLinkJS, oaFormKid}
@@ -3586,7 +3646,7 @@ func TestScrubOrphanAnnotations(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Close()
-	want := HiddenContent{AcroForm: true, JavaScript: true, Widgets: 3, NonLinkAnnotations: 1}
+	want := HiddenContent{AcroForm: true, JavaScript: true, Widgets: 3, NonLinkAnnotations: 1, StructTree: true}
 	if h := scrubHidden(t, d); h != want {
 		t.Errorf("before scrub:\n got %+v\nwant %+v", h, want)
 	}
@@ -3594,11 +3654,16 @@ func TestScrubOrphanAnnotations(t *testing.T) {
 		opts  ScrubOptions
 		kept  []string
 		after HiddenContent
+		links int // Link annotations in the save
 	}{
-		{ScrubOptions{}, nil, HiddenContent{}},
-		{ScrubOptions{KeepFormFields: true}, []string{oaWidget, oaAP, oaField, oaFormKid}, HiddenContent{AcroForm: true, Widgets: 3}},
-		{ScrubOptions{KeepAnnotations: true}, []string{oaWidget, oaAP, oaField, oaFormKid, oaSquare},
-			HiddenContent{AcroForm: true, Widgets: 3, NonLinkAnnotations: 1}},
+		{ScrubOptions{KeepStructure: true}, nil, HiddenContent{StructTree: true}, 2},
+		{ScrubOptions{KeepFormFields: true, KeepStructure: true}, []string{oaWidget, oaAP, oaField, oaFormKid},
+			HiddenContent{AcroForm: true, Widgets: 3, StructTree: true}, 2},
+		{ScrubOptions{KeepAnnotations: true, KeepStructure: true}, []string{oaWidget, oaAP, oaField, oaFormKid, oaSquare},
+			HiddenContent{AcroForm: true, Widgets: 3, NonLinkAnnotations: 1, StructTree: true}, 2},
+		{ScrubOptions{}, nil, HiddenContent{}, 1},
+		{ScrubOptions{KeepFormFields: true}, []string{oaFormKid}, HiddenContent{AcroForm: true, Widgets: 1}, 1},
+		{ScrubOptions{KeepAnnotations: true}, []string{oaFormKid}, HiddenContent{AcroForm: true, Widgets: 1}, 1},
 	}
 	for _, c := range cases {
 		t.Run(fmt.Sprintf("%+v", c.opts), func(t *testing.T) {
@@ -3615,8 +3680,8 @@ func TestScrubOrphanAnnotations(t *testing.T) {
 			if h := scrubHidden(t, re); h != c.after {
 				t.Errorf("after scrub:\n got %+v\nwant %+v", h, c.after)
 			}
-			if n := len(scrubLinkRe.FindAll(out, -1)); n != 2 {
-				t.Errorf("%d Link annotations after scrub, want 2", n)
+			if n := len(scrubLinkRe.FindAll(out, -1)); n != c.links {
+				t.Errorf("%d Link annotations after scrub, want %d", n, c.links)
 			}
 			p, err := re.LoadPage(0)
 			if err != nil {
@@ -3811,8 +3876,10 @@ func TestScrubKeptAppearanceResource(t *testing.T) {
 // and go or stay with the options as such: KeepAnnotations keeps them in the
 // saved file (the orphan page keeps its /Annots, so a garbage-collecting
 // save does not drop them), the default options destroy all but the Link.
-// (Reduced from veraPDF isartor-6-5-2-t01-fail-a.pdf and pdf.js
-// poppler-395-0-fuzzed.pdf, whose annotations are on such pages.)
+// That is with KeepStructure; without it the orphan page, which only a
+// structure element's /Pg reached, leaves the file with the tree, and its
+// annotations with it. (Reduced from veraPDF isartor-6-5-2-t01-fail-a.pdf
+// and pdf.js poppler-395-0-fuzzed.pdf, whose annotations are on such pages.)
 func TestScrubOrphanPageAnnotations(t *testing.T) {
 	const textTok, popupTok = "GomupdfOrphanNote5e3b", "GomupdfOrphanPopup9a4c"
 	pdf := scrubBuildPDF([]string{
@@ -3830,7 +3897,7 @@ func TestScrubOrphanPageAnnotations(t *testing.T) {
 		/* 12 */ `<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] /A << /S /URI /URI (https://example.com/) >> >>`,
 	}, "")
 	scrubControl(t, pdf, textTok, popupTok)
-	ctl := HiddenContent{NonLinkAnnotations: 2}
+	ctl := HiddenContent{NonLinkAnnotations: 2, StructTree: true}
 	d, err := OpenStream(pdf)
 	if err != nil {
 		t.Fatal(err)
@@ -3839,23 +3906,28 @@ func TestScrubOrphanPageAnnotations(t *testing.T) {
 	if h := scrubHidden(t, d); h != ctl {
 		t.Errorf("before scrub: %+v, want %+v", h, ctl)
 	}
-	for _, opts := range []ScrubOptions{{}, {KeepAnnotations: true}} {
+	for _, opts := range scrubStructOpts(ScrubOptions{}, ScrubOptions{KeepAnnotations: true}) {
 		t.Run(fmt.Sprintf("%+v", opts), func(t *testing.T) {
 			re := scrubCheckKept(t, pdf, opts)
 			out, err := re.SaveBytesWithOptions(scrubSaveOpts)
 			if err != nil {
 				t.Fatal(err)
 			}
+			kept := opts.KeepAnnotations && opts.KeepStructure
 			for _, tok := range []string{textTok, popupTok} {
-				if got := bytes.Contains(out, []byte(tok)); got != opts.KeepAnnotations {
-					t.Errorf("%q in save = %v, want %v", tok, got, opts.KeepAnnotations)
+				if got := bytes.Contains(out, []byte(tok)); got != kept {
+					t.Errorf("%q in save = %v, want %v", tok, got, kept)
 				}
 			}
-			if n := len(scrubLinkRe.FindAll(out, -1)); n != 1 {
-				t.Errorf("%d Links in save, want 1", n)
+			links := 0 // the orphan page went with the tree, its Link with it
+			if opts.KeepStructure {
+				links = 1
 			}
-			want := HiddenContent{}
-			if opts.KeepAnnotations {
+			if n := len(scrubLinkRe.FindAll(out, -1)); n != links {
+				t.Errorf("%d Links in save, want %d", n, links)
+			}
+			want := HiddenContent{StructTree: opts.KeepStructure}
+			if kept {
 				want = ctl
 			}
 			if h := scrubHidden(t, re); h != want {
@@ -3869,7 +3941,8 @@ func TestScrubOrphanPageAnnotations(t *testing.T) {
 // the orphan page's /Resources also lists it: KeepAnnotations keeps the
 // stream, still referenced by /AP /N after a save, while the orphan page's
 // own content goes; the default options remove both, although the structure
-// tree references them.
+// tree references them. That is with KeepStructure; without it the orphan
+// page goes with the tree, and the annotation and its appearance with it.
 func TestScrubOrphanPageAnnotationAppearance(t *testing.T) {
 	const apTok, pageTok = "GomupdfOrphanStampAP6c2e", "GomupdfOrphanStampPage3d9a"
 	pdf := scrubBuildPDF([]string{
@@ -3893,10 +3966,10 @@ func TestScrubOrphanPageAnnotationAppearance(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Close()
-	if h, want := scrubHidden(t, d), (HiddenContent{OrphanPages: 1, NonLinkAnnotations: 1}); h != want {
+	if h, want := scrubHidden(t, d), (HiddenContent{OrphanPages: 1, NonLinkAnnotations: 1, StructTree: true}); h != want {
 		t.Errorf("before scrub: %+v, want %+v", h, want)
 	}
-	for _, opts := range []ScrubOptions{{}, {KeepAnnotations: true}} {
+	for _, opts := range scrubStructOpts(ScrubOptions{}, ScrubOptions{KeepAnnotations: true}) {
 		t.Run(fmt.Sprintf("%+v", opts), func(t *testing.T) {
 			re := scrubCheckKept(t, pdf, opts)
 			out, err := re.SaveBytesWithOptions(scrubSaveOpts)
@@ -3904,14 +3977,15 @@ func TestScrubOrphanPageAnnotationAppearance(t *testing.T) {
 				t.Fatal(err)
 			}
 			scrubNoTokens(t, "orphan page content", out, pageTok)
-			if got := bytes.Contains(out, []byte(apTok)); got != opts.KeepAnnotations {
-				t.Errorf("appearance stream in save = %v, want %v", got, opts.KeepAnnotations)
+			kept := opts.KeepAnnotations && opts.KeepStructure
+			if got := bytes.Contains(out, []byte(apTok)); got != kept {
+				t.Errorf("appearance stream in save = %v, want %v", got, kept)
 			}
 			if regexp.MustCompile(`/N\s*null`).Match(out) {
 				t.Error("the kept annotation's appearance became /N null")
 			}
-			want := HiddenContent{}
-			if opts.KeepAnnotations {
+			want := HiddenContent{StructTree: opts.KeepStructure}
+			if kept {
 				want.NonLinkAnnotations = 1
 			}
 			if h := scrubHidden(t, re); h != want {

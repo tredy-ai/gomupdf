@@ -471,8 +471,12 @@ if err := doc.Scrub(gomupdf.ScrubOptions{}); err != nil { // zero value removes 
 err = doc.SaveWithOptions("out.pdf", gomupdf.SaveOptions{Garbage: 3, Deflate: true})
 ```
 
-`ScrubOptions` has `KeepAnnotations`, `KeepFormFields` and `KeepOutlines`.
-Reopen the output and call `HiddenContent` to verify it.
+`ScrubOptions` has `KeepAnnotations`, `KeepFormFields`, `KeepOutlines` and
+`KeepStructure`. The zero value also removes the logical structure tree
+(accessibility tagging, whose `/Alt`, `/ActualText`, `/T`, `/ID` and table
+`/Summary` text extraction never returns), so the output is no longer a tagged
+PDF; `KeepStructure` keeps it, text and all. Reopen the output and call
+`HiddenContent` to verify it.
 
 ### Optional content (layers)
 
