@@ -55,7 +55,7 @@ f3b7339..main`), grouped by theme. The groups are thematic, not chronological:
 the order inside each group is the order in the history. "API impact" is
 `None`, `New API`, `Behavior change` (same signatures, different results or
 errors) or `BREAKING` (existing callers must change code or handle a new
-failure). Nothing has been pushed or tagged yet. 94 commits, the commit that last updated this list included.
+failure). Nothing has been pushed or tagged yet. 95 commits, the commit that last updated this list included.
 
 
 ### Fork and build
@@ -183,7 +183,8 @@ failure). Nothing has been pushed or tagged yet. 94 commits, the commit that las
 | `2fe60dc` | `test: align the corpus test with the final library behaviour` | None (corpus test expectations) |
 | `e383895` | `test: compare the scrubbed render with the unscrubbed control` | None (corpus test compares renders with the control) |
 | `29f613d` | `test: fail the corpus test when Scrub refuses a file the control accepts` | None (corpus test: scrub-error and redact-error failures) |
-| (this commit) | `test: make time limits hold on a slow machine` | None (timeLimit helper, GOMUPDF_TEST_TIME_FACTOR) |
+| `7c6b638` | `test: make time limits hold on a slow machine` | None (timeLimit helper, GOMUPDF_TEST_TIME_FACTOR) |
+| (this commit) | `test: accept known hangs that finish and report a timeout once` | None (corpus test: `timeout` entries, 120 s cap) |
 
 ### Documentation
 
@@ -876,9 +877,9 @@ and returns an error; it does not remove them.
   traceback (it blocks every signal): the service must process each
   document in a separate worker process (section 6, step 1). Under the race
   detector the committed `large-linky/bug1978317.pdf` takes about 29 s, at
-  `TestCorpus`'s 30 s per-file cap for committed files: run `-race` without
-  `TestCorpus`, or set `GOMUPDF_CORPUS_TIMEOUT` (which, when set, replaces
-  that cap).
+  about a quarter of `TestCorpus`'s 120 s default per-file cap, which is
+  enough: set `GOMUPDF_CORPUS_TIMEOUT` higher or run `-race` without
+  `TestCorpus` if a slower machine needs it.
 
 **Corpus results (run of 2026-11-18 on the code of the commit that last
 updated this paragraph, `fix(scrub): do not let a structure destination keep
@@ -1076,7 +1077,14 @@ document that is not a PDF) it stays a `scrub-rejected` note. An
 invariant for a tracked reason: tab-separated `path`, `category`, `reason`. A
 failure not listed fails the test. **A listed failure that stops failing also
 fails the test**, so the list cannot rot: remove the entry in the same commit
-as the fix. To regenerate, run `TestCorpus` and add a line for each unlisted
+as the fix. The one exception is category `timeout`: it means the file
+**may** not finish (MuPDF hangs on it on some machines or architectures, and
+`misc/operator_list_cycle.pdf` hangs on arm64 but finishes on x86-64). Such a
+file gets a 10 s cap; if it finishes anyway, that is not a failure and
+whatever outcome it has is accepted, and its other entries, if any, are not
+checked. A file that is not listed as `timeout` and times out fails with the
+timeout only; its other entries are not reported as stale, since the checks
+after the timeout never ran. To regenerate, run `TestCorpus` and add a line for each unlisted
 failure it reports (it prints `path: category: detail`); `GOMUPDF_CORPUS_REPORT`
 gives the full findings as JSON Lines.
 
@@ -1087,7 +1095,7 @@ Environment variables (all optional):
 | `GOMUPDF_CORPUS` | A directory of PDFs to walk as well. Never committed; its failures are logged and reported, not fatal. |
 | `GOMUPDF_CORPUS_MATCH` | Only files whose path contains this string. The "listed but not in the corpus" check is skipped when set. |
 | `GOMUPDF_CORPUS_REPORT` | Write one JSON object per file (JSON Lines) to this path. |
-| `GOMUPDF_CORPUS_TIMEOUT` | Per-file timeout in seconds. Default 60; committed files get at most 30 unless this is set (10 when listed as timing out, always). |
+| `GOMUPDF_CORPUS_TIMEOUT` | Per-file timeout in seconds. Default 120, so a machine several times slower than a laptop passes; files listed as `timeout` get at most 10. |
 | `GOMUPDF_CORPUS_JOBS` | Concurrent child processes. Default 4. |
 
 Each child has a 3 GiB address-space cap. `-short` runs five files. For a bulk

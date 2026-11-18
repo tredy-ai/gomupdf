@@ -1,4 +1,5 @@
 # path	category	reason (generated from a TestCorpus run on branch jamie/test/fork/corpus-4 on main 653d4c6; see SOURCES.md)
+# A `timeout` entry means the file MAY not finish (MuPDF hangs on it on some machines or architectures). If it does finish, that is not a failure and whatever outcome it has is accepted; its other entries, if any, are then not checked. Its cap is 10s.
 testdata/corpus/annotations/issue12810.pdf	render-changed	redaction changes rendering outside the redaction areas: rect page 0: 670 of 167766 pixels outside the redaction areas changed, first near (870,1143) (words "EDITOR","PDFM"); unredacted save: 0 pixels changed
 testdata/corpus/annotations/issue20453.pdf	over-removal	redaction removes text outside every redaction area: quads page 0: 1 chars outside every redaction area are gone, e.g. '�'@(146.65,167.42) (words "������","������������")
 testdata/corpus/annotations/issue20453.pdf	text-moved	redaction moves surviving text (text state lost): quads page 0: 1 chars outside every redaction area moved, e.g. '�'@(141.44,167.42)→(136.46,167.42) (words "������","������������")

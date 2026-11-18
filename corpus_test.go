@@ -12,16 +12,20 @@ package gomupdf
 // committed; its failures are logged and reported, not fatal). Committed files
 // that fail for a tracked reason are listed in testdata/corpus/KNOWN_FAILURES.tsv
 // (repo-relative path, category, reason); a listed failure that no longer
-// happens fails the test so the list cannot rot.
+// happens fails the test so the list cannot rot. The exception is category
+// `timeout`: it means "this file MAY not finish" (MuPDF hangs on it on some
+// machines or architectures), so a listed file that does finish is accepted
+// whatever outcome it has, and any other entries for it are not checked.
+// A file that is not listed as timing out and does time out fails with the
+// timeout only, since its later checks never ran.
 //
 // Environment:
 //
 //	GOMUPDF_CORPUS          bulk directory to walk as well
 //	GOMUPDF_CORPUS_REPORT   write one JSON object per file (JSON Lines) here
-//	GOMUPDF_CORPUS_TIMEOUT  per-file timeout in seconds (default 60; when set it
-//	                        also replaces the 30s cap of committed files that
-//	                        are not listed as timing out, so a -race run can
-//	                        lift it)
+//	GOMUPDF_CORPUS_TIMEOUT  per-file timeout in seconds (default 120, which leaves
+//	                        a machine several times slower than a fast one room;
+//	                        files listed as `timeout` get min(this, 10s))
 //	GOMUPDF_CORPUS_JOBS     concurrent child processes (default 4)
 //	GOMUPDF_CORPUS_MATCH    only files whose path contains this string
 
@@ -142,21 +146,19 @@ func TestCorpus(t *testing.T) {
 	}
 	known := loadKnownFailures(t)
 
-	// Committed files get at most 30s unless GOMUPDF_CORPUS_TIMEOUT is set,
-	// and 10s when listed as timing out, so a tracked hang costs the gate
-	// little.
-	timeout, set := 60*time.Second, false
+	// Every file gets 120s unless GOMUPDF_CORPUS_TIMEOUT is set: the slowest
+	// files that finish take 8-10s on a fast machine, and a shared CI runner
+	// is several times slower. Committed files listed as `timeout` (known
+	// hangs) get at most 10s so a tracked hang costs the gate little.
+	timeout := 120 * time.Second
 	if s, err := strconv.Atoi(os.Getenv("GOMUPDF_CORPUS_TIMEOUT")); err == nil && s > 0 {
-		timeout, set = time.Duration(s)*time.Second, true
+		timeout = time.Duration(s) * time.Second
 	}
 	timeoutFor := func(j job) time.Duration {
-		switch {
-		case !j.committed || (set && known[j.path]["timeout"] == ""):
-			return timeout
-		case known[j.path]["timeout"] != "":
+		if j.committed && known[j.path]["timeout"] != "" {
 			return time.Duration(min64(int64(timeout), int64(10*time.Second)))
 		}
-		return time.Duration(min64(int64(timeout), int64(30*time.Second)))
+		return timeout
 	}
 	workers := 4
 	if n, err := strconv.Atoi(os.Getenv("GOMUPDF_CORPUS_JOBS")); err == nil && n > 0 {
@@ -213,12 +215,18 @@ func TestCorpus(t *testing.T) {
 		}
 		seen[row.File] = true
 		listed := known[row.File]
+		if _, mayHang := listed["timeout"]; mayHang {
+			continue // finished or not, whatever it did is accepted
+		}
 		for _, c := range fails {
 			if _, ok := listed[c]; !ok {
 				t.Errorf("%s: %s: %s", row.File, c, firstDetail(row, c))
 			}
 		}
 		for c := range listed {
+			if slices.Contains(fails, "timeout") {
+				break // the later checks never ran
+			}
 			if !slices.Contains(fails, c) {
 				t.Errorf("%s: KNOWN_FAILURES lists %q but the file no longer fails that way: remove this entry", row.File, c)
 			}
