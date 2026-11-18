@@ -55,7 +55,7 @@ f3b7339..main`), grouped by theme. The groups are thematic, not chronological:
 the order inside each group is the order in the history. "API impact" is
 `None`, `New API`, `Behavior change` (same signatures, different results or
 errors) or `BREAKING` (existing callers must change code or handle a new
-failure). Nothing has been pushed or tagged yet. 95 commits, the commit that last updated this list included.
+failure). Nothing has been pushed or tagged yet. 96 commits, the commit that last updated this list included.
 
 
 ### Fork and build
@@ -69,6 +69,7 @@ failure). Nothing has been pushed or tagged yet. 95 commits, the commit that las
 | `b1b009d` | `build!: require MuPDF 1.26` | BREAKING: MuPDF 1.25 no longer builds (compile guard) |
 | `b09c5a8` | `fix(scrub): build against MuPDF 1.27 and later` | None (compiles against MuPDF 1.27+ headers) |
 | `46d63b2` | `ci: allow the workflow to be started by hand` | None (workflow_dispatch trigger) |
+| (this commit) | `ci: run on Blacksmith and update the actions to their latest versions` | None (runner `blacksmith-2vcpu-ubuntu-2604`, `contents: read`, Blacksmith checkout v1, codecov-action v7) |
 
 ### Text extraction
 
@@ -184,7 +185,7 @@ failure). Nothing has been pushed or tagged yet. 95 commits, the commit that las
 | `e383895` | `test: compare the scrubbed render with the unscrubbed control` | None (corpus test compares renders with the control) |
 | `29f613d` | `test: fail the corpus test when Scrub refuses a file the control accepts` | None (corpus test: scrub-error and redact-error failures) |
 | `7c6b638` | `test: make time limits hold on a slow machine` | None (timeLimit helper, GOMUPDF_TEST_TIME_FACTOR) |
-| (this commit) | `test: accept known hangs that finish and report a timeout once` | None (corpus test: `timeout` entries, 120 s cap) |
+| `b16792c` | `test: accept known hangs that finish and report a timeout once` | None (corpus test: `timeout` entries, 120 s cap) |
 
 ### Documentation
 
@@ -988,7 +989,9 @@ docker run --rm -v "$PWD":/src -w /src -e GOFLAGS=-buildvcs=false golang:1.27-al
 ```
 
 CI (`.github/workflows/ci.yml`) runs the same steps in a
-`golang:1.27-alpine3.23` container and additionally fails the build below 80%
+`golang:1.27-alpine3.23` container on Blacksmith's 2-vCPU runner
+(`blacksmith-2vcpu-ubuntu-2604`, only 2 cores shared with the container, which
+is why the time limits below are generous) and additionally fails the build below 80%
 total coverage (the last line above prints the total). The tests take about
 half a minute after the package install.
 

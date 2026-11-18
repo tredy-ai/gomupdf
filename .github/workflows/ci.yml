@@ -9,21 +9,25 @@ on:
   # `gh workflow run CI --ref main`.
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     name: build · vet · test · coverage
-    runs-on: ubuntu-latest
+    # Blacksmith's 2-vCPU runner, as the organisation's other repositories use.
+    runs-on: blacksmith-2vcpu-ubuntu-2604
     # Alpine 3.23 userland (MuPDF 1.26.11 from apk, musl), with the official Go
     # 1.27 image built on Alpine 3.23 to match go.mod's `go 1.27`.
     container: golang:1.27-alpine3.23
     steps:
       - name: Install build dependencies
-        # git for actions/checkout; bash, curl and gnupg for codecov-action,
-        # which runs its uploader with them. build-base = gcc + musl-dev.
+        # git for the checkout action and codecov-action; bash, curl and gnupg for
+        # codecov-action uploader. build-base = gcc + musl-dev.
         run: apk add --no-cache build-base pkgconf mupdf-dev git bash curl gnupg
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: useblacksmith/checkout@v1
 
       - name: MuPDF version
         run: |
@@ -61,7 +65,7 @@ jobs:
             || { echo "Coverage ${total}% is below the 80% gate"; exit 1; }
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v7
         with:
           files: coverage.out
           fail_ci_if_error: false
