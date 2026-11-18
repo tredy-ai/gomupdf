@@ -1018,7 +1018,13 @@ options plus `KeepStructure` give the control's counts (they were ones only
 the structure tree referenced; noted as `scrub-structure-orphans`). Files
 with optional content go round again after `ShowAllLayers`. Refusals the
 library documents (empty rects, failed checks, limits, saves refused after a
-failed apply) are recorded as notes, not failures. A child that crashes in
+failed apply) are recorded as notes, not failures. An error from `Scrub` or
+`HiddenContent` (in any scrub mode, or the `Scrub` after redaction) is a
+failure (`scrub-error`) when the file serves pages and its unscrubbed
+Garbage 1 save was written and reopened; otherwise (no pages to scrub, or a
+document that is not a PDF) it stays a `scrub-rejected` note. An
+`AddRedaction` refusal other than an empty rect is a failure
+(`redact-error`). A child that crashes in
 `/ActualText` extraction is rerun without it.
 
 `testdata/corpus/KNOWN_FAILURES.tsv` lists the committed files that fail an
@@ -1036,7 +1042,7 @@ Environment variables (all optional):
 | `GOMUPDF_CORPUS` | A directory of PDFs to walk as well. Never committed; its failures are logged and reported, not fatal. |
 | `GOMUPDF_CORPUS_MATCH` | Only files whose path contains this string. The "listed but not in the corpus" check is skipped when set. |
 | `GOMUPDF_CORPUS_REPORT` | Write one JSON object per file (JSON Lines) to this path. |
-| `GOMUPDF_CORPUS_TIMEOUT` | Per-file timeout in seconds. Default 60; committed files get at most 30 (10 when listed as timing out). |
+| `GOMUPDF_CORPUS_TIMEOUT` | Per-file timeout in seconds. Default 60; committed files get at most 30 unless this is set (10 when listed as timing out, always). |
 | `GOMUPDF_CORPUS_JOBS` | Concurrent child processes. Default 4. |
 
 Each child has a 3 GiB address-space cap. `-short` runs five files. For a bulk

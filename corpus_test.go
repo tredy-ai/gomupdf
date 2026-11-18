@@ -18,7 +18,10 @@ package gomupdf
 //
 //	GOMUPDF_CORPUS          bulk directory to walk as well
 //	GOMUPDF_CORPUS_REPORT   write one JSON object per file (JSON Lines) here
-//	GOMUPDF_CORPUS_TIMEOUT  per-file timeout in seconds (default 60)
+//	GOMUPDF_CORPUS_TIMEOUT  per-file timeout in seconds (default 60; when set it
+//	                        also replaces the 30s cap of committed files that
+//	                        are not listed as timing out, so a -race run can
+//	                        lift it)
 //	GOMUPDF_CORPUS_JOBS     concurrent child processes (default 4)
 //	GOMUPDF_CORPUS_MATCH    only files whose path contains this string
 
@@ -139,15 +142,16 @@ func TestCorpus(t *testing.T) {
 	}
 	known := loadKnownFailures(t)
 
-	// Committed files get at most 30s, and 10s when listed as timing out,
-	// so a tracked hang costs the gate little.
-	timeout := 60 * time.Second
+	// Committed files get at most 30s unless GOMUPDF_CORPUS_TIMEOUT is set,
+	// and 10s when listed as timing out, so a tracked hang costs the gate
+	// little.
+	timeout, set := 60*time.Second, false
 	if s, err := strconv.Atoi(os.Getenv("GOMUPDF_CORPUS_TIMEOUT")); err == nil && s > 0 {
-		timeout = time.Duration(s) * time.Second
+		timeout, set = time.Duration(s)*time.Second, true
 	}
 	timeoutFor := func(j job) time.Duration {
 		switch {
-		case !j.committed:
+		case !j.committed || (set && known[j.path]["timeout"] == ""):
 			return timeout
 		case known[j.path]["timeout"] != "":
 			return time.Duration(min64(int64(timeout), int64(10*time.Second)))
@@ -839,11 +843,12 @@ func (c *corpusCheck) redaction(data []byte, d *Document, pages []*corpusPage) {
 				if err := mode.add(p, w); err != nil {
 					// An empty or non-finite rect is refused by design
 					// (zero-height glyph boxes in rect mode).
-					cat := "refused-add"
+					// Any other refusal of a word's own box is a failure.
 					if strings.Contains(err.Error(), "AddRedactionQuads") {
-						cat = "refused-empty-rect"
+						c.note("refused-empty-rect", "%s page %d %q: %v", mode.name, pg.n, w.text, err)
+					} else {
+						c.fail("redact-error", "%s page %d %q: %v", mode.name, pg.n, w.text, err)
 					}
-					c.note(cat, "%s page %d %q: %v", mode.name, pg.n, w.text, err)
 				} else {
 					added[pg.n] = append(added[pg.n], w)
 				}
@@ -902,12 +907,16 @@ func (c *corpusCheck) redaction(data []byte, d *Document, pages []*corpusPage) {
 		}
 		// The whole pipeline: the same document after a default Scrub, for
 		// the "byte-hit-scrubbed" notes (what survives redaction and scrub).
+		// A Scrub or save error here would silently drop the file from those
+		// notes, so it is reported like the scrub round trip's.
 		bc.scrubbed = nil
 		c.step("redact %s scrub save", mode.name)
-		if dm.Scrub(ScrubOptions{}) == nil {
-			if b, err := dm.SaveBytesWithOptions(SaveOptions{Garbage: 1}); err == nil {
-				bc.scrubbed = pdfBlobs(b)
-			}
+		if err := dm.Scrub(ScrubOptions{}); err != nil {
+			c.scrubRefused(fmt.Sprintf("redact %s: Scrub after redaction", mode.name), err, true)
+		} else if b, err := dm.SaveBytesWithOptions(SaveOptions{Garbage: 1}); err != nil {
+			c.fail("save-error", "%s: save after redaction and Scrub: %v", mode.name, err)
+		} else {
+			bc.scrubbed = pdfBlobs(b)
 		}
 		dm.Close()
 		c.step("redact %s reopen", mode.name)
@@ -1331,6 +1340,22 @@ func hcDiff(got, want HiddenContent) string {
 	return strings.Join(out, ", ")
 }
 
+// scrubRefused records an error from Scrub or HiddenContent (what names the
+// call and mode). It is a failure ("scrub-error") when the unscrubbed
+// document's Garbage 1 save was written and reopened (ctrlOK) and the
+// document serves pages. Otherwise it is a note ("scrub-rejected"): a file
+// that serves no pages has nothing to scrub (its catalog or page tree does
+// not resolve, and Scrub refuses it with "not a dict (null)"), and one whose
+// unscrubbed save cannot be written or reopened, such as a document that is
+// not a PDF, cannot be scrubbed either.
+func (c *corpusCheck) scrubRefused(what string, err error, ctrlOK bool) {
+	if ctrlOK && c.r.Pages > 0 {
+		c.fail("scrub-error", "%s: %v", what, err)
+		return
+	}
+	c.note("scrub-rejected", "%s: %v", what, err)
+}
+
 func (c *corpusCheck) scrub(data []byte, pages []*corpusPage) {
 	// The control: the same file saved and reopened without Scrub. The
 	// keepannots mode also keeps outlines: an annotation on no page that only
@@ -1342,17 +1367,24 @@ func (c *corpusCheck) scrub(data []byte, pages []*corpusPage) {
 		c.fail("reopen-error", "scrub control: %v", err)
 		return
 	}
-	before, err := d0.HiddenContent()
-	if err != nil {
-		c.note("scrub-rejected", "HiddenContent: %v", err)
-		d0.Close()
-		return
-	}
-	if c.prefix == "" {
+	before, herr := d0.HiddenContent()
+	if herr == nil && c.prefix == "" {
 		c.r.Hidden = &before
 	}
 	ctrlPDF, err := d0.SaveBytesWithOptions(SaveOptions{Garbage: 1})
 	d0.Close()
+	if herr != nil {
+		ok := err == nil
+		if ok {
+			if dr, rerr := OpenStream(ctrlPDF); rerr != nil {
+				ok = false
+			} else {
+				dr.Close()
+			}
+		}
+		c.scrubRefused("HiddenContent", herr, ok)
+		return
+	}
 	if err != nil {
 		c.fail("save-error", "scrub control: %v", err)
 		return
@@ -1404,7 +1436,7 @@ func (c *corpusCheck) scrub(data []byte, pages []*corpusPage) {
 			return
 		}
 		if err := d.Scrub(mode.opts); err != nil {
-			c.note("scrub-rejected", "Scrub %s: %v", mode.name, err)
+			c.scrubRefused("Scrub "+mode.name, err, true)
 			d.Close()
 			continue
 		}
