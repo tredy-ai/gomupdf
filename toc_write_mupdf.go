@@ -33,7 +33,8 @@ static int gomupdf_set_toc(fz_context *ctx, fz_document *doc,
             memset(child_count,  0, sizeof(child_count));
             parent_stack[0] = outlines;
 
-            for (char *line = strtok(spec, "\n"); line; line = strtok(NULL, "\n")) {
+            char *save = NULL; // strtok_r: strtok's hidden state is shared by every thread
+            for (char *line = strtok_r(spec, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
                 char *p = line;
                 char *e1 = strchr(p, '\t'); if (!e1) continue; *e1 = 0;
                 int level = atoi(p); p = e1 + 1;

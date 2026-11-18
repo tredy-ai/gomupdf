@@ -20,7 +20,8 @@ static int gomupdf_set_page_labels(fz_context *ctx, fz_document *doc,
             pdf_dict_del(ctx, root, PDF_NAME(PageLabels));
         } else {
             pdf_obj *nums = pdf_new_array(ctx, pdf, 8);
-            for (char *line = strtok(spec, "\n"); line; line = strtok(NULL, "\n")) {
+            char *save = NULL; // strtok_r: strtok's hidden state is shared by every thread
+            for (char *line = strtok_r(spec, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
                 char *p = line;
                 char *e1 = strchr(p, '\t'); if (!e1) continue; *e1 = 0;
                 int startpage = atoi(p); p = e1 + 1;

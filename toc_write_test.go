@@ -166,3 +166,41 @@ func TestSetTOCClosedDoc(t *testing.T) {
 		t.Fatal("expected error for closed document, got nil")
 	}
 }
+
+// SetTOC, SetPageLabels and SetMetadata parse their input with strtok_r:
+// strtok keeps one hidden position for the whole process, so documents
+// edited from several goroutines at once lost or mixed entries (a
+// 100,000-entry SetTOC kept about 60).
+func TestSetSpecsConcurrently(t *testing.T) {
+	toc := make([]TOCEntry, 20000)
+	for i := range toc {
+		toc[i] = TOCEntry{Level: 1, Title: "t", Page: i % 3}
+	}
+	labels := []PageLabel{{StartPage: 0, Style: LabelDecimal, Prefix: "a", Start: 1},
+		{StartPage: 1, Style: LabelDecimal, Prefix: "b", Start: 1}, {StartPage: 2, Style: LabelDecimal, Prefix: "c", Start: 1}}
+	meta := map[string]string{"title": "T", "author": "A", "subject": "S", "keywords": "K", "creator": "C", "producer": "P"}
+	scrubConcurrently(func() {
+		for range 20 {
+			d := newThreePageDoc(t)
+			if err := d.SetTOC(toc); err != nil {
+				t.Error(err)
+			}
+			if err := d.SetPageLabels(labels); err != nil {
+				t.Error(err)
+			}
+			if err := d.SetMetadata(meta); err != nil {
+				t.Error(err)
+			}
+			if got, err := d.TOC(); err != nil || len(got) != len(toc) {
+				t.Errorf("TOC has %d entries, want %d (%v)", len(got), len(toc), err)
+			}
+			if got, err := d.PageLabels(); err != nil || len(got) != len(labels) {
+				t.Errorf("page labels %+v, want %d rules (%v)", got, len(labels), err)
+			}
+			if got, err := d.Metadata(); err != nil || got["title"] != "T" || got["producer"] != "P" {
+				t.Errorf("metadata %v (%v)", got, err)
+			}
+			d.Close()
+		}
+	})
+}

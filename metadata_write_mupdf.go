@@ -21,7 +21,8 @@ static int gomupdf_set_metadata(fz_context *ctx, fz_document *doc, char *spec,
             pdf_dict_put(ctx, trailer, PDF_NAME(Info), ref);
             pdf_drop_obj(ctx, ref);
         }
-        for (char *line = strtok(spec, "\n"); line; line = strtok(NULL, "\n")) {
+        char *save = NULL; // strtok_r: strtok's hidden state is shared by every thread
+        for (char *line = strtok_r(spec, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
             char *tab = strchr(line, '\t');
             if (!tab) continue;
             *tab = 0;
