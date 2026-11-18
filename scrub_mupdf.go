@@ -85,8 +85,10 @@ static int gomupdf_name_in(const char *name, const char **list) {
 // intermediate page-tree node or orphan page (a page dictionary not in the
 // page tree) that is GM_CONTENT as it is. An orphan page reached outside the
 // content walks is kept but not expanded (gomupdf_keep_walk).
-// Then it records what it removes (GM_DEL) and finally destroys every GM_DEL
-// object that is not GM_KEEP; a kept one is only unlinked. Objects Scrub
+// Then it records what it removes (GM_DEL; GM_SDEL for the structure tree)
+// and finally destroys every recorded object that is not GM_KEEP (and, for
+// one only the structure tree recorded, not GM_SKEEP); a kept one is only
+// unlinked. Objects Scrub
 // creates (gomupdf_own's copies) are numbered past the marks, so they are
 // never marked, recorded or destroyed.
 //
@@ -131,6 +133,8 @@ static int gomupdf_name_in(const char *name, const char **list) {
 #define GM_SVK 0x2000000   // queued by gomupdf_struct_walk as a /K item (GS_SK)
 #define GM_SVT 0x4000000   // queued as a /ParentTree or /IDTree node (GS_ST)
 #define GM_SVA 0x8000000   // queued as an attribute object or class-map entry (GS_SA)
+#define GM_SDEL 0x10000000  // recorded for destruction as part of the structure tree (gomupdf_struct_rec)
+#define GM_SKEEP 0x20000000 // shielded from the structure tree's records only (the catalog /Lang string)
 
 enum { GS_WALK, GS_TOP, GS_DOWN, GS_UP, GS_LINK, GS_FORM, GS_ORPHAN, GS_AP, GS_SK, GS_ST, GS_SA, GS_COUNT };
 
@@ -875,20 +879,21 @@ static void gomupdf_keep_orphan_aps(fz_context *ctx, pdf_document *pdf, gomupdf_
 }
 
 // gomupdf_struct_rec records o, an indirect object of the given kind, for
-// destruction as part of the structure tree: GM_DEL, and for a kind with a
+// destruction as part of the structure tree: GM_SDEL, and for a kind with a
 // key that tells it from other dictionaries (an element, attribute object,
 // tree node, MCR or OBJR, a root typed /StructTreeRoot) GM_SNODE, which
 // stops a kept object's stray reference from keeping it (gomupdf_keep_on).
 // A string, /RoleMap, /ClassMap or untyped root, which any untyped
 // dictionary a kept object needs (an action, a /DR) could pass for, is
-// recorded with GM_DEL only: kept through any other reference, it is only
-// unlinked. Whatever is kept (GM_KEEP) is never destroyed
-// (gomupdf_destroy_all).
+// recorded with GM_SDEL only: kept through any other reference, it is only
+// unlinked. Whatever is kept (GM_KEEP) is never destroyed, nor what is
+// shielded from the structure tree's records (GM_SKEEP) unless something
+// else records it too (gomupdf_destroy_all).
 static void gomupdf_struct_rec(fz_context *ctx, gomupdf_marks *mk, pdf_obj *o, int kind) {
     unsigned int *m = gomupdf_mark(ctx, mk, o);
     if (!m || !gomupdf_is_kind(ctx, o, kind)) return;
     int weak = kind == GK_STRING || kind == GK_SMAP || (kind == GK_SROOT && !gomupdf_type_is(ctx, o, "StructTreeRoot"));
-    *m |= weak ? GM_DEL : GM_DEL | GM_SNODE;
+    *m |= weak ? GM_SDEL : GM_SDEL | GM_SNODE;
 }
 
 // gomupdf_struct_push queues v for gomupdf_struct_walk on stack which (GS_SK,
@@ -943,7 +948,10 @@ static void gomupdf_struct_strings(fz_context *ctx, gomupdf_marks *mk, pdf_obj *
 // namespaces and metadata. Arrays are never recorded (nothing marks the
 // arrays a page tree relies on, such as /Kids or an indirect /MediaBox);
 // with the objects holding them destroyed they have no referrer left. The
-// catalog's own /Lang stays (GM_KEEP), whoever else holds it.
+// catalog's own /Lang stays when it is a string, whoever else holds it: it
+// is shielded from these records (GM_SKEEP), not kept, so a /Lang naming
+// anything Scrub removes for another reason (the /Info, an embedded file,
+// a script string) never keeps it.
 //
 // The walk is iterative, with one stack per role (GS_SK for /K items, GS_ST
 // for tree nodes, GS_SA for attribute objects) and a visited bit per role
@@ -961,8 +969,9 @@ static void gomupdf_struct_walk(fz_context *ctx, pdf_document *pdf, gomupdf_mark
     pdf_obj *root = pdf_dict_get(ctx, cat, PDF_NAME(StructTreeRoot));
     long long b = GOMUPDF_TREE_BUDGET + 16LL * pdf_xref_len(ctx, pdf);
     int budget = b > INT_MAX ? INT_MAX : (int)b;
-    unsigned int *lang = gomupdf_mark(ctx, mk, pdf_dict_get(ctx, cat, PDF_NAME(Lang)));
-    if (lang) *lang |= GM_KEEP;
+    pdf_obj *langv = pdf_dict_get(ctx, cat, PDF_NAME(Lang));
+    unsigned int *lang = gomupdf_mark(ctx, mk, langv);
+    if (lang && pdf_is_string(ctx, langv)) *lang |= GM_SKEEP;
     if (!pdf_is_dict(ctx, root)) return;
     gomupdf_struct_rec(ctx, mk, root, GK_SROOT);
     gomupdf_struct_rec(ctx, mk, pdf_dict_get(ctx, root, PDF_NAME(RoleMap)), GK_SMAP);
@@ -1397,7 +1406,8 @@ static void gomupdf_destroy_xfa(fz_context *ctx, gomupdf_marks *mk, pdf_obj *xfa
     for (int i = 1; i < n; i += 2) gomupdf_destroy(ctx, mk, pdf_array_get(ctx, xfa, i), GK_XFA);
 }
 
-// gomupdf_destroy_all deletes every recorded object that is not kept: every
+// gomupdf_destroy_all deletes every recorded object that is not kept (GM_DEL
+// and not GM_KEEP, or GM_SDEL and neither GM_KEEP nor GM_SKEEP): every
 // reference to it that survives elsewhere (a StructElem /OBJR or /AF, say)
 // then resolves to null, and a garbage-collecting save rewrites it as null.
 // An object created since the file was opened (an annotation added through
@@ -1409,7 +1419,8 @@ static void gomupdf_destroy_xfa(fz_context *ctx, gomupdf_marks *mk, pdf_obj *xfa
 // it stays because it is harmless there.
 static void gomupdf_destroy_all(fz_context *ctx, pdf_document *pdf, gomupdf_marks *mk) {
     for (int i = 1; i < mk->len; i++) {
-        if ((mk->m[i] & (GM_DEL | GM_KEEP)) != GM_DEL) continue;
+        unsigned int m = mk->m[i];
+        if ((m & GM_KEEP) || !((m & GM_DEL) || (m & (GM_SDEL | GM_SKEEP)) == GM_SDEL)) continue;
         pdf_delete_object(ctx, pdf, i);
         if (pdf_get_xref_entry_no_null(ctx, pdf, i)->type != 0) continue;
         pdf_obj *empty = pdf_new_dict(ctx, pdf, 0);

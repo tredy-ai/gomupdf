@@ -444,6 +444,44 @@ func TestScrubStructureBeyondBudgetOnlyUnlinks(t *testing.T) {
 	}
 }
 
+// The catalog /Lang shields only a string, and only from the structure
+// tree's removal: a /Lang naming the trailer /Info, an embedded file, the
+// XMP stream or a document JavaScript's /JS string keeps none of them, with
+// or without a structure tree.
+func TestScrubCatalogLangKeepsNothingElse(t *testing.T) {
+	const infoTok, efTok, xmpTok, jsTok = "GomupdfLangInfo1a2b", "GomupdfLangFile3c4d", "GomupdfLangXMP5e6f",
+		"GomupdfLangJS7a8b"
+	pdf := func(lang, tree string) []byte {
+		return scrubBuildPDF([]string{
+			/* 1 */ `<< /Type /Catalog /Pages 2 0 R /Lang ` + lang + ` /Metadata 4 0 R ` + tree + `
+   /Names << /EmbeddedFiles << /Names [(a.txt) 5 0 R] >> /JavaScript << /Names [(js) 7 0 R] >> >> >>`,
+			/* 2 */ `<< /Type /Pages /Kids [3 0 R] /Count 1 >>`,
+			/* 3 */ `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>`,
+			/* 4 */ "/Type /Metadata /Subtype /XML\nstream\n<x:xmpmeta>" + xmpTok + "</x:xmpmeta>",
+			/* 5 */ `<< /Type /Filespec /F (a.txt) /EF << /F 6 0 R >> >>`,
+			/* 6 */ "/Type /EmbeddedFile\nstream\n" + efTok,
+			/* 7 */ `<< /S /JavaScript /JS 8 0 R >>`,
+			/* 8 */ `(var ` + jsTok + ` = 1;)`,
+			/* 9 */ `<< /Title (` + infoTok + `) >>`,
+			/* 10 */ `<< /Type /StructTreeRoot /K 11 0 R >>`,
+			/* 11 */ `<< /Type /StructElem /S /P /P 10 0 R /T 8 0 R /Lang 9 0 R >>`,
+		}, "/Info 9 0 R")
+	}
+	for _, tree := range []string{"", "/StructTreeRoot 10 0 R"} {
+		for _, lang := range []string{"9 0 R", "6 0 R", "4 0 R", "8 0 R"} {
+			t.Run(fmt.Sprintf("Lang %s %s", lang, tree), func(t *testing.T) {
+				p := pdf(lang, tree)
+				scrubControl(t, p, infoTok, efTok, xmpTok, jsTok)
+				out, re := scrubRoundTrip(t, p, ScrubOptions{})
+				scrubNoTokens(t, "scrubbed", out, infoTok, efTok, xmpTok, jsTok)
+				if h := scrubHidden(t, re); h != (HiddenContent{}) {
+					t.Errorf("after scrub: %+v", h)
+				}
+			})
+		}
+	}
+}
+
 // StructTree reads false for a /StructTreeRoot that is null or names a
 // missing object, true for any other value.
 func TestHiddenContentStructTree(t *testing.T) {

@@ -418,7 +418,7 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // those two trees, /RoleMap and /ClassMap, the attribute objects of
 // elements' /A and /C and of /ClassMap, indirect MCR and OBJR dictionaries,
 // and the indirect strings of elements, attribute objects, /IDTree keys and
-// /Limits (the catalog's own /Lang excepted). Each is destroyed only if it
+// /Limits (a string the catalog /Lang names excepted). Each is destroyed only if it
 // is recognisably of its kind (an /Info dictionary has no /Type or /Type
 // /Info, an XMP stream has /Type /Metadata
 // or /Subtype /XML, a filespec has /Type /Filespec, a script action is one
