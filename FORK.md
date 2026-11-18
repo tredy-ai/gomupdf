@@ -55,7 +55,7 @@ f3b7339..main`), grouped by theme. The groups are thematic, not chronological:
 the order inside each group is the order in the history. "API impact" is
 `None`, `New API`, `Behavior change` (same signatures, different results or
 errors) or `BREAKING` (existing callers must change code or handle a new
-failure). Nothing has been pushed or tagged yet. 96 commits, the commit that last updated this list included.
+failure). `main` is pushed; releases are tagged automatically (section 10). 97 commits, the commit that last updated this list included.
 
 
 ### Fork and build
@@ -69,7 +69,8 @@ failure). Nothing has been pushed or tagged yet. 96 commits, the commit that las
 | `b1b009d` | `build!: require MuPDF 1.26` | BREAKING: MuPDF 1.25 no longer builds (compile guard) |
 | `b09c5a8` | `fix(scrub): build against MuPDF 1.27 and later` | None (compiles against MuPDF 1.27+ headers) |
 | `46d63b2` | `ci: allow the workflow to be started by hand` | None (workflow_dispatch trigger) |
-| (this commit) | `ci: run on Blacksmith and update the actions to their latest versions` | None (runner `blacksmith-2vcpu-ubuntu-2604`, `contents: read`, Blacksmith checkout v1, codecov-action v7) |
+| `7080f53` | `ci: run on Blacksmith and update the actions to their latest versions` | None (runner `blacksmith-2vcpu-ubuntu-2604`, `contents: read`, Blacksmith checkout v1, codecov-action v7) |
+| (this commit) | `ci: tag and release every commit on main that passes the tests` | None (release job in CI; `.github/scripts/next-release.sh`) |
 
 ### Text extraction
 
@@ -948,7 +949,9 @@ inline `/OC << >> BDC` property list is not counted (section 4.6). Call
 - The `mupdf_bundled` build tag (static `libmupdf.a` + `libmupdf-third.a`) was
   built and tested once against MuPDF 1.25.6 from source and passed, before the
   minimum became 1.26; it has not been run against 1.26.
-- The GitHub Actions workflow has never run: nothing has been pushed.
+- CI runs on GitHub on Blacksmith's 2-vCPU x86-64 runner (first green run on
+  2026-11-18, MuPDF 1.26.11). Local development and the bulk corpus runs were on
+  arm64; one committed corpus file that hangs MuPDF on arm64 finishes on x86-64.
 
 <a id="8-open-decisions"></a>
 
@@ -1137,21 +1140,35 @@ passes, update the `UseActualText` warning.
 
 ## 10. Releases and staying current with upstream
 
-- **The fork is frozen at its own line.** `v1.2.0` is not tagged yet. Later fork
-  releases are bug fixes to our own patches only. Tags are never moved or
-  deleted; protect them with a GitHub tag ruleset, because consumers' rebuilds
-  depend on them.
+- **Releases are automatic.** Every commit on `main` that passes CI gets a
+  version tag and a GitHub release, from the `release` job in
+  `.github/workflows/ci.yml`. Nothing is tagged by hand, and a commit that
+  fails CI is not released. The first release is `v1.2.0`.
+- **The version comes from the Conventional Commits since the last tag**
+  (`.github/scripts/next-release.sh`): a breaking change (`type!:` or a
+  `BREAKING CHANGE:` footer) or a `feat` bumps the minor version; anything else
+  (`fix`, `docs`, `test`, `ci`, ...) bumps the patch. Commit subjects therefore
+  decide version numbers: write them accordingly.
+- **The major version never comes from commits.** A Go module's major version
+  is part of its import path (`v2` and later need a `/vN` suffix in `go.mod`),
+  so a breaking change cannot become `v2.0.0` by itself: nothing could import
+  it. Breaking changes bump the minor version while we're on v1, are marked
+  with `!`, and get a migration note in section 5. To start `vN`, change the
+  module path to `.../vN` in a commit; the next release is then `vN.0.0`.
+- **Release notes** group the commits (breaking changes, features, fixes,
+  other) and state the MuPDF version CI ran against, since consumers'
+  extraction output depends on it.
+- **Tags are never moved or deleted.** Consumers' rebuilds and the Go module
+  proxy depend on them; a bad release is fixed by the next one. Protect `v*`
+  tags with a GitHub tag ruleset.
+- **The fork is frozen at its own line.** Later releases are fixes to our own
+  patches, not new upstream features.
 - Keep an `upstream` remote for reference, but don't rebase routinely.
   Adopting a new upstream release or MuPDF version is a deliberate project, done
   only for a reason (a security fix that affects us, or a feature we need). It
   is gated by consumers' extraction-diff tests and by the corpus test.
 - **The pin is Alpine 3.23 with MuPDF 1.26.11.** Compile-time guard:
   MuPDF >= 1.26 (see [MuPDF versions](#mupdf-versions)).
-- Semver on the fork's own module path. Breaking API changes bump the minor
-  version while we're on v1 and are noted in this file, matching how upstream
-  has versioned so far.
-- Every release note lists the MuPDF version CI ran against, since consumers'
-  extraction output depends on it.
 - **Any change to extraction output** (stext flags, the canonical character
   set, coordinate precision, `/ActualText` handling) **is a release-note
   headline.** `cryptid-lemur`'s page hashes depend on that output.

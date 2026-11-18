@@ -20,6 +20,8 @@ jobs:
     # Alpine 3.23 userland (MuPDF 1.26.11 from apk, musl), with the official Go
     # 1.27 image built on Alpine 3.23 to match go.mod's `go 1.27`.
     container: golang:1.27-alpine3.23
+    outputs:
+      mupdf: ${{ steps.mupdf.outputs.version }}
     steps:
       - name: Install build dependencies
         # git for the checkout action and codecov-action; bash, curl and gnupg for
@@ -30,10 +32,11 @@ jobs:
         uses: useblacksmith/checkout@v1
 
       - name: MuPDF version
+        id: mupdf
         run: |
           apk info mupdf-dev
-          pkg-config --modversion mupdf || true
           pkg-config --libs mupdf
+          echo "version=$(pkg-config --modversion mupdf)" >> "$GITHUB_OUTPUT"
 
       - name: Verify formatting
         run: |
@@ -70,3 +73,42 @@ jobs:
           files: coverage.out
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  release:
+    name: tag · release
+    # Every commit on main that passes the tests is released: a version tag and
+    # a GitHub release with notes. .github/scripts/next-release.sh decides the
+    # version from the Conventional Commits since the last tag (a breaking
+    # change or a feat bumps the minor, anything else the patch; the major only
+    # changes with the module path in go.mod). A pull request releases nothing.
+    # A manual run on main releases its head if a release is missing.
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: blacksmith-2vcpu-ubuntu-2604
+    permissions:
+      contents: write # create the tag and the release
+    # One release at a time, so two pushes cannot compute the same version.
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: useblacksmith/checkout@v1
+        with:
+          fetch-depth: 0 # the version comes from the tags and the commits since
+          fetch-tags: true
+
+      - name: Tag and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MUPDF_VERSION: ${{ needs.test.outputs.mupdf }}
+        run: |
+          git fetch --tags --force --quiet origin
+          tag=$(.github/scripts/next-release.sh "$RUNNER_TEMP/notes.md")
+          if [ -z "$tag" ]; then
+            echo "This commit is already released."
+            exit 0
+          fi
+          echo "Releasing $tag"
+          cat "$RUNNER_TEMP/notes.md"
+          gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --notes-file "$RUNNER_TEMP/notes.md"
