@@ -102,7 +102,11 @@ static void gomupdf_show_all_layers_thunk(void *p) {
 
 static int gomupdf_show_all_layers(fz_context *ctx, fz_document *doc, char *err, int errlen) {
     gomupdf_show_all_layers_args a = {ctx, doc, err, errlen, -1};
-    gomupdf_call_bigstack(gomupdf_show_all_layers_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_show_all_layers_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return -1;
+    }
     return a.ret;
 }
 */

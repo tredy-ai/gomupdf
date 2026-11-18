@@ -142,7 +142,11 @@ static void gomupdf_rawdict_thunk(void *p) {
 
 static char *gomupdf_rawdict(fz_context *ctx, fz_document *doc, int pageno, int flags, int clip_enabled, float cx0, float cy0, float cx1, float cy1, char *err, int errlen) {
     gomupdf_rawdict_args a = {ctx, doc, pageno, flags, clip_enabled, cx0, cy0, cx1, cy1, err, errlen};
-    gomupdf_call_bigstack(gomupdf_rawdict_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_rawdict_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return NULL;
+    }
     return a.ret;
 }
 */

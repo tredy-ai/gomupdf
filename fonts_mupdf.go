@@ -213,7 +213,13 @@ static void gomupdf_extract_font_thunk(void *p) {
 
 static unsigned char *gomupdf_extract_font(fz_context *ctx, fz_document *doc, int xref, int *out_len, char *ext_out, char *name_out, int *failed, char *err, int errlen) {
     gomupdf_extract_font_args a = {ctx, doc, xref, out_len, ext_out, name_out, failed, err, errlen};
-    gomupdf_call_bigstack(gomupdf_extract_font_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_extract_font_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        *failed = 1;
+        *out_len = -1;
+        return NULL;
+    }
     return a.ret;
 }
 
@@ -234,7 +240,11 @@ static void gomupdf_page_fonts_thunk(void *p) {
 
 static char *gomupdf_page_fonts(fz_context *ctx, fz_document *doc, int pageno, char *err, int errlen) {
     gomupdf_page_fonts_args a = {ctx, doc, pageno, err, errlen};
-    gomupdf_call_bigstack(gomupdf_page_fonts_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_page_fonts_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return NULL;
+    }
     return a.ret;
 }
 */

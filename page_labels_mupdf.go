@@ -143,7 +143,11 @@ static void gomupdf_get_page_labels_thunk(void *p) {
 
 static char *gomupdf_get_page_labels(fz_context *ctx, fz_document *doc, char *err, int errlen) {
     gomupdf_get_page_labels_args a = {ctx, doc, err, errlen};
-    gomupdf_call_bigstack(gomupdf_get_page_labels_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_get_page_labels_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return NULL;
+    }
     return a.ret;
 }
 
@@ -164,7 +168,11 @@ static void gomupdf_page_label_thunk(void *p) {
 
 static char *gomupdf_page_label(fz_context *ctx, fz_document *doc, int pageno, char *err, int errlen) {
     gomupdf_page_label_args a = {ctx, doc, pageno, err, errlen};
-    gomupdf_call_bigstack(gomupdf_page_label_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_page_label_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return NULL;
+    }
     return a.ret;
 }
 
@@ -185,7 +193,11 @@ static void gomupdf_set_page_labels_thunk(void *p) {
 
 static int gomupdf_set_page_labels(fz_context *ctx, fz_document *doc, char *spec, char *err, int errlen) {
     gomupdf_set_page_labels_args a = {ctx, doc, spec, err, errlen};
-    gomupdf_call_bigstack(gomupdf_set_page_labels_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_set_page_labels_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return -1;
+    }
     return a.ret;
 }
 */

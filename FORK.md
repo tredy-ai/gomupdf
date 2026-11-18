@@ -834,17 +834,19 @@ and returns an error; it does not remove them.
   Saves, `Scrub`, `HiddenContent`, `ShowAllLayers`, the load at open,
   `ApplyRedactions` and `AddRedaction*`, `ConvertToPDF`, text extraction,
   search, image and drawing listing and rendering now run on a new thread
-  with a 256 MiB stack, which is address space committed only as it is used
+  with a large stack, which is address space committed only as it is used
   (peak RSS of a 20,000-item outline save: 43 MB before and after on the main
-  thread, 48 MB from a goroutine after). From a goroutine a save now handles
-  2,560,000 sibling outline items (3.8 GB peak RSS, more than the corpus
-  test's 3 GiB cap, so memory limits come first) and crashed at 5,120,000;
-  MuPDF needs about 81 bytes of stack per hop, so the limit is near 3.3
-  million. Each such call pays for creating and joining that thread, about
+  thread, 48 MB from a goroutine after). The stack is 64 MiB: MuPDF needs
+  about 81 bytes per hop, and a save from a goroutine handles 800,000
+  sibling outline items (900,000 crash); about 40 such calls fit at once
+  under a 3 GiB address-space limit (8 concurrent saves all succeed; of 100
+  started at once 43 to 71 did and the rest were refused). It was 256 MiB
+  until the commit after `3a4b88a` (2,560,000 items saved, 5,120,000
+  crashed, about ten calls under 3 GiB). Each such call pays for creating and joining that thread, about
   45 µs (`HiddenContent` on a small file 13 → 56 µs, `GetText` on a small
   page 27 → 74 µs; invisible on a 4 ms text page or a 42 ms render). Since
   the commit after `a54c345` every other call that reads or edits the
-  document runs there too, so `TOC` reads an outline nested 800,000 levels
+  document runs there too, so `TOC` reads an outline nested 400,000 levels
   deep (950 crashed the process before); only the page count, the password
   check and font metrics stay on the caller's stack.
   Form XObjects nested more than about 60 levels are refused by MuPDF:
@@ -856,7 +858,9 @@ and returns an error; it does not remove them.
   links and succeeded; it now fails with that error, and so do `Scrub`,
   `HiddenContent` and saves if one happens during them.
   If the large-stack thread cannot be created (an address-space limit) the
-  call runs on the caller's stack as before. A hostile file can still exceed
+  call runs nothing and returns an error, "cannot create a thread with a
+  large stack: ..." (`Authenticate` returns false; an `Open` that fails
+  this way leaks nothing). A hostile file can still exceed
   any stack, and a crash on that thread kills the process without a Go
   traceback (it blocks every signal): the service must process each
   document in a separate worker process (section 6, step 1). Under the race

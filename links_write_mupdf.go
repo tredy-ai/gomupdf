@@ -111,7 +111,11 @@ static void gomupdf_delete_link_thunk(void *p) {
 
 static int gomupdf_delete_link(fz_context *ctx, fz_document *doc, int pageno, int index, char *err, int errlen) {
     gomupdf_delete_link_args a = {ctx, doc, pageno, index, err, errlen};
-    gomupdf_call_bigstack(gomupdf_delete_link_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_delete_link_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return -1;
+    }
     return a.ret;
 }
 
@@ -137,7 +141,11 @@ static void gomupdf_insert_goto_link_thunk(void *p) {
 
 static int gomupdf_insert_goto_link(fz_context *ctx, fz_document *doc, int pageno, float x0, float y0, float x1, float y1, int destPage, char *err, int errlen) {
     gomupdf_insert_goto_link_args a = {ctx, doc, pageno, x0, y0, x1, y1, destPage, err, errlen};
-    gomupdf_call_bigstack(gomupdf_insert_goto_link_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_insert_goto_link_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return -1;
+    }
     return a.ret;
 }
 
@@ -163,7 +171,11 @@ static void gomupdf_insert_link_thunk(void *p) {
 
 static int gomupdf_insert_link(fz_context *ctx, fz_document *doc, int pageno, float x0, float y0, float x1, float y1, const char *uri, char *err, int errlen) {
     gomupdf_insert_link_args a = {ctx, doc, pageno, x0, y0, x1, y1, uri, err, errlen};
-    gomupdf_call_bigstack(gomupdf_insert_link_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_insert_link_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return -1;
+    }
     return a.ret;
 }
 */

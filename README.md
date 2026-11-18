@@ -628,14 +628,14 @@ process documents in parallel, **open one `Document` per goroutine**.
 
 - Always `Close()` a document when done — the finalizer is only a backstop.
 - MuPDF runs in your process. On untrusted files it can hang for minutes on a
-  few crafted inputs, crash (with `UseActualText`, in `TOC` on an outline
-  nested about a thousand levels deep, or on reference chains of millions of
-  objects), or allocate hundreds of megabytes (pixel-redacted images are
-  stored uncompressed). Saves, `Scrub`, extraction and rendering run on a
-  helper thread with a 256 MiB stack (address space, committed as used),
+  few crafted inputs, crash (with `UseActualText`, or on reference chains of
+  close to a million objects), or allocate hundreds of megabytes (pixel-redacted images are
+  stored uncompressed). Every call that reads or edits a document runs on a
+  helper thread with a 64 MiB stack (address space, committed as used),
   because MuPDF recurses per reference and musl gives Go's threads 128 KiB;
-  a dozen concurrent calls need about 3 GiB of address space, and past an
-  address-space limit a call runs on the calling thread as before. A service should
+  about 40 concurrent calls fit in 3 GiB of address space, and past an
+  address-space limit a call fails with "cannot create a thread with a large
+  stack" instead of running. A service should
   process each document in a separate worker process with time and memory
   limits; see [FORK.md](FORK.md#6-using-the-package-in-a-redaction-service).
 - Bytes backing an `OpenStream` document are held in memory for its lifetime;

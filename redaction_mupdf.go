@@ -63,7 +63,11 @@ static void gomupdf_add_redaction_thunk(void *p) {
 
 static int gomupdf_add_redaction(fz_context *ctx, fz_document *doc, int pageno, float x0, float y0, float x1, float y1, char *err, int errlen) {
     gomupdf_add_redaction_args a = {ctx, doc, pageno, x0, y0, x1, y1, err, errlen, -1};
-    gomupdf_call_bigstack(gomupdf_add_redaction_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_add_redaction_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return -1;
+    }
     return a.ret;
 }
 
@@ -121,7 +125,11 @@ static void gomupdf_add_redaction_quads_thunk(void *p) {
 
 static int gomupdf_add_redaction_quads(fz_context *ctx, fz_document *doc, int pageno, const float *quads, int n, char *err, int errlen) {
     gomupdf_add_redaction_quads_args a = {ctx, doc, pageno, quads, n, err, errlen, -1};
-    gomupdf_call_bigstack(gomupdf_add_redaction_quads_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_add_redaction_quads_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return -1;
+    }
     return a.ret;
 }
 
@@ -1640,7 +1648,11 @@ static void gomupdf_apply_redactions_thunk(void *p) {
 
 static int gomupdf_apply_redactions(fz_context *ctx, fz_document *doc, int pageno, int black_boxes, int image_method, int line_art, int text, int *check, char *err, int errlen) {
     gomupdf_apply_redactions_args a = {ctx, doc, pageno, black_boxes, image_method, line_art, text, check, err, errlen, -1};
-    gomupdf_call_bigstack(gomupdf_apply_redactions_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_apply_redactions_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return -1;
+    }
     return a.ret;
 }
 */

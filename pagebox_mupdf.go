@@ -102,7 +102,11 @@ static void gomupdf_page_geometry_thunk(void *p) {
 
 static char *gomupdf_page_geometry(fz_context *ctx, fz_document *doc, int pageno, char *err, int errlen) {
     gomupdf_page_geometry_args a = {ctx, doc, pageno, err, errlen};
-    gomupdf_call_bigstack(gomupdf_page_geometry_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_page_geometry_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return NULL;
+    }
     return a.ret;
 }
 
@@ -128,7 +132,11 @@ static void gomupdf_set_box_thunk(void *p) {
 
 static int gomupdf_set_box(fz_context *ctx, fz_document *doc, int pageno, int which, float x0, float y0, float x1, float y1, char *err, int errlen) {
     gomupdf_set_box_args a = {ctx, doc, pageno, which, x0, y0, x1, y1, err, errlen};
-    gomupdf_call_bigstack(gomupdf_set_box_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_set_box_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return -1;
+    }
     return a.ret;
 }
 
@@ -150,7 +158,11 @@ static void gomupdf_set_rotation_thunk(void *p) {
 
 static int gomupdf_set_rotation(fz_context *ctx, fz_document *doc, int pageno, int deg, char *err, int errlen) {
     gomupdf_set_rotation_args a = {ctx, doc, pageno, deg, err, errlen};
-    gomupdf_call_bigstack(gomupdf_set_rotation_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_set_rotation_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return -1;
+    }
     return a.ret;
 }
 */

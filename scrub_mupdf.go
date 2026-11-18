@@ -1353,7 +1353,11 @@ static void gomupdf_stabilise_thunk(void *p) {
 
 static int gomupdf_stabilise(fz_context *ctx, fz_document *doc, char *err, int errlen) {
     gomupdf_stabilise_args a = {ctx, doc, err, errlen, -1};
-    gomupdf_call_bigstack(gomupdf_stabilise_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_stabilise_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return -1;
+    }
     return a.ret;
 }
 
@@ -1895,7 +1899,11 @@ static void gomupdf_hidden_content_thunk(void *p) {
 
 static int gomupdf_hidden_content(fz_context *ctx, fz_document *doc, int *out, char *err, int errlen) {
     gomupdf_hidden_content_args a = {ctx, doc, out, err, errlen, -1};
-    gomupdf_call_bigstack(gomupdf_hidden_content_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_hidden_content_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return -1;
+    }
     return a.ret;
 }
 
@@ -2617,7 +2625,11 @@ static void gomupdf_scrub_thunk(void *p) {
 
 static int gomupdf_scrub(fz_context *ctx, fz_document *doc, int keep_annots, int keep_fields, int keep_outlines, int keep_structure, char *err, int errlen) {
     gomupdf_scrub_args a = {ctx, doc, keep_annots, keep_fields, keep_outlines, keep_structure, err, errlen, -1};
-    gomupdf_call_bigstack(gomupdf_scrub_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_scrub_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return -1;
+    }
     return a.ret;
 }
 */

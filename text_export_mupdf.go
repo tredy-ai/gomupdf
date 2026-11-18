@@ -147,7 +147,11 @@ static void gomupdf_page_stext_html_thunk(void *p) {
 
 static char *gomupdf_page_stext_html(fz_context *ctx, fz_document *doc, int pageno, char *err, int errlen) {
     gomupdf_page_stext_html_args a = {ctx, doc, pageno, err, errlen};
-    gomupdf_call_bigstack(gomupdf_page_stext_html_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_page_stext_html_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return NULL;
+    }
     return a.ret;
 }
 
@@ -168,7 +172,11 @@ static void gomupdf_page_stext_xhtml_thunk(void *p) {
 
 static char *gomupdf_page_stext_xhtml(fz_context *ctx, fz_document *doc, int pageno, char *err, int errlen) {
     gomupdf_page_stext_xhtml_args a = {ctx, doc, pageno, err, errlen};
-    gomupdf_call_bigstack(gomupdf_page_stext_xhtml_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_page_stext_xhtml_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return NULL;
+    }
     return a.ret;
 }
 
@@ -189,7 +197,11 @@ static void gomupdf_page_stext_xml_thunk(void *p) {
 
 static char *gomupdf_page_stext_xml(fz_context *ctx, fz_document *doc, int pageno, char *err, int errlen) {
     gomupdf_page_stext_xml_args a = {ctx, doc, pageno, err, errlen};
-    gomupdf_call_bigstack(gomupdf_page_stext_xml_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_page_stext_xml_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return NULL;
+    }
     return a.ret;
 }
 */

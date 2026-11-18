@@ -179,7 +179,10 @@ static void gomupdf_authenticate_thunk(void *p) {
 
 static int gomupdf_authenticate(fz_context *ctx, fz_document *doc, const char *pw) {
     gomupdf_authenticate_args a = {ctx, doc, pw};
-    gomupdf_call_bigstack(gomupdf_authenticate_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_authenticate_thunk, &a);
+    if (e) {
+        return 0; // stays locked
+    }
     return a.ret;
 }
 
@@ -201,7 +204,11 @@ static void gomupdf_open_magic_thunk(void *p) {
 
 static fz_document *gomupdf_open_magic(fz_context *ctx, const unsigned char *data, size_t len, const char *magic, char *err, int errlen) {
     gomupdf_open_magic_args a = {ctx, data, len, magic, err, errlen};
-    gomupdf_call_bigstack(gomupdf_open_magic_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_open_magic_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return NULL;
+    }
     return a.ret;
 }
 
@@ -221,7 +228,11 @@ static void gomupdf_open_path_thunk(void *p) {
 
 static fz_document *gomupdf_open_path(fz_context *ctx, const char *path, char *err, int errlen) {
     gomupdf_open_path_args a = {ctx, path, err, errlen};
-    gomupdf_call_bigstack(gomupdf_open_path_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_open_path_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return NULL;
+    }
     return a.ret;
 }
 */

@@ -661,7 +661,11 @@ static void gomupdf_drawings_thunk(void *p) {
 
 static char *gomupdf_drawings(fz_context *ctx, fz_document *doc, int pageno, char *err, int errlen) {
     gomupdf_drawings_args a = {ctx, doc, pageno, err, errlen};
-    gomupdf_call_bigstack(gomupdf_drawings_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_drawings_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return NULL;
+    }
     return a.ret;
 }
 
@@ -686,7 +690,13 @@ static void gomupdf_image_bytes_thunk(void *p) {
 
 static unsigned char *gomupdf_image_bytes(fz_context *ctx, fz_document *doc, int pageno, int index, int *out_len, char *ext_out, int *failed, char *err, int errlen) {
     gomupdf_image_bytes_args a = {ctx, doc, pageno, index, out_len, ext_out, failed, err, errlen};
-    gomupdf_call_bigstack(gomupdf_image_bytes_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_image_bytes_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        *failed = 1;
+        *out_len = -1;
+        return NULL;
+    }
     return a.ret;
 }
 
@@ -707,7 +717,11 @@ static void gomupdf_images_thunk(void *p) {
 
 static char *gomupdf_images(fz_context *ctx, fz_document *doc, int pageno, char *err, int errlen) {
     gomupdf_images_args a = {ctx, doc, pageno, err, errlen};
-    gomupdf_call_bigstack(gomupdf_images_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_images_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return NULL;
+    }
     return a.ret;
 }
 
@@ -728,7 +742,11 @@ static void gomupdf_links_thunk(void *p) {
 
 static char *gomupdf_links(fz_context *ctx, fz_document *doc, int pageno, char *err, int errlen) {
     gomupdf_links_args a = {ctx, doc, pageno, err, errlen};
-    gomupdf_call_bigstack(gomupdf_links_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_links_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return NULL;
+    }
     return a.ret;
 }
 
@@ -749,7 +767,11 @@ static void gomupdf_lookup_meta_thunk(void *p) {
 
 static int gomupdf_lookup_meta(fz_context *ctx, fz_document *doc, const char *key, char *buf, int size) {
     gomupdf_lookup_meta_args a = {ctx, doc, key, buf, size};
-    gomupdf_call_bigstack(gomupdf_lookup_meta_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_lookup_meta_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, buf, size);
+        return -2;
+    }
     return a.ret;
 }
 
@@ -770,7 +792,11 @@ static void gomupdf_page_bound_thunk(void *p) {
 
 static char *gomupdf_page_bound(fz_context *ctx, fz_document *doc, int pageno, char *err, int errlen) {
     gomupdf_page_bound_args a = {ctx, doc, pageno, err, errlen};
-    gomupdf_call_bigstack(gomupdf_page_bound_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_page_bound_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return NULL;
+    }
     return a.ret;
 }
 
@@ -791,7 +817,11 @@ static void gomupdf_page_stext_json_thunk(void *p) {
 
 static char *gomupdf_page_stext_json(fz_context *ctx, fz_document *doc, int pageno, char *err, int errlen) {
     gomupdf_page_stext_json_args a = {ctx, doc, pageno, err, errlen};
-    gomupdf_call_bigstack(gomupdf_page_stext_json_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_page_stext_json_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return NULL;
+    }
     return a.ret;
 }
 
@@ -812,7 +842,11 @@ static void gomupdf_page_text_thunk(void *p) {
 
 static char *gomupdf_page_text(fz_context *ctx, fz_document *doc, int pageno, char *err, int errlen) {
     gomupdf_page_text_args a = {ctx, doc, pageno, err, errlen};
-    gomupdf_call_bigstack(gomupdf_page_text_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_page_text_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return NULL;
+    }
     return a.ret;
 }
 
@@ -833,7 +867,11 @@ static void gomupdf_page_words_thunk(void *p) {
 
 static char *gomupdf_page_words(fz_context *ctx, fz_document *doc, int pageno, char *err, int errlen) {
     gomupdf_page_words_args a = {ctx, doc, pageno, err, errlen};
-    gomupdf_call_bigstack(gomupdf_page_words_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_page_words_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return NULL;
+    }
     return a.ret;
 }
 
@@ -855,7 +893,11 @@ static void gomupdf_search_thunk(void *p) {
 
 static char *gomupdf_search(fz_context *ctx, fz_document *doc, int pageno, const char *needle, char *err, int errlen) {
     gomupdf_search_args a = {ctx, doc, pageno, needle, err, errlen};
-    gomupdf_call_bigstack(gomupdf_search_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_search_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return NULL;
+    }
     return a.ret;
 }
 
@@ -875,7 +917,11 @@ static void gomupdf_toc_thunk(void *p) {
 
 static char *gomupdf_toc(fz_context *ctx, fz_document *doc, char *err, int errlen) {
     gomupdf_toc_args a = {ctx, doc, err, errlen};
-    gomupdf_call_bigstack(gomupdf_toc_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_toc_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return NULL;
+    }
     return a.ret;
 }
 */
@@ -1046,6 +1092,9 @@ func (d *mupdfDoc) lookupMeta(key string) (string, bool, error) {
 	ck := C.CString(key)
 	defer C.free(unsafe.Pointer(ck))
 	n := C.gomupdf_lookup_meta(d.ctx, d.doc, ck, buf, bufLen)
+	if n == -2 { // the large-stack thread could not be created
+		return "", false, errors.New("gomupdf: metadata: " + C.GoString(buf))
+	}
 	if n < 0 {
 		return "", false, nil
 	}

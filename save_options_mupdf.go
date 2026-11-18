@@ -176,7 +176,12 @@ static void gomupdf_save_encrypted_thunk(void *p) {
 
 static unsigned char *gomupdf_save_encrypted(fz_context *ctx, fz_document *doc, const char *user_pw, const char *owner_pw, int *out_len, char *err, int errlen) {
     gomupdf_save_encrypted_args a = {ctx, doc, user_pw, owner_pw, out_len, err, errlen};
-    gomupdf_call_bigstack(gomupdf_save_encrypted_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_save_encrypted_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        *out_len = -1;
+        return NULL;
+    }
     return a.ret;
 }
 
@@ -212,7 +217,12 @@ static void gomupdf_save_opts_thunk(void *p) {
 
 static unsigned char *gomupdf_save_opts(fz_context *ctx, fz_document *doc, int garbage, int deflate, int deflate_images, int deflate_fonts, int clean, int linear, int ascii, int pretty, int encrypt, const char *upwd, const char *opwd, int permissions, int incremental, const unsigned char *origdata, size_t origlen, int *out_len, char *err, int errlen) {
     gomupdf_save_opts_args a = {ctx, doc, garbage, deflate, deflate_images, deflate_fonts, clean, linear, ascii, pretty, encrypt, upwd, opwd, permissions, incremental, origdata, origlen, out_len, err, errlen};
-    gomupdf_call_bigstack(gomupdf_save_opts_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_save_opts_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        *out_len = -1;
+        return NULL;
+    }
     return a.ret;
 }
 
@@ -245,7 +255,11 @@ static void gomupdf_save_path_thunk(void *p) {
 
 static int gomupdf_save_path(fz_context *ctx, fz_document *doc, const char *path, int garbage, int deflate, int deflate_images, int deflate_fonts, int clean, int linear, int ascii, int pretty, int encrypt, const char *upwd, const char *opwd, int permissions, char *err, int errlen) {
     gomupdf_save_path_args a = {ctx, doc, path, garbage, deflate, deflate_images, deflate_fonts, clean, linear, ascii, pretty, encrypt, upwd, opwd, permissions, err, errlen};
-    gomupdf_call_bigstack(gomupdf_save_path_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_save_path_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return -1;
+    }
     return a.ret;
 }
 */

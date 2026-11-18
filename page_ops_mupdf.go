@@ -241,7 +241,11 @@ static void gomupdf_add_blank_page_thunk(void *p) {
 
 static int gomupdf_add_blank_page(fz_context *ctx, fz_document *doc, float w, float h, char *err, int errlen) {
     gomupdf_add_blank_page_args a = {ctx, doc, w, h, err, errlen};
-    gomupdf_call_bigstack(gomupdf_add_blank_page_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_add_blank_page_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return -1;
+    }
     return a.ret;
 }
 
@@ -263,7 +267,11 @@ static void gomupdf_copy_page_thunk(void *p) {
 
 static int gomupdf_copy_page(fz_context *ctx, fz_document *doc, int from, int to, char *err, int errlen) {
     gomupdf_copy_page_args a = {ctx, doc, from, to, err, errlen};
-    gomupdf_call_bigstack(gomupdf_copy_page_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_copy_page_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return -1;
+    }
     return a.ret;
 }
 
@@ -284,7 +292,11 @@ static void gomupdf_delete_page_thunk(void *p) {
 
 static int gomupdf_delete_page(fz_context *ctx, fz_document *doc, int n, char *err, int errlen) {
     gomupdf_delete_page_args a = {ctx, doc, n, err, errlen};
-    gomupdf_call_bigstack(gomupdf_delete_page_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_delete_page_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return -1;
+    }
     return a.ret;
 }
 
@@ -307,7 +319,11 @@ static void gomupdf_graft_bytes_thunk(void *p) {
 
 static int gomupdf_graft_bytes(fz_context *ctx, fz_document *dst_doc, const unsigned char *srcdata, size_t srclen, const char *password, char *err, int errlen) {
     gomupdf_graft_bytes_args a = {ctx, dst_doc, srcdata, srclen, password, err, errlen};
-    gomupdf_call_bigstack(gomupdf_graft_bytes_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_graft_bytes_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return -1;
+    }
     return a.ret;
 }
 
@@ -332,7 +348,11 @@ static void gomupdf_insert_pdf_range_thunk(void *p) {
 
 static int gomupdf_insert_pdf_range(fz_context *ctx, fz_document *dst_doc, const unsigned char *srcdata, size_t srclen, int fromPage, int toPage, const char *password, char *err, int errlen) {
     gomupdf_insert_pdf_range_args a = {ctx, dst_doc, srcdata, srclen, fromPage, toPage, password, err, errlen};
-    gomupdf_call_bigstack(gomupdf_insert_pdf_range_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_insert_pdf_range_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return -1;
+    }
     return a.ret;
 }
 
@@ -354,7 +374,11 @@ static void gomupdf_move_page_thunk(void *p) {
 
 static int gomupdf_move_page(fz_context *ctx, fz_document *doc, int from, int to, char *err, int errlen) {
     gomupdf_move_page_args a = {ctx, doc, from, to, err, errlen};
-    gomupdf_call_bigstack(gomupdf_move_page_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_move_page_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return -1;
+    }
     return a.ret;
 }
 
@@ -376,7 +400,11 @@ static void gomupdf_select_pages_thunk(void *p) {
 
 static int gomupdf_select_pages(fz_context *ctx, fz_document *doc, const int *pages, int nPages, char *err, int errlen) {
     gomupdf_select_pages_args a = {ctx, doc, pages, nPages, err, errlen};
-    gomupdf_call_bigstack(gomupdf_select_pages_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_select_pages_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return -1;
+    }
     return a.ret;
 }
 */

@@ -161,7 +161,11 @@ static void gomupdf_add_markup_annot_thunk(void *p) {
 
 static int gomupdf_add_markup_annot(fz_context *ctx, fz_document *doc, int pageno, int annot_type, float *quads, int nquads, char *err, int errlen) {
     gomupdf_add_markup_annot_args a = {ctx, doc, pageno, annot_type, quads, nquads, err, errlen};
-    gomupdf_call_bigstack(gomupdf_add_markup_annot_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_add_markup_annot_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return -1;
+    }
     return a.ret;
 }
 
@@ -183,7 +187,11 @@ static void gomupdf_delete_annot_thunk(void *p) {
 
 static int gomupdf_delete_annot(fz_context *ctx, fz_document *doc, int pageno, int index, char *err, int errlen) {
     gomupdf_delete_annot_args a = {ctx, doc, pageno, index, err, errlen};
-    gomupdf_call_bigstack(gomupdf_delete_annot_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_delete_annot_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return -1;
+    }
     return a.ret;
 }
 
@@ -204,7 +212,11 @@ static void gomupdf_list_annots_thunk(void *p) {
 
 static char *gomupdf_list_annots(fz_context *ctx, fz_document *doc, int pageno, char *err, int errlen) {
     gomupdf_list_annots_args a = {ctx, doc, pageno, err, errlen};
-    gomupdf_call_bigstack(gomupdf_list_annots_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_list_annots_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return NULL;
+    }
     return a.ret;
 }
 */

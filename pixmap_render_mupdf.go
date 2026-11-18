@@ -117,7 +117,12 @@ static void gomupdf_render_thunk(void *p) {
 
 static unsigned char *gomupdf_render(fz_context *ctx, fz_document *doc, int pageno, float zoom, int cs_kind, int alpha, float clipx0, float clipy0, float clipx1, float clipy1, int have_clip, int no_annots, int *out_len, char *err, int errlen) {
     gomupdf_render_args a = {ctx, doc, pageno, zoom, cs_kind, alpha, clipx0, clipy0, clipx1, clipy1, have_clip, no_annots, out_len, err, errlen};
-    gomupdf_call_bigstack(gomupdf_render_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_render_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        *out_len = -1;
+        return NULL;
+    }
     return a.ret;
 }
 */

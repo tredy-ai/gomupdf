@@ -134,7 +134,11 @@ static void gomupdf_del_xmp_thunk(void *p) {
 
 static int gomupdf_del_xmp(fz_context *ctx, fz_document *doc, char *err, int errlen) {
     gomupdf_del_xmp_args a = {ctx, doc, err, errlen};
-    gomupdf_call_bigstack(gomupdf_del_xmp_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_del_xmp_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return -1;
+    }
     return a.ret;
 }
 
@@ -155,7 +159,12 @@ static void gomupdf_get_xmp_thunk(void *p) {
 
 static unsigned char *gomupdf_get_xmp(fz_context *ctx, fz_document *doc, int *out_len, char *err, int errlen) {
     gomupdf_get_xmp_args a = {ctx, doc, out_len, err, errlen};
-    gomupdf_call_bigstack(gomupdf_get_xmp_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_get_xmp_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        *out_len = -1;
+        return NULL;
+    }
     return a.ret;
 }
 
@@ -176,7 +185,11 @@ static void gomupdf_set_metadata_thunk(void *p) {
 
 static int gomupdf_set_metadata(fz_context *ctx, fz_document *doc, char *spec, char *err, int errlen) {
     gomupdf_set_metadata_args a = {ctx, doc, spec, err, errlen};
-    gomupdf_call_bigstack(gomupdf_set_metadata_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_set_metadata_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return -1;
+    }
     return a.ret;
 }
 
@@ -198,7 +211,11 @@ static void gomupdf_set_xmp_thunk(void *p) {
 
 static int gomupdf_set_xmp(fz_context *ctx, fz_document *doc, const unsigned char *data, size_t len, char *err, int errlen) {
     gomupdf_set_xmp_args a = {ctx, doc, data, len, err, errlen};
-    gomupdf_call_bigstack(gomupdf_set_xmp_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_set_xmp_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return -1;
+    }
     return a.ret;
 }
 */

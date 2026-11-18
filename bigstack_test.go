@@ -4,8 +4,17 @@ package gomupdf
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
+
+	"github.com/tredy-ai/gomupdf/geometry"
 )
 
 // bigOutlinePDF is a one-page PDF with n sibling outline items (a /Next
@@ -304,15 +313,129 @@ func TestDeepDocumentCalls(t *testing.T) {
 }
 
 // When the large-stack thread cannot be created (here: a stack size no
-// system accepts), the call runs on the calling thread as before.
-func TestLargeStackFallback(t *testing.T) {
+// system accepts), a wrapped call fails with an error and runs nothing, not
+// even on the caller's stack, which is the one known to overflow: Open,
+// reads, edits, Scrub and saves all return the error, Authenticate returns
+// false, and the document is unchanged and usable once threads can be
+// created again.
+func TestLargeStackUnavailable(t *testing.T) {
+	const msg = "cannot create a thread with a large stack"
+	d, err := OpenStream(scrubFixture())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	p, err := d.LoadPage(0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	old := setBigStackSize(1 << 62)
-	defer setBigStackSize(old)
-	out, re := scrubRoundTrip(t, scrubFixture(), ScrubOptions{})
-	if len(out) == 0 || !strings.Contains(scrubText(t, re), scrubPageText) {
-		t.Errorf("fallback: page text %q", scrubText(t, re))
+	errs := map[string]error{}
+	_, errs["OpenStream"] = OpenStream(scrubFixture())
+	_, errs["GetText"] = p.GetText()
+	_, errs["Pixmap"] = p.Pixmap()
+	_, errs["Links"] = p.Links()
+	_, errs["TOC"] = d.TOC()
+	_, errs["Metadata"] = d.Metadata()
+	_, errs["HiddenContent"] = d.HiddenContent()
+	errs["Scrub"] = d.Scrub(ScrubOptions{})
+	errs["AddRedaction"] = p.AddRedaction(geometry.Rect{X0: 10, Y0: 10, X1: 50, Y1: 50}, RedactOptions{})
+	errs["InsertPDF"] = d.InsertPDF(scrubFixture(), "")
+	_, errs["SaveBytesWithOptions"] = d.SaveBytesWithOptions(scrubSaveOpts)
+	authenticated := d.Authenticate("x")
+	setBigStackSize(old)
+	for name, err := range errs {
+		if err == nil || !strings.Contains(err.Error(), msg) {
+			t.Errorf("%s: %v, want an error saying %q", name, err, msg)
+		}
 	}
-	if h := scrubHidden(t, re); h != (HiddenContent{}) {
-		t.Errorf("fallback: after scrub %+v", h)
+	if authenticated {
+		t.Error("Authenticate succeeded without its thread")
 	}
+	saved, err := d.SaveBytesWithOptions(scrubSaveOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, re := scrubRoundTrip(t, saved, ScrubOptions{}); !strings.Contains(scrubText(t, re), scrubPageText) {
+		t.Errorf("after: page text %q", scrubText(t, re))
+	}
+}
+
+// Under an address-space limit, many concurrent saves of documents a small
+// stack cannot save either succeed or fail with the thread error; none runs
+// on the goroutine's 128 KiB stack and crashes. Each case runs in a child
+// process, as RLIMIT_AS cannot be undone. With no limit, 500 concurrent
+// saves all succeed.
+func TestLargeStackAddressLimit(t *testing.T) {
+	if arg := os.Getenv("GOMUPDF_BIGSTACK_CHILD"); arg != "" {
+		bigStackChild(t, arg)
+		return
+	}
+	for _, c := range []struct {
+		limit string // bytes of address space, "" for none
+		calls int
+		allOK bool
+	}{{"3221225472", 8, true}, {"3221225472", 100, false}, {"", 500, true}} {
+		t.Run(fmt.Sprintf("limit %s calls %d", c.limit, c.calls), func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], "-test.run=^TestLargeStackAddressLimit$", "-test.count=1")
+			cmd.Env = append(os.Environ(), "GOMUPDF_BIGSTACK_CHILD="+c.limit+":"+strconv.Itoa(c.calls))
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("child: %v\n%s", err, out[max(0, len(out)-2000):])
+			}
+			m := regexp.MustCompile(`saved (\d+) refused (\d+)`).FindSubmatch(out)
+			if m == nil {
+				t.Fatalf("child printed no result:\n%s", out[max(0, len(out)-2000):])
+			}
+			t.Logf("saved %s, refused %s", m[1], m[2])
+			if c.allOK && string(m[2]) != "0" {
+				t.Errorf("%s saves refused, want none", m[2])
+			}
+		})
+	}
+}
+
+// bigStackChild runs in the child: it opens calls documents with a
+// 2,000-item outline, sets RLIMIT_AS when given a limit, then saves them all
+// from as many goroutines at once.
+func bigStackChild(t *testing.T, arg string) {
+	limit, calls, _ := strings.Cut(arg, ":")
+	n, _ := strconv.Atoi(calls)
+	pdf := bigOutlinePDF(2000)
+	docs := make([]*Document, n)
+	for i := range docs {
+		d, err := OpenStream(pdf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer d.Close()
+		docs[i] = d
+	}
+	if limit != "" {
+		l, _ := strconv.ParseUint(limit, 10, 64)
+		if err := syscall.Setrlimit(syscall.RLIMIT_AS, &syscall.Rlimit{Cur: l, Max: l}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var saved, refused atomic.Int64
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for _, d := range docs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			switch _, err := d.SaveBytesWithOptions(scrubSaveOpts); {
+			case err == nil:
+				saved.Add(1)
+			case strings.Contains(err.Error(), "cannot create a thread with a large stack"):
+				refused.Add(1)
+			default:
+				t.Error(err)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	fmt.Printf("saved %d refused %d\n", saved.Load(), refused.Load())
 }

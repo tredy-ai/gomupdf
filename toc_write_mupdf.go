@@ -112,7 +112,11 @@ static void gomupdf_set_toc_thunk(void *p) {
 
 static int gomupdf_set_toc(fz_context *ctx, fz_document *doc, char *spec, char *err, int errlen) {
     gomupdf_set_toc_args a = {ctx, doc, spec, err, errlen};
-    gomupdf_call_bigstack(gomupdf_set_toc_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_set_toc_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return -1;
+    }
     return a.ret;
 }
 */

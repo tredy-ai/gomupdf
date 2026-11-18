@@ -238,7 +238,11 @@ static void gomupdf_add_text_field_thunk(void *p) {
 
 static int gomupdf_add_text_field(fz_context *ctx, fz_document *doc, int pageno, const char *name, float x0, float y0, float x1, float y1, const char *value, char *err, int errlen) {
     gomupdf_add_text_field_args a = {ctx, doc, pageno, name, x0, y0, x1, y1, value, err, errlen};
-    gomupdf_call_bigstack(gomupdf_add_text_field_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_add_text_field_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return -1;
+    }
     return a.ret;
 }
 
@@ -259,7 +263,11 @@ static void gomupdf_list_widgets_thunk(void *p) {
 
 static char *gomupdf_list_widgets(fz_context *ctx, fz_document *doc, int pageno, char *err, int errlen) {
     gomupdf_list_widgets_args a = {ctx, doc, pageno, err, errlen};
-    gomupdf_call_bigstack(gomupdf_list_widgets_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_list_widgets_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return NULL;
+    }
     return a.ret;
 }
 
@@ -282,7 +290,11 @@ static void gomupdf_set_checkbox_thunk(void *p) {
 
 static int gomupdf_set_checkbox(fz_context *ctx, fz_document *doc, int pageno, int index, int checked, char *err, int errlen) {
     gomupdf_set_checkbox_args a = {ctx, doc, pageno, index, checked, err, errlen};
-    gomupdf_call_bigstack(gomupdf_set_checkbox_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_set_checkbox_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return -1;
+    }
     return a.ret;
 }
 
@@ -305,7 +317,11 @@ static void gomupdf_set_text_field_thunk(void *p) {
 
 static int gomupdf_set_text_field(fz_context *ctx, fz_document *doc, int pageno, int index, const char *value, char *err, int errlen) {
     gomupdf_set_text_field_args a = {ctx, doc, pageno, index, value, err, errlen};
-    gomupdf_call_bigstack(gomupdf_set_text_field_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_set_text_field_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        return -1;
+    }
     return a.ret;
 }
 */

@@ -99,7 +99,12 @@ static void gomupdf_convert_to_pdf_thunk(void *p) {
 
 static unsigned char *gomupdf_convert_to_pdf(fz_context *ctx, fz_document *src, int *out_len, char *err, int errlen) {
     gomupdf_convert_to_pdf_args a = {ctx, src, out_len, err, errlen};
-    gomupdf_call_bigstack(gomupdf_convert_to_pdf_thunk, &a);
+    int e = gomupdf_call_bigstack(gomupdf_convert_to_pdf_thunk, &a);
+    if (e) {
+        gomupdf_bigstack_err(e, err, errlen);
+        *out_len = -1;
+        return NULL;
+    }
     return a.ret;
 }
 */
