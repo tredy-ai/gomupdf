@@ -31,7 +31,7 @@ file if they ever disagree.
   to README"). Nothing from upstream has been merged since.
 - Build and test target: Go 1.27 on Alpine 3.23 with its packaged MuPDF 1.26.11
   (apk `mupdf-dev`), dynamically linked, on musl. The code is guarded at compile
-  time by MuPDF >= 1.25; CI and the committed corpus's known-failures list are
+  time by MuPDF >= 1.26; CI and the committed corpus's known-failures list are
   for MuPDF 1.26.11 (see [MuPDF versions](#mupdf-versions) for what was run on
   which version).
 - `LICENSE` (AGPL-3.0) is unchanged.
@@ -597,6 +597,15 @@ Also new and error-visible: `ApplyRedactions` can return `*RedactionCheckError`
 (4.4), `RawDict` returns errors instead of skipping records, and errors are
 never empty.
 
+### 5.8 MuPDF 1.26 is the minimum
+
+The compile guard requires MuPDF 1.26 or newer; building against 1.25 headers
+stops with `#error "gomupdf (tredy-ai) requires MuPDF >= 1.26"`. CI, Docker and
+the committed corpus test only ever held on 1.26 (1.26.11 on Alpine 3.23).
+Nothing changes in the API. Build against MuPDF 1.26 or newer (Alpine 3.23's
+`mupdf-dev`, or a newer distribution package), and check `MuPDFVersion()` in
+your build if you record extraction output.
+
 ## 6. Using the package in a redaction service
 
 This section is guidance derived from the findings above and from the corpus
@@ -684,8 +693,9 @@ and returns an error; it does not remove them.
 - Vertical-writing quads sit one advance past the ink, so redacting a vertical
   character also removes the next one.
 - `pdf_drop_ocg` leaves a dangling pointer; `ShowAllLayers` clears it.
-- Deleting an object created in the same session breaks saves on 1.25.6; Scrub
-  leaves an empty dictionary in its place.
+- Deleting an object created in the same session broke saves on 1.25.6, so
+  Scrub and `ShowAllLayers` leave an empty dictionary in its place; 1.26 does
+  not need that, and it is harmless there.
 
 **Corpus results (final run, at `2ff3ebe`, MuPDF 1.26.11 on Alpine 3.23, Go 1.27).**
 5,347 public test and real-world PDFs from the pdf.js, veraPDF, qpdf, PyMuPDF,
@@ -737,12 +747,15 @@ inline `/OC << >> BDC` property list is not counted (section 4.6). Call
   per-glyph redaction cases where the right glyphs are removed but following
   characters shift. 1.28 has not been re-run since many later changes.
 - The `mupdf_bundled` build tag (static `libmupdf.a` + `libmupdf-third.a`) was
-  built and tested once against MuPDF 1.25.6 from source and passed.
+  built and tested once against MuPDF 1.25.6 from source and passed, before the
+  minimum became 1.26; it has not been run against 1.26.
 - The GitHub Actions workflow has never run: nothing has been pushed.
 
 ## 8. Open decisions
 
 Both belong to the owner. Neither is decided; the package does not pick one.
+(The third, the minimum MuPDF version, is decided: 1.26; see
+[MuPDF versions](#mupdf-versions).)
 
 1. **Hidden layers.** What a service should do with them:
    - refuse any file with `HiddenContent.Layers > 0` (or `HiddenLayers > 0`);
@@ -750,11 +763,6 @@ Both belong to the owner. Neither is decided; the package does not pick one.
      drawn and redactable at once; or
    - a future "delete hidden content" operation that removes what the
      configuration hides, which does not exist.
-3. **Raising the compile guard to MuPDF 1.26.** Today the guard allows 1.25.
-   Raising it drops 1.25.6, on which `TestCorpus` already fails because some
-   corpus files behave differently there, and makes the supported set match
-   what CI and the known-failures list cover; keeping it lets consumers on 1.25
-   (older distributions) build, with a corpus test that cannot be run clean.
 2. **The accessibility structure tree.** Whether `Scrub` should drop or strip
    it. Today it keeps the tree (except the declared text stripped on redacted
    pages) and so keeps `/ID`, `/Summary`, `/T` and the other attributes listed
@@ -785,13 +793,14 @@ half a minute after the package install.
 
 - **1.26.11 (Alpine 3.23)**: the target. CI and the committed corpus test's
   `KNOWN_FAILURES.tsv` are for it. The whole suite passes.
-- **1.25.6**: the compile guard still allows 1.25. The test suite other than
-  `TestCorpus` passes on 1.25.6 (re-run at `d381f88`). `TestCorpus` fails on
-  1.25.6 because some corpus files behave differently there.
+- **1.25.6**: no longer supported; the compile guard requires 1.26 and stops a
+  1.25 build with an `#error`. History: until that change the test suite other
+  than `TestCorpus` passed on 1.25.6 (last run at `d381f88`), and `TestCorpus`
+  did not, because some corpus files behave differently there.
 - **1.28.6** (Homebrew, macOS): last checked at commit `f0ed073`; it built and
   three tests failed (section 7). Not re-run since.
 - **`mupdf_bundled`**: built and tested once against MuPDF 1.25.6 from source
-  and passed (section 7).
+  and passed, before the minimum became 1.26; not run against 1.26 (section 7).
 
 **Corpus test (`TestCorpus`, `corpus_test.go`).** Walks `testdata/corpus` (163
 PDFs, 17 MB; sources in `testdata/corpus/SOURCES.md`) and `testdata/fuzz/crashers`
@@ -873,8 +882,7 @@ passes, update the `UseActualText` warning.
   only for a reason (a security fix that affects us, or a feature we need). It
   is gated by consumers' extraction-diff tests and by the corpus test.
 - **The pin is Alpine 3.23 with MuPDF 1.26.11.** Compile-time guard:
-  MuPDF >= 1.25 (see [MuPDF versions](#mupdf-versions); raising it to 1.26 is an
-  open decision, section 8).
+  MuPDF >= 1.26 (see [MuPDF versions](#mupdf-versions)).
 - Semver on the fork's own module path. Breaking API changes bump the minor
   version while we're on v1 and are noted in this file, matching how upstream
   has versioned so far.

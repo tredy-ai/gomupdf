@@ -59,7 +59,8 @@ static int gomupdf_show_all_layers(fz_context *ctx, fz_document *doc, char *err,
                     pdf_delete_object(ctx, pdf, i);
                     // As in Scrub: one created since the file was opened (by
                     // InsertPDF, say) becomes an empty dictionary, or MuPDF
-                    // 1.25 could not save the document.
+                    // 1.25 could not save the document. MuPDF 1.26 does not
+                    // need this; it is harmless there.
                     if (pdf_get_xref_entry_no_null(ctx, pdf, i)->type == 0) {
                         empty = pdf_new_dict(ctx, pdf, 0);
                         pdf_update_object(ctx, pdf, i, empty);

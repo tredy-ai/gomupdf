@@ -51,7 +51,8 @@ redaction can fail without telling the caller. In short:
   quads (`RawDictWithOptions`, `Char.Quad`).
 - **Damaged files are repaired at open**, locked documents answer nothing until
   `Authenticate`, and `SaveWithOptions` streams to the file.
-- Built and tested on Go 1.27, Alpine 3.23, MuPDF 1.26.11.
+- Requires MuPDF 1.26 or newer; built and tested on Go 1.27, Alpine 3.23,
+  MuPDF 1.26.11.
 
 Several of these break upstream's API. [FORK.md](FORK.md) has the patch list,
 the exact rules, migration notes, known limitations and how to test.
@@ -111,7 +112,7 @@ gomupdf links against the MuPDF C library via cgo, so a **C toolchain** and
 | Arch | `sudo pacman -S libmupdf` |
 
 **Alpine / musl.** This fork is built and tested on Alpine 3.23 with its
-packaged MuPDF 1.26.11 and Go 1.27 (MuPDF 1.25 or newer is required by the
+packaged MuPDF 1.26.11 and Go 1.27 (MuPDF 1.26 or newer is required by the
 compile guard; see the version notes below). On linux the link
 flags come from `pkg-config --libs mupdf`, so nothing else needs configuring:
 
@@ -127,11 +128,11 @@ go build ./...
   and two per-glyph redaction cases where the right glyphs are removed but
   following characters shift. 1.28 has not been re-run since many later
   changes. Only Alpine 3.23 / MuPDF 1.26.11 is a supported target.
-- MuPDF 1.25.6 is the oldest version the compile guard accepts (older headers
-  fail with a clear `#error`). The test suite other than `TestCorpus` passes on
-  it (re-run at `d381f88`); `TestCorpus` fails on 1.25.6 because some corpus
-  files behave differently there. CI and the corpus test's known-failures list
-  are for 1.26.11.
+- MuPDF 1.26 is the oldest version the compile guard accepts (older headers
+  fail with a clear `#error`). CI and the corpus test's known-failures list are
+  for 1.26.11. MuPDF 1.25 was supported until the `build!: require MuPDF 1.26`
+  commit; before that the suite other than `TestCorpus` passed on 1.25.6
+  (last run at `d381f88`), and `TestCorpus` did not.
 - On macOS the cgo flags (`cgo_darwin.go`) point at Homebrew's Apple Silicon
   prefix, `/opt/homebrew`; elsewhere set `CGO_CFLAGS` / `CGO_LDFLAGS` as below.
 - The Debian, Fedora and Arch rows in the table above are carried over from
@@ -143,8 +144,9 @@ go build ./...
   so use an Alpine runtime image of the same release as the build image.
 - For a MuPDF built from source with its bundled third-party code (a
   `libmupdf-third` next to `libmupdf`), build with `-tags mupdf_bundled`, which
-  links `-lmupdf -lmupdf-third -lm` instead of using pkg-config. This was
-  built and tested once, against MuPDF 1.25.6 built from source, and passed.
+  links `-lmupdf -lmupdf-third -lm` instead of using pkg-config. It was
+  built and tested once, against MuPDF 1.25.6 built from source, and passed,
+  before the minimum became 1.26; it has not been run against 1.26.
   The CI workflow does not exercise it, and has not run yet.
 
 <details>

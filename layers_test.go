@@ -235,7 +235,7 @@ func TestShowAllLayersRepeated(t *testing.T) {
 
 // Layer dictionaries that InsertPDF copied in (objects created since the
 // document was opened) are destroyed too, and the document still saves:
-// MuPDF 1.25 cannot save one deleted outright.
+// MuPDF 1.25 could not save one deleted outright (1.26 can).
 func TestShowAllLayersInsertedObjects(t *testing.T) {
 	d, err := NewPDF()
 	if err != nil {

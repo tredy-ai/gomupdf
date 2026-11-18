@@ -7,9 +7,11 @@ package gomupdf
 */
 import "C"
 
-// MuPDFVersion returns the MuPDF version (FZ_VERSION, for example "1.25.6")
+// MuPDFVersion returns the MuPDF version (FZ_VERSION, for example "1.26.11")
 // of the headers this binary was compiled against. Extraction output depends
-// on the MuPDF version, so record it alongside any output you persist.
+// on the MuPDF version, so record it alongside any output you persist. The
+// package requires MuPDF 1.26 or newer: older headers fail the build with an
+// #error. It is tested on MuPDF 1.26.11.
 //
 // New in the tredy-ai fork; upstream has no equivalent. In a build with
 // -tags nomupdf it returns "".

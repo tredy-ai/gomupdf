@@ -330,7 +330,7 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // as tagged PDFs carry) resolves to null instead of keeping the content (to
 // an empty dictionary for an object created since the document was opened,
 // such as an annotation added through this package, which MuPDF 1.25 could
-// otherwise no longer save).
+// otherwise no longer save; 1.26 does not need that).
 // Unless opts.KeepAnnotations, that is the removed annotations, on a page or
 // not (and widgets and fields, unless opts.KeepFormFields), with their
 // /Popup and their /FS and /AF

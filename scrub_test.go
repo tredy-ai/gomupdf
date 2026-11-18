@@ -1005,11 +1005,11 @@ func TestScrubFileAttachmentFS(t *testing.T) {
 }
 
 // Scrub destroys an annotation created since the document was opened (a
-// Circle added through the API) and the file still saves: MuPDF 1.25.6 marks
-// such an object, once deleted, as never having existed, and every later
-// save then fails on it ("cannot find object in xref"), so Scrub replaces it
-// with an empty dictionary instead. Run on MuPDF 1.25 to see the failure;
-// 1.26 tolerates it.
+// Circle added through the API) and the file still saves: MuPDF 1.25.6
+// marked such an object, once deleted, as never having existed, and every
+// later save then failed on it ("cannot find object in xref"), so Scrub
+// replaces it with an empty dictionary instead. 1.26, the minimum now,
+// tolerates it; the test pins that the document still saves.
 func TestScrubDestroysCreatedObjects(t *testing.T) {
 	d, err := OpenStream(scrubMiniPDF("", "", ""))
 	if err != nil {

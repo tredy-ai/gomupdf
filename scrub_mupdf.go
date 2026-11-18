@@ -1230,7 +1230,8 @@ static void gomupdf_destroy_xfa(fz_context *ctx, gomupdf_marks *mk, pdf_obj *xfa
 // deleted, an entry MuPDF says never existed, and MuPDF 1.25's save loads
 // every entry first and fails on it; such an object becomes an empty
 // dictionary instead (MuPDF cannot store a null object: pdf_update_object
-// with null deletes), which holds nothing.
+// with null deletes), which holds nothing. MuPDF 1.26 does not need this;
+// it stays because it is harmless there.
 static void gomupdf_destroy_all(fz_context *ctx, pdf_document *pdf, gomupdf_marks *mk) {
     for (int i = 1; i < mk->len; i++) {
         if ((mk->m[i] & (GM_DEL | GM_KEEP)) != GM_DEL) continue;

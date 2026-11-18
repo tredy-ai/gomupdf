@@ -18,8 +18,8 @@ package gomupdf
 #include <string.h>
 #include <stdint.h>
 
-#if FZ_VERSION_MAJOR < 1 || (FZ_VERSION_MAJOR == 1 && FZ_VERSION_MINOR < 25)
-#error "gomupdf (tredy-ai) requires MuPDF >= 1.25"
+#if FZ_VERSION_MAJOR < 1 || (FZ_VERSION_MAJOR == 1 && FZ_VERSION_MINOR < 26)
+#error "gomupdf (tredy-ai) requires MuPDF >= 1.26"
 #endif
 
 // Create a context with document handlers registered. Returns NULL on failure.
