@@ -134,9 +134,12 @@ static int gomupdf_name_in(const char *name, const char **list) {
 #define GM_SVT 0x4000000   // queued as a /ParentTree or /IDTree node (GS_ST)
 #define GM_SVA 0x8000000   // queued as an attribute object or class-map entry (GS_SA)
 #define GM_SDEL 0x10000000  // recorded for destruction as part of the structure tree (gomupdf_struct_rec)
-#define GM_SKEEP 0x20000000 // shielded from the structure tree's records only (the catalog /Lang string)
+#define GM_SKEEP 0x20000000 // shielded from the structure tree's records only (gomupdf_struct_shield)
+#define GM_RWALK 0x40000000 // queued for the walk of a value a kept object uses in a defined role (GS_ROLE)
+#define GM_SHROLE 0x80000000u // expanded by gomupdf_struct_shield in a role position (GS_SHR)
 
-enum { GS_WALK, GS_TOP, GS_DOWN, GS_UP, GS_LINK, GS_FORM, GS_ORPHAN, GS_AP, GS_SK, GS_ST, GS_SA, GS_COUNT };
+enum { GS_WALK, GS_TOP, GS_DOWN, GS_UP, GS_LINK, GS_FORM, GS_ORPHAN, GS_AP, GS_SK, GS_ST, GS_SA, GS_ROLE, GS_SHR,
+       GS_SHW, GS_COUNT };
 
 // Pending objects of the marking walk; every entry holds a reference.
 typedef struct { pdf_obj **v; size_t n, cap; } gomupdf_stack;
@@ -148,6 +151,7 @@ typedef struct {
     int content;      // set while queuing from page-content roots (GM_CONTENT)
     int abudget;      // action budget of the current pass (gomupdf_action_walk)
     int nostruct;     // Scrub removes the structure tree (not ScrubOptions.KeepStructure)
+    int sroot;        // object number of the catalog /StructTreeRoot, 0 if none or direct
     gomupdf_stack s[GS_COUNT];
     pdf_obj *cur;     // the entry being expanded, holding a reference
 } gomupdf_marks;
@@ -372,24 +376,30 @@ static int gomupdf_in_content(fz_context *ctx, gomupdf_marks *mk, pdf_obj *obj, 
 
 // gomupdf_keep_on marks obj kept and queues it on the WALK stack (keep all it
 // references), the AP stack (the same, for what a kept annotation's /AP
-// reaches) or the TOP stack (a kept annotation or outline item). Each
-// indirect object is queued once per stack; an object number outside the xref
-// resolves to null and holds nothing. Outside the page-content walk and the
-// appearance walk, an annotation or field (gomupdf_annot_shaped) is kept only
-// in its own right, as a kept annotation or form node (TOP), never because
-// something kept refers to it (a Hide action's /T, say), so one the options
-// remove is still destroyed and the reference resolves to null. The same
-// holds for a dictionary of the structure tree Scrub removes (GM_SNODE): a
-// kept Link's stray reference to a structure element does not keep it, or
-// the tree through it. What a kept appearance draws is kept whatever its
-// shape (a graphics state can look like an annotation).
+// reaches), the ROLE stack (a value that a kept annotation, field or outline
+// item or a kept /OpenAction uses in a defined role, gomupdf_keep_walk) or
+// the TOP stack (a kept annotation or outline item). Each indirect object is
+// queued once per stack; an object number outside the xref resolves to null
+// and holds nothing. Outside the page-content walk and the appearance walk,
+// an annotation or field (gomupdf_annot_shaped) is kept only in its own
+// right, as a kept annotation or form node (TOP), never because something
+// kept refers to it (a Hide action's /T, say), so one the options remove is
+// still destroyed and the reference resolves to null. The same holds on the
+// WALK stack for a dictionary of the structure tree Scrub removes
+// (GM_SNODE): a kept Link's stray reference to a structure element does not
+// keep it, or the tree through it. In a defined role (ROLE) it is kept: an
+// action with a stray /P naming the structure root passes for an element,
+// and a Link's /A is its target whatever the tree says. What a kept
+// appearance draws is kept whatever its shape (a graphics state can look
+// like an annotation).
 static void gomupdf_keep_on(fz_context *ctx, gomupdf_marks *mk, int which, pdf_obj *obj) {
     if (pdf_is_indirect(ctx, obj)) {
         unsigned int *m = gomupdf_mark(ctx, mk, obj);
-        unsigned int queued = which == GS_TOP ? GM_TOP : which == GS_AP ? GM_APWALK : GM_WALK;
+        unsigned int queued = which == GS_TOP ? GM_TOP : which == GS_AP ? GM_APWALK
+                            : which == GS_ROLE ? GM_RWALK : GM_WALK;
         if (!m || (*m & queued)) return;
-        if (which == GS_WALK && !mk->content && !(*m & GM_TOP)
-            && ((*m & GM_SNODE) || gomupdf_annot_shaped(ctx, obj)))
+        if ((which == GS_WALK || which == GS_ROLE) && !mk->content && !(*m & GM_TOP)
+            && ((which == GS_WALK && (*m & GM_SNODE)) || gomupdf_annot_shaped(ctx, obj)))
             return;
         *m |= GM_KEEP | queued | (which == GS_WALK && mk->content ? GM_CONTENT : 0);
     } else if (!pdf_is_array(ctx, obj) && !pdf_is_dict(ctx, obj)) {
@@ -427,11 +437,14 @@ static void gomupdf_keep_value(fz_context *ctx, gomupdf_marks *mk, int which, pd
 // is not a node of the form: an annotation keeps no other annotation, so its
 // /IRT, its /Dest and any such key on it lead to one only if that one is kept
 // in its own right. What /AP reaches is walked on the AP stack, which keeps
-// everything (gomupdf_keep_on). The object is held while expanding it, as the
-// action check resolves others.
+// everything (gomupdf_keep_on), and the values of /A, /PA, /MK, /BS, /BE,
+// /Border and /Dest on the ROLE stack, where a structure-tree mark does not
+// hide them. The object is held while expanding it, as the action check
+// resolves others.
 static void gomupdf_keep_tops(fz_context *ctx, gomupdf_marks *mk) {
     static const char *skip[] = {"Parent", "P", "Popup", "AA", "SE", "XFA", NULL};
     static const char *items[] = {"First", "Last", "Next", "Prev", "Kids", "Fields", "CO", NULL};
+    static const char *roles[] = {"A", "PA", "MK", "BS", "BE", "Border", "Dest", NULL};
     gomupdf_stack *s = &mk->s[GS_TOP];
     while (s->n) {
         mk->cur = s->v[--s->n];
@@ -449,7 +462,8 @@ static void gomupdf_keep_tops(fz_context *ctx, gomupdf_marks *mk) {
             if (gomupdf_name_in(k, skip)) continue;
             if ((!strcmp(k, "A") || !strcmp(k, "PA")) && gomupdf_action_unsafe(ctx, v, mk, NULL))
                 continue;
-            int which = !strcmp(k, "AP") ? GS_AP : gomupdf_name_in(k, items) && !annot ? GS_TOP : GS_WALK;
+            int which = !strcmp(k, "AP") ? GS_AP : gomupdf_name_in(k, items) && !annot ? GS_TOP
+                      : gomupdf_name_in(k, roles) ? GS_ROLE : GS_WALK;
             gomupdf_keep_value(ctx, mk, which, key, v);
         }
         pdf_drop_obj(ctx, mk->cur);
@@ -555,13 +569,20 @@ static int gomupdf_private_key(fz_context *ctx, gomupdf_marks *mk, const char *n
 // other than as page content (a kept Link's destination, say), is kept but
 // not expanded, so what it holds is not kept through it. On an indirect
 // private-data holder (gomupdf_private_holder) it skips the keys Scrub
-// removes there (gomupdf_private_key), which play no part in drawing. The
-// object is held while expanding it, as those checks resolve others.
+// removes there (gomupdf_private_key), which play no part in drawing. On the
+// ROLE stack (a value a kept object uses in a defined role), an array's
+// entries and an action's /Next stay in that role and everything else goes
+// to the WALK stack; an object the structure tree recorded that is kept in
+// that role (an action that passes for an element) is not followed through
+// /P, /K or /SE, which lead into the tree. The object is held while
+// expanding it, as those checks resolve others.
 static void gomupdf_keep_walk(fz_context *ctx, gomupdf_marks *mk, int which) {
+    static const char *into[] = {"P", "K", "SE", NULL};
     gomupdf_stack *s = &mk->s[which];
     while (s->n) {
         mk->cur = s->v[--s->n];
         unsigned int *m = gomupdf_mark(ctx, mk, mk->cur);
+        int rescued = which == GS_ROLE && m && (*m & GM_SDEL);
         int is_page = m && ((*m & GM_PAGE) || (*m & (GM_INODE | GM_CONTENT)) == GM_INODE);
         int is_root = m && pdf_to_num(ctx, mk->cur) == mk->root;
         int orphan = m && !(*m & (GM_PAGE | GM_CONTENT)) && gomupdf_page_shaped(ctx, mk->cur);
@@ -577,9 +598,11 @@ static void gomupdf_keep_walk(fz_context *ctx, gomupdf_marks *mk, int which) {
             for (int i = 0; i < n; i++) {
                 pdf_obj *k = pdf_dict_get_key(ctx, o, i), *v = pdf_dict_get_val(ctx, o, i);
                 if (gomupdf_walk_skips(ctx, is_page, is_root, mk->nostruct, k)
-                    || (holder && gomupdf_private_key(ctx, mk, pdf_to_name(ctx, k), v)))
+                    || (holder && gomupdf_private_key(ctx, mk, pdf_to_name(ctx, k), v))
+                    || (rescued && gomupdf_name_in(pdf_to_name(ctx, k), into)))
                     continue;
-                gomupdf_keep_value(ctx, mk, which, k, v);
+                int next = which == GS_ROLE && !pdf_name_eq(ctx, k, PDF_NAME(Next)) ? GS_WALK : which;
+                gomupdf_keep_value(ctx, mk, next, k, v);
             }
         }
         pdf_drop_obj(ctx, mk->cur);
@@ -931,10 +954,25 @@ static void gomupdf_struct_strings(fz_context *ctx, gomupdf_marks *mk, pdf_obj *
     }
 }
 
+// gomupdf_struct_elem reports whether o is a structure element: of the
+// element shape (GK_SELEM) and, when it has no /Type, with a /P that names
+// an indirect dictionary that is the structure tree root or itself of the
+// element shape. An untyped action, border style, page-label or rendition
+// dictionary has an /S name and may have a /P, but that /P is a string, a
+// page, an annotation or a parameter dictionary, never an element.
+static int gomupdf_struct_elem(fz_context *ctx, gomupdf_marks *mk, pdf_obj *o) {
+    if (!gomupdf_is_kind(ctx, o, GK_SELEM)) return 0;
+    if (pdf_dict_get(ctx, o, PDF_NAME(Type))) return 1; // /Type /StructElem
+    pdf_obj *p = pdf_dict_get(ctx, o, PDF_NAME(P));
+    return pdf_is_indirect(ctx, p)
+        && ((mk->sroot && pdf_to_num(ctx, p) == mk->sroot && pdf_is_dict(ctx, p) && !pdf_is_stream(ctx, p))
+            || gomupdf_is_kind(ctx, p, GK_SELEM));
+}
+
 // gomupdf_struct_walk records for destruction, before anything is marked
 // kept, the objects of the logical structure tree the catalog
 // /StructTreeRoot names (Scrub without KeepStructure): the root
-// (GK_SROOT); every structure element (GK_SELEM) reached from the root's /K
+// (GK_SROOT); every structure element (gomupdf_struct_elem) reached from the root's /K
 // down /K, up /P, through /Ref and as a /ParentTree or /IDTree value; every
 // node of those two trees (GK_STREE), with the indirect strings of /IDTree
 // keys and /Limits; /RoleMap and /ClassMap (GK_SMAP); every attribute object
@@ -972,6 +1010,7 @@ static void gomupdf_struct_walk(fz_context *ctx, pdf_document *pdf, gomupdf_mark
     pdf_obj *langv = pdf_dict_get(ctx, cat, PDF_NAME(Lang));
     unsigned int *lang = gomupdf_mark(ctx, mk, langv);
     if (lang && pdf_is_string(ctx, langv)) *lang |= GM_SKEEP;
+    mk->sroot = pdf_is_indirect(ctx, root) ? pdf_to_num(ctx, root) : 0;
     if (!pdf_is_dict(ctx, root)) return;
     gomupdf_struct_rec(ctx, mk, root, GK_SROOT);
     gomupdf_struct_rec(ctx, mk, pdf_dict_get(ctx, root, PDF_NAME(RoleMap)), GK_SMAP);
@@ -995,7 +1034,7 @@ static void gomupdf_struct_walk(fz_context *ctx, pdf_document *pdf, gomupdf_mark
             for (int i = 0; i < n && budget >= 0; i++) gomupdf_struct_push(ctx, mk, which, pdf_array_get(ctx, o, i), &budget);
         } else if (which == GS_SK && gomupdf_is_kind(ctx, o, GK_SREF)) {
             gomupdf_struct_rec(ctx, mk, o, GK_SREF); // its /Pg, /Obj and /Stm are not part of the tree
-        } else if (which == GS_SK && gomupdf_is_kind(ctx, o, GK_SELEM)) {
+        } else if (which == GS_SK && gomupdf_struct_elem(ctx, mk, o)) {
             gomupdf_struct_rec(ctx, mk, o, GK_SELEM);
             gomupdf_struct_push(ctx, mk, GS_SK, pdf_dict_get(ctx, o, PDF_NAME(K)), &budget);
             gomupdf_struct_push(ctx, mk, GS_SK, pdf_dict_get(ctx, o, PDF_NAME(P)), &budget);
@@ -1031,11 +1070,93 @@ static void gomupdf_struct_walk(fz_context *ctx, pdf_document *pdf, gomupdf_mark
         while (mk->s[w].n) pdf_drop_obj(ctx, mk->s[w].v[--mk->s[w].n]);
 }
 
+// gomupdf_shield_push queues v for gomupdf_struct_shield in a role position
+// (GS_SHR) or not (GS_SHW), marking it GM_SKEEP; in a role position it is
+// queued whatever the structure tree recorded, elsewhere not if the tree
+// recorded it as one of its own dictionaries (GM_SNODE). An indirect object
+// is expanded at most once in each, and only an array or dictionary is
+// queued.
+static void gomupdf_shield_push(fz_context *ctx, gomupdf_marks *mk, int which, pdf_obj *v) {
+    if (pdf_is_indirect(ctx, v)) {
+        unsigned int *m = gomupdf_mark(ctx, mk, v);
+        if (!m || (which == GS_SHR ? (*m & GM_SHROLE) != 0 : (*m & (GM_SKEEP | GM_SNODE)) != 0)) return;
+        *m |= GM_SKEEP | (which == GS_SHR ? GM_SHROLE : 0);
+    }
+    if (pdf_is_array(ctx, v) || pdf_is_dict(ctx, v)) gomupdf_push(ctx, mk, which, v);
+}
+
+// gomupdf_struct_shield shields from the structure tree's records (GM_SKEEP,
+// which protects from nothing else) what the catalog uses outside the tree:
+// the closure of the values of its /PageLabels, /Names (each entry but
+// /EmbeddedFiles, /JavaScript, /IDS and /URLS, which Scrub removes), /Dests,
+// /ViewerPreferences, /Threads, /URI, /OutputIntents, /Legal, /Requirements,
+// /Collection, /DPartRoot and /Extensions. The other catalog keys are
+// either removed by Scrub (/Metadata, /AA, /AF, /PieceInfo, /LastModified,
+// /SpiderInfo, /NeedsRendering, /StructTreeRoot, /MarkInfo, and /Perms and
+// /DSS, /AcroForm and /Outlines unless kept), kept with their own rules by
+// the keep pass (/Pages, /OCProperties, the /OpenAction, a kept form,
+// /Perms and /DSS or outline), the catalog /Lang string (gomupdf_struct_walk),
+// names with nothing to keep (/Type, /Version, /PageLayout, /PageMode), or
+// not standard: a stray catalog key keeps nothing. Those values, the entries
+// of /Names and of the /Kids of anything shielded, and the entries of an
+// array in such a position are role positions: whatever the tree recorded
+// there is shielded (a /ParentTree or /IDTree that is also /PageLabels or
+// /Names/Dests, say). Elsewhere in the closure a dictionary the tree
+// recorded as its own (GM_SNODE, a typed element in a /Dests leaf, say) is
+// neither shielded nor followed, as on the keep pass's WALK stack, and from
+// a shielded object the tree recorded nothing is followed through /P, /K or
+// /SE. Strings, /RoleMap, /ClassMap and an untyped root that the tree
+// records only weakly are shielded wherever the closure reaches them (a
+// page-label prefix that is also an element's /T). Kept objects
+// (GM_KEEP: the page tree, kept annotations and what the keep pass reached)
+// and annotations and pages are not expanded: the keep pass decided what
+// they hold. Because GM_SKEEP protects only from the structure tree's
+// records, a value that names the /Info, an XMP stream, an embedded file or
+// a script keeps none of them. The walk is iterative and each indirect
+// object is expanded at most twice (once in a role position).
+static void gomupdf_struct_shield(fz_context *ctx, pdf_document *pdf, gomupdf_marks *mk) {
+    static const char *keys[] = {"PageLabels", "Dests", "ViewerPreferences", "Threads", "URI", "OutputIntents",
+                                 "Legal", "Requirements", "Collection", "DPartRoot", "Extensions", NULL};
+    static const char *gone[] = {"EmbeddedFiles", "JavaScript", "IDS", "URLS", NULL};
+    static const char *into[] = {"P", "K", "SE", NULL};
+    pdf_obj *cat = pdf_dict_get(ctx, pdf_trailer(ctx, pdf), PDF_NAME(Root));
+    for (const char **k = keys; *k; k++) gomupdf_shield_push(ctx, mk, GS_SHR, pdf_dict_gets(ctx, cat, *k));
+    pdf_obj *names = pdf_dict_get(ctx, cat, PDF_NAME(Names));
+    unsigned int *nm = gomupdf_mark(ctx, mk, names);
+    if (nm) *nm |= GM_SKEEP | GM_SHROLE;
+    for (int i = 0; i < pdf_dict_len(ctx, names); i++)
+        if (!gomupdf_name_in(pdf_to_name(ctx, pdf_dict_get_key(ctx, names, i)), gone))
+            gomupdf_shield_push(ctx, mk, GS_SHR, pdf_dict_get_val(ctx, names, i));
+    while (mk->s[GS_SHR].n || mk->s[GS_SHW].n) {
+        int which = mk->s[GS_SHR].n ? GS_SHR : GS_SHW;
+        gomupdf_stack *s = &mk->s[which];
+        mk->cur = s->v[--s->n];
+        unsigned int *m = gomupdf_mark(ctx, mk, mk->cur);
+        int skip = (m && (*m & GM_KEEP)) || gomupdf_annot_shaped(ctx, mk->cur) || gomupdf_page_shaped(ctx, mk->cur);
+        int rescued = m && (*m & GM_SDEL);
+        pdf_obj *o = pdf_keep_obj(ctx, pdf_resolve_indirect(ctx, mk->cur));
+        pdf_drop_obj(ctx, mk->cur);
+        mk->cur = o;
+        int n = skip ? 0 : pdf_array_len(ctx, o);
+        for (int i = 0; i < n; i++) gomupdf_shield_push(ctx, mk, which, pdf_array_get(ctx, o, i));
+        n = skip ? 0 : pdf_dict_len(ctx, o);
+        for (int i = 0; i < n; i++) {
+            pdf_obj *k = pdf_dict_get_key(ctx, o, i);
+            if (rescued && gomupdf_name_in(pdf_to_name(ctx, k), into)) continue;
+            gomupdf_shield_push(ctx, mk, pdf_name_eq(ctx, k, PDF_NAME(Kids)) ? GS_SHR : GS_SHW, pdf_dict_get_val(ctx, o, i));
+        }
+        pdf_drop_obj(ctx, mk->cur);
+        mk->cur = NULL;
+    }
+}
+
 // gomupdf_keep_pass marks the kept content of the document (see GM_KEEP).
 // keep_fields (KeepFormFields, or KeepAnnotations) keeps the widgets and the
 // /AcroForm field tree. When Scrub removes the structure tree (mk->nostruct),
 // the tree is recorded first (gomupdf_struct_walk), so that the walks below
-// know its dictionaries (GM_SNODE) and keep one only in a role of its own.
+// know its dictionaries (GM_SNODE) and keep one only in a role of its own,
+// and what the catalog uses is shielded from those records last
+// (gomupdf_struct_shield).
 static void gomupdf_keep_pass(fz_context *ctx, pdf_document *pdf, gomupdf_marks *mk,
                               int keep_annots, int keep_fields, int keep_outlines) {
     pdf_obj *root = pdf_dict_get(ctx, pdf_trailer(ctx, pdf), PDF_NAME(Root));
@@ -1046,7 +1167,7 @@ static void gomupdf_keep_pass(fz_context *ctx, pdf_document *pdf, gomupdf_marks 
     // A safe /OpenAction stays, so its actions are kept like a kept /A: a
     // removed script chain that shares one of them only unlinks it.
     if (!gomupdf_open_action_unsafe(ctx, root, mk, NULL))
-        gomupdf_keep(ctx, mk, pdf_dict_gets(ctx, root, "OpenAction"));
+        gomupdf_keep_on(ctx, mk, GS_ROLE, pdf_dict_gets(ctx, root, "OpenAction"));
     // A kept form keeps the signature dictionaries and the security store its
     // signature fields may rely on.
     if (keep_fields) {
@@ -1067,8 +1188,10 @@ static void gomupdf_keep_pass(fz_context *ctx, pdf_document *pdf, gomupdf_marks 
     if (keep_fields) gomupdf_keep_on(ctx, mk, GS_TOP, pdf_dict_get(ctx, root, PDF_NAME(AcroForm)));
     gomupdf_keep_tops(ctx, mk);
     gomupdf_keep_orphan_aps(ctx, pdf, mk, keep_annots, keep_fields);
+    gomupdf_keep_walk(ctx, mk, GS_ROLE); // queues on WALK too
     gomupdf_keep_walk(ctx, mk, GS_WALK);
     gomupdf_keep_walk(ctx, mk, GS_AP);
+    if (mk->nostruct) gomupdf_struct_shield(ctx, pdf, mk);
 }
 
 // gomupdf_load_all loads every object in the xref. MuPDF repairs (rebuilds)

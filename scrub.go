@@ -428,7 +428,8 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // other than /XObject, a signature dictionary has /Type /Sig or
 // /DocTimeStamp, a structure tree root is a dictionary with no /Type or
 // /Type /StructTreeRoot, a structure element a dictionary with an /S name,
-// no /Subtype, and /Type /StructElem or no /Type and a /P, a tree node a
+// no /Subtype, and /Type /StructElem or no /Type and a /P naming an indirect
+// dictionary that is the root or has that shape itself, a tree node a
 // dictionary with no /Type and /Kids, /Nums or /Names, /RoleMap and
 // /ClassMap a dictionary with no /Type, an attribute object a dictionary
 // with no /Type and an /O name, an MCR or OBJR dictionary /Type /MCR or
@@ -474,12 +475,24 @@ func hiddenContentFromCounts(c []int) (HiddenContent, error) {
 // the same holds for a structure element, attribute object, tree node, MCR
 // or OBJR dictionary and a root typed /StructTreeRoot: it is kept only as
 // page content, as something a kept appearance draws, or in a kept role of
-// its own (a page, a kept annotation, form node or outline item), never
-// because a kept object refers to it, so a kept Link's stray reference to a
-// structure element neither keeps that element nor the tree through it. The
-// tree's indirect strings, /RoleMap, /ClassMap and an untyped root, which
-// any untyped dictionary or string could pass for, are destroyed unless a
-// kept object references them too. A removed entry that points at kept
+// its own (a page, a kept annotation, form node or outline item, or the
+// value of a kept annotation's, field's or outline item's /A, /PA, /MK, /BS,
+// /BE, /Border or /Dest, of a kept /OpenAction, and of a kept action's
+// /Next), never because a kept object refers to it otherwise, so a kept
+// Link's stray reference to a structure element neither keeps that element
+// nor the tree through it; one kept in such a role is not followed through
+// /P, /K or /SE into the tree. The tree's indirect strings, /RoleMap,
+// /ClassMap and an untyped root, which any untyped dictionary or string
+// could pass for, are destroyed unless a kept object references them too.
+// What the catalog uses outside the tree (what its /PageLabels, /Names
+// other than the trees Scrub removes, /Dests, /ViewerPreferences, /Threads,
+// /URI, /OutputIntents, /Legal, /Requirements, /Collection, /DPartRoot and
+// /Extensions reach) is never destroyed as part of the tree: a /ParentTree
+// that is also /PageLabels, or an /IDTree that is also /Names/Dests, stays,
+// while a dictionary the tree recognises as its own that such a value only
+// reaches deeper (a typed element as a /Dests leaf) still goes. This
+// protects from the tree's removal only: anything Scrub removes for another
+// reason goes even when the catalog's values name it. A removed entry that points at kept
 // content (a /Thumb that the page also draws, an /Info that is the page's
 // /Resources, a JavaScript action that is also a graphics state, an action
 // that a kept /A or a kept /OpenAction also uses) is only unlinked. A
